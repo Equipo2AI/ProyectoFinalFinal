@@ -28,8 +28,8 @@ proyecto/
 
 | Agente | Descripción | Modelo | Herramientas |
 |--------|-------------|--------|--------------|
-| data_steward | Gobierno y calidad de datos bancarios | llama3.1:latest | |
-| normatividad_rag | Búsqueda semántica sobre documentación | qwen2.5:7b-instruct | |
-| data_analyst | Análisis cuantitativo sobre datos bancarios | llama3.1:latest | |
-| document_intelligence | Lectura de imágenes y documentos | llama3.1:latest | |
+| data_steward | Gobierno y calidad de datos bancarios | | |
+| normatividad_rag | Búsqueda semántica sobre documentación |  | |
+| data_analyst | Análisis cuantitativo sobre datos bancarios |  | |
+| document_intelligence | Lectura de imágenes y documentos |  | |
 | compliance | Reglas regulatorias: KYC, AML | | |
