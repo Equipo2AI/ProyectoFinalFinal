@@ -1,24 +1,24 @@
 # Python-generated files
 __pycache__/
-*.py[oc]
+*.py[cod]
+*.egg-info/
 build/
 dist/
-wheels/
-*.egg-info
 
 # Virtual environments
 .venv
+
+# Environment variables (no commitear)
 .env
-.python-version
 
 # IDE
 .vscode/
 .idea/
 .DS_Store
 
-# Archivos generados en tiempo de ejecución (no commitear)
-data/audit_log.json
-data/quality_runs.json
-data/data_quality_incidents.json
+# Archivos generados en tiempo de ejecución
+proyecto/data/audit_log.json
+proyecto/data/quality_runs.json
+proyecto/data/data_quality_incidents.json
 
 AGENTS.md
