@@ -1,0 +1,27 @@
+# Agent model configuration.
+# Change here the model for each agent without touching Python code.
+
+agents:
+  orchestrator:
+    provider: ollama
+    model: "llama3.1:latest"
+
+  data_steward:
+    provider: ollama
+    model: "llama3.1:latest"
+
+  normatividad_rag:
+    provider: ollama
+    model: "qwen2.5:7b-instruct"
+
+  data_analyst:
+    provider: ollama
+    model: "llama3.1:latest"
+
+  document_intelligence:
+    provider: ollama
+    model: "llama3.1:latest"
+
+  compliance:
+    provider: ollama
+    model: "llama3.1:latest"

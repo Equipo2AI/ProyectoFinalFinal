@@ -1,0 +1,7 @@
+id_cliente,nombre,email,telefono,saldo
+1,Ana,a@x.com,5551111,1500.5
+2,Luis,,5552222,200.0
+3,Maria,c@x.com,5553333,0.0
+4,Jose,d@x.com,5554444,-75.25
+5,,e@x.com,5555555,9800.0
+5,Luis,l@x.com,5556666,320.0
