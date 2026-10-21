@@ -32,11 +32,11 @@ la respuesta. Responde en el idioma de la consulta.
 
 
 class NormatividadRAGAgent:
-    def __init__(self, k: int = 5):
+    def __init__(self, k: int = 3):
         self.nombre = "normatividad_rag"
         self.descripcion = "Búsqueda semántica sobre documentación normativa (RAG)."
         self.modelo = "gemma4:e4b"
-        self.modelo_embeddings = "bge-large"  # debe coincidir con el usado al indexar
+        self.modelo_embeddings = "llama-text-embed-v2"  # debe coincidir con el usado al indexar
         self.k = k
 
         # Los componentes pesados se crean al primer uso, para que importar
