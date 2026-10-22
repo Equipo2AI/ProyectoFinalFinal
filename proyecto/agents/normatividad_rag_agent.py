@@ -6,8 +6,8 @@ import os
 from dotenv import load_dotenv
 from langchain.agents import create_agent
 from langchain_core.tools import tool
-from langchain_ollama import ChatOllama, OllamaEmbeddings
-from langchain_pinecone import PineconeVectorStore
+from langchain_ollama import ChatOllama
+from langchain_pinecone import PineconeEmbeddings, PineconeVectorStore
 
 load_dotenv()
 
@@ -47,9 +47,10 @@ class NormatividadRAGAgent:
 
     def _get_retriever(self):
         if self._retriever is None:
+            # Embeddings hospedados por Pinecone (usa PINECONE_API_KEY del entorno).
             vector_store = PineconeVectorStore(
                 index_name=os.environ["INDEX_NAME"],
-                embedding=OllamaEmbeddings(model=self.modelo_embeddings),
+                embedding=PineconeEmbeddings(model=self.modelo_embeddings),
             )
             self._retriever = vector_store.as_retriever(
                 search_kwargs={"k": self.k},
@@ -94,7 +95,7 @@ class NormatividadRAGAgent:
             )
         return self._agente
 
-    # Interfaz pública 
+    # Interfaz pública
 
     @staticmethod
     def _extraer_texto(resultado) -> str:
