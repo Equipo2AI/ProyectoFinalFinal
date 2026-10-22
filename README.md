@@ -1,5 +1,24 @@
 # Proyecto — Agente Multi-Agente Bancario
 
+## Primera versión del Data Steward
+
+El Data Steward puede revisar `proyecto/data/clientes.csv` con herramientas que calculan
+conteos de estructura y calidad. Las herramientas no envían al modelo filas ni valores
+personales: reportan nombres de columnas, tipos detectados y cantidades agregadas.
+
+Para usarlo, instala las dependencias del proyecto, asegúrate de tener Ollama activo y
+descarga el modelo configurado (`llama3.1:latest`). Desde la raíz del repositorio:
+
+```bash
+python proyecto/main.py --consulta "Revisa la estructura y calidad del CSV de clientes"
+```
+
+Sin `--consulta`, el programa muestra la lista de agentes disponibles. En esta etapa,
+el Data Steward detecta valores faltantes, filas exactamente duplicadas e IDs de cliente
+repetidos. Un ID repetido se reporta para revisión, no como instrucción para borrar datos.
+El catálogo `bank_metadata_simple.json` todavía describe otro esquema, por lo que el
+agente no lo usa para atribuir significado a las columnas de `clientes.csv`.
+
 ## Estructura de archivos
 
 ```
