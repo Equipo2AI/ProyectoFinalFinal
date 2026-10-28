@@ -1,0 +1,23 @@
+[theme]
+base = "dark"
+primaryColor = "#E23B45"
+backgroundColor = "#121417"
+secondaryBackgroundColor = "#171A1E"
+textColor = "#F2EEE8"
+borderColor = "#3A4048"
+dataframeBorderColor = "#3A4048"
+dataframeHeaderBackgroundColor = "#1C2025"
+codeBackgroundColor = "#15181B"
+showWidgetBorder = true
+baseRadius = "0.75rem"
+chartCategoricalColors = [
+  "#C25256",
+  "#B58A50",
+  "#5B9A8F",
+  "#7886A8",
+  "#9E9991",
+  "#F2796D",
+]
+
+[server]
+headless = true
