@@ -1,28 +1,32 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 logger = logging.getLogger(__name__)
 
-_MEMORY_DIR = Path(__file__).resolve().parents[1] / "data" / "memory"
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_CONFIG_PATH = _PROJECT_ROOT / "config" / "memory.yaml"
+_MEMORY_DIR = _PROJECT_ROOT / "data" / "memory"
 
 
-def _env_bool(name: str, default: bool = False) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "si", "sí", "yes", "on"}
+def _as_bool(value: object, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "si", "sí", "yes", "on"}
+    return default
 
 
-def _env_int(name: str, default: int, minimum: int = 1) -> int:
+def _as_int(value: object, default: int, minimum: int = 1) -> int:
     try:
-        return max(minimum, int(os.getenv(name, str(default))))
-    except ValueError:
+        return max(minimum, int(value))
+    except (TypeError, ValueError):
         return default
 
 
@@ -36,14 +40,26 @@ class MemoryConfig:
     directory: Path = field(default_factory=lambda: _MEMORY_DIR)
 
 
-def config_from_env() -> MemoryConfig:
+def config_from_file(path: Path | None = None) -> MemoryConfig:
+    config_path = path or _CONFIG_PATH
+    try:
+        data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    except (FileNotFoundError, OSError, yaml.YAMLError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+
+    directory = Path(str(data.get("directory") or "data/memory")).expanduser()
+    if not directory.is_absolute():
+        directory = _PROJECT_ROOT / directory
+
     return MemoryConfig(
-        enabled=_env_bool("LONG_TERM_MEMORY_ENABLED"),
-        user=os.getenv("MEMORY_USER", "demo").strip() or "demo",
-        max_messages=_env_int("MEMORY_MAX_MESSAGES", 8, 2),
-        update_every=_env_int("MEMORY_UPDATE_EVERY", 4, 1),
-        max_chars=_env_int("MEMORY_MAX_CHARS", 1200, 200),
-        directory=Path(os.getenv("MEMORY_DIR", str(_MEMORY_DIR))).expanduser(),
+        enabled=_as_bool(data.get("enabled")),
+        user=str(data.get("user") or "demo").strip() or "demo",
+        max_messages=_as_int(data.get("max_messages"), 8, 2),
+        update_every=_as_int(data.get("update_every"), 4, 1),
+        max_chars=_as_int(data.get("max_chars"), 1200, 200),
+        directory=directory,
     )
 
 
@@ -54,7 +70,7 @@ class LongTermMemory:
         config: MemoryConfig | None = None,
     ) -> None:
         self.model = model
-        self.config = config or config_from_env()
+        self.config = config or config_from_file()
         self._turns = 0
         self._llm = None
 
