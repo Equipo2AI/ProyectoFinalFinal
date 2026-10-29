@@ -20,7 +20,7 @@ agents:
 
   document_intelligence:
     provider: ollama
-    model: "llama3.1:latest"
+    model: "qwen2.5vl:7b"
 
   compliance:
     provider: ollama
