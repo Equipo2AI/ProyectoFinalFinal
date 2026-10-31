@@ -1,0 +1,9 @@
+# Data connection configuration.
+# Change here the data source (CSV, SQLite, PostgreSQL, etc.).
+
+data_source:
+  type: "csv"
+  path: "./data/clientes.csv"
+
+metadata:
+  path: "./data/bank_metadata_simple.json"
