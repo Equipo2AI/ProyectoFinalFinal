@@ -6,6 +6,14 @@ import unicodedata
 from pathlib import Path
 
 import pandas as pd
+
+
+import asyncio
+import sys
+
+from fastmcp import Client
+from fastmcp.client.transports import StdioTransport
+
 from langchain.agents import create_agent
 from langchain_core.tools import tool
 from langchain_ollama import ChatOllama
@@ -121,15 +129,46 @@ def detect_customer_data_quality_issues() -> str:
     )
 
 
+async def _llamar_herramienta_mcp(nombre: str) -> str:
+    transporte = StdioTransport(
+        command=sys.executable,
+        args=["-m", "proyecto.mcp_servers.data_steward_server"],
+    )
+
+    async with Client(transporte) as cliente:
+        resultado = await cliente.call_tool(nombre, {})
+
+        if resultado.is_error:
+            raise RuntimeError(f"Error al ejecutar la herramienta MCP: {nombre}")
+
+        return "\n".join(
+            bloque.text
+            for bloque in resultado.content
+            if bloque.type == "text"
+        )
+
+
+@tool
+def inspeccionar_dataset_mcp() -> str:
+    """Consulta mediante MCP la estructura y los faltantes del CSV de clientes."""
+    return asyncio.run(_llamar_herramienta_mcp("inspeccionar_dataset"))
+
+
+@tool
+def validar_calidad_datos_mcp() -> str:
+    """Consulta mediante MCP los faltantes, duplicados e IDs repetidos."""
+    return asyncio.run(_llamar_herramienta_mcp("validar_calidad_datos"))
+
 class DataStewardAgent:
     def __init__(self):
         self.nombre = "data_steward"
         self.descripcion = "Revisa la estructura y calidad del CSV de clientes con resultados agregados."
         self.modelo = "llama3.1:latest"
         self.herramientas = [
-            inspect_customer_dataset.name,
-            detect_customer_data_quality_issues.name,
-        ]
+    inspeccionar_dataset_mcp.name,
+    validar_calidad_datos_mcp.name,
+]
+
         self._agent = None
 
     def _get_agent(self):
@@ -138,9 +177,9 @@ class DataStewardAgent:
             self._agent = create_agent(
                 model=llm,
                 tools=[
-                    inspect_customer_dataset,
-                    detect_customer_data_quality_issues,
-                ],
+    inspeccionar_dataset_mcp,
+    validar_calidad_datos_mcp,
+],
                 system_prompt=(
                     "Eres un Data Steward que ayuda a entender y revisar la calidad "
                     "del CSV sintético proyecto/data/clientes.csv. Responde en español "
