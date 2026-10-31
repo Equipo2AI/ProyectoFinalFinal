@@ -4,14 +4,15 @@ from langchain.agents import create_agent
 from langchain_core.tools import StructuredTool
 from langchain_ollama import ChatOllama
 
-from agents import (
+from proyecto.agents import (
     data_steward_agent,
     normatividad_rag_agent,
     data_analyst_agent,
     document_intelligence_agent,
     compliance_agent,
 )
-from memory import LongTermMemory
+
+from proyecto.memory.long_term import LongTermMemory
 
 AGENTES = {
     "data_steward": data_steward_agent,
@@ -79,7 +80,7 @@ def _crear_herramienta_agente(nombre: str, agente) -> StructuredTool:
 class Orquestador:
     def __init__(
         self,
-        modelo: str = "gemma4:e4b",
+        modelo: str = "llama3.1:latest",
         memory: LongTermMemory | None = None,
     ):
         self.nombre = "orquestador"
