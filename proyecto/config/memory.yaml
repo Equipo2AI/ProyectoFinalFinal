@@ -1,0 +1,6 @@
+enabled: false
+user: demo
+max_messages: 8
+update_every: 4
+max_chars: 1200
+directory: data/memory
