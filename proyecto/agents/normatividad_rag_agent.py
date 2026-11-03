@@ -35,7 +35,7 @@ class NormatividadRAGAgent:
     def __init__(self, k: int = 3):
         self.nombre = "normatividad_rag"
         self.descripcion = "Búsqueda semántica sobre documentación normativa (RAG)."
-        self.modelo = "gemma4:e4b"
+        self.modelo = "llama3.1:latest"
         self.modelo_embeddings = "llama-text-embed-v2"  # debe coincidir con el usado al indexar
         self.k = k
 
