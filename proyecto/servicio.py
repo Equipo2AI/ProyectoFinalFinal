@@ -8,8 +8,10 @@ devuelvan resultados estructurados. El flujo real ya no usa datos sintéticos.
 from __future__ import annotations
 
 import asyncio
+import re
 import sys
 import time
+import unicodedata
 from pathlib import Path
 from typing import TypedDict
 
@@ -56,6 +58,7 @@ class Respuesta(TypedDict, total=False):
     datos: list[dict] | None
     grafica: bytes | None
     fuentes: list[str]
+    resultados: list[dict]
     duracion: float | None
     modelo: str | None
     nota: str | None
@@ -172,11 +175,147 @@ def reiniciar_orquestador() -> None:
         _ORQUESTADOR.reiniciar()
 
 
+def _normalizar(texto: str) -> str:
+    normalizado = unicodedata.normalize("NFKD", texto.casefold())
+    return "".join(c for c in normalizado if not unicodedata.combining(c))
+
+
+def _operacion_explicita(consulta: str) -> str | None:
+    """Devuelve ocr/descripcion solo cuando la instrucción es inequívoca."""
+    texto = _normalizar(consulta)
+    pide_ocr = any(
+        palabra in texto
+        for palabra in (
+            "ocr",
+            "texto",
+            "transcribe",
+            "transcripcion",
+            "extrae",
+            "extraer",
+            "leer",
+            "lectura",
+            "literal",
+        )
+    )
+    pide_descripcion = any(
+        palabra in texto
+        for palabra in (
+            "describe",
+            "descripcion",
+            "que ves",
+            "resume",
+            "resumen",
+            "interpreta",
+        )
+    )
+    if pide_ocr and not pide_descripcion:
+        return "ocr"
+    if pide_descripcion and not pide_ocr:
+        return "descripcion"
+    return None
+
+
+def _resumen_args(args: dict) -> str:
+    partes = []
+    for clave, valor in (args or {}).items():
+        if clave in {"image_path", "ruta", "path"}:
+            valor = Path(str(valor)).name
+        texto = str(valor).replace("\n", " ").strip()
+        if len(texto) > 100:
+            texto = texto[:100].rstrip() + "…"
+        partes.append(f"{clave}={texto}")
+    return ", ".join(partes)
+
+
+def _fuentes_de_salida(salida: str) -> list[str]:
+    fuentes = re.findall(r"(?im)^\s*FUENTE:\s*(.+?)\s*$", salida or "")
+    fuentes.extend(re.findall(r"(?im)^\s*Fuente:\s*(.+?)\s*$", salida or ""))
+    bloque = re.search(r"(?is)Fuentes consultadas:\s*(.+)$", salida or "")
+    if bloque:
+        fuentes.extend(
+            re.findall(r"(?m)^\s*-\s*(.+?)\s*$", bloque.group(1))
+        )
+    fuentes.extend(re.findall(r'"archivo"\s*:\s*"([^"]+)"', salida or ""))
+    return list(dict.fromkeys(fuente.strip() for fuente in fuentes if fuente.strip()))
+
+
+def _sql_de_salida(salida: str) -> str | None:
+    bloques = re.findall(r"```sql\s*(.*?)```", salida or "", flags=re.IGNORECASE | re.DOTALL)
+    if bloques:
+        return bloques[-1].strip()
+    consulta = re.search(r"(?is)\b(select|with)\b.+(?:;|$)", salida or "")
+    return consulta.group(0).strip() if consulta else None
+
+
+def _pasos_de_herramientas(herramientas: list[dict]) -> tuple[list[Paso], list[str], list[str], list[str]]:
+    pasos: list[Paso] = []
+    agentes: list[str] = []
+    nombres: list[str] = []
+    alertas: list[str] = []
+
+    for herramienta in herramientas:
+        nombre = str(herramienta.get("name") or "desconocida")
+        agente = _TOOL_A_AGENTE.get(nombre, "orquestador")
+        estado = str(herramienta.get("estado") or "ok")
+        salida = str(herramienta.get("salida") or "")
+        detalle = nombre
+        argumentos = _resumen_args(herramienta.get("args") or {})
+        if argumentos:
+            detalle += f" · {argumentos}"
+        if estado == "error":
+            detalle += " · error"
+            alertas.append(f"{nombre} falló: {salida[:240]}")
+
+        if agente not in agentes:
+            agentes.append(agente)
+        nombres.append(nombre)
+        pasos.append(
+            {
+                "agente": agente,
+                "accion": "Herramienta MCP invocada",
+                "detalle": detalle,
+                "estado": estado,
+            }
+        )
+
+    return pasos, agentes, nombres, alertas
+
+
+def _registrar_documento_en_orquestador(
+    orquestador,
+    ruta: str,
+    operacion: str,
+    texto: str,
+    nombre: str | None = None,
+) -> None:
+    try:
+        orquestador.registrar_documento(ruta, operacion, texto, nombre)
+    except Exception:  # noqa: BLE001 - la traza no debe romper la respuesta
+        pass
+
+
 def preguntar_orquestador(consulta: str) -> Respuesta:
     """Atiende una consulta de texto con el orquestador y sus tools MCP."""
     inicio = time.perf_counter()
     try:
         orquestador = _get_orquestador()
+
+        # Si la imagen se adjuntó antes y el usuario responde con una
+        # instrucción clara, procesarla directo evita que el LLM resuma el OCR
+        # o desvíe la pregunta a data_analyst.
+        pendiente = getattr(orquestador, "imagen_pendiente", None)
+        operacion = _operacion_explicita(consulta)
+        if pendiente and operacion:
+            resultado = procesar_imagen(pendiente, operacion)
+            _registrar_documento_en_orquestador(
+                orquestador,
+                pendiente,
+                operacion,
+                str(resultado.get("respuesta") or ""),
+            )
+            resultado["nota"] = "Imagen pendiente · MCP directo"
+            return resultado
+
         texto = orquestador.procesar(consulta)
     except Exception as exc:  # noqa: BLE001 - se informa en la UI
         duracion = round(time.perf_counter() - inicio, 2)
@@ -203,21 +342,9 @@ def preguntar_orquestador(consulta: str) -> Respuesta:
         }
 
     duracion = round(time.perf_counter() - inicio, 2)
-    invocadas = list(getattr(orquestador, "agentes_invocados", []))
-    pasos: list[Paso] = []
-    agentes: list[str] = []
-
-    for herramienta in invocadas:
-        agente = _TOOL_A_AGENTE.get(herramienta, "orquestador")
-        if agente not in agentes:
-            agentes.append(agente)
-        pasos.append(
-            {
-                "agente": agente,
-                "accion": "Herramienta MCP invocada",
-                "detalle": herramienta,
-            }
-        )
+    herramientas = list(getattr(orquestador, "ultimas_herramientas", []) or [])
+    invocadas = list(getattr(orquestador, "agentes_invocados", []) or [])
+    pasos, agentes, nombres, alertas = _pasos_de_herramientas(herramientas)
 
     if not pasos:
         pasos = [
@@ -230,6 +357,22 @@ def preguntar_orquestador(consulta: str) -> Respuesta:
         ]
         agentes = ["orquestador"]
 
+    fuentes: list[str] = []
+    sql: str | None = None
+    for herramienta in herramientas:
+        salida = str(herramienta.get("salida") or "")
+        for fuente in _fuentes_de_salida(salida):
+            if fuente not in fuentes:
+                fuentes.append(fuente)
+        if herramienta.get("name") == "mcp_analizar_datos":
+            sql = _sql_de_salida(salida) or sql
+        argumentos = herramienta.get("args") or {}
+        ruta = argumentos.get("image_path") if isinstance(argumentos, dict) else None
+        if ruta:
+            nombre = Path(str(ruta)).name
+            if nombre not in fuentes:
+                fuentes.append(nombre)
+
     texto = (texto or "").strip()
     if not texto:
         texto = "El orquestador no devolvió una respuesta."
@@ -238,13 +381,15 @@ def preguntar_orquestador(consulta: str) -> Respuesta:
         "respuesta": texto,
         "pasos": pasos,
         "agentes": agentes,
-        "herramientas": invocadas,
+        "herramientas": nombres or invocadas,
+        "fuentes": fuentes,
+        "alertas": alertas,
+        "sql": sql,
+        "resultados": herramientas,
         "duracion": duracion,
         "modelo": getattr(orquestador, "modelo", None),
         "nota": "Orquestador MCP · LangSmith",
-        "formato": (
-            "texto" if "mcp_extraer_texto_imagen" in invocadas else "markdown"
-        ),
+        "formato": "markdown",
     }
 
 
@@ -325,6 +470,35 @@ def procesar_imagen_auto(
     if indicacion.casefold() in _CONSULTAS_IMAGEN_GENERICAS:
         return _preguntar_operacion_imagen(ruta_path, etiqueta)
 
+    # Instrucciones inequívocas ("extrae el texto", "descríbela") se resuelven
+    # directo por MCP. Así el chat recibe el OCR completo y no un resumen del
+    # LLM, y el texto queda disponible para la siguiente consulta.
+    operacion = _operacion_explicita(indicacion)
+    if operacion:
+        resultado = procesar_imagen(str(ruta_path), operacion)
+        if not resultado.get("error"):
+            try:
+                _registrar_documento_en_orquestador(
+                    _get_orquestador(),
+                    str(ruta_path),
+                    operacion,
+                    str(resultado.get("respuesta") or ""),
+                    etiqueta,
+                )
+            except Exception:  # noqa: BLE001 - el OCR ya se obtuvo
+                pass
+        resultado["fuentes"] = [etiqueta]
+        resultado["nota"] = "Imagen · MCP directo"
+        return resultado
+
+    # Si la intención es ambigua, el orquestador decide. Dejamos la imagen
+    # marcada como pendiente para que una respuesta posterior ("descríbela",
+    # "extrae el texto") también pueda resolverse sin volver a adivinar.
+    try:
+        _get_orquestador().marcar_imagen_pendiente(str(ruta_path))
+    except Exception:  # noqa: BLE001
+        pass
+
     prompt = (
         f"{indicacion}\n\n"
         f"Adjunté una imagen en {ruta_path}. Decide si necesitas extraer el "
@@ -337,6 +511,17 @@ def procesar_imagen_auto(
     resultado = preguntar_orquestador(prompt)
     if resultado.get("error"):
         alterno = procesar_imagen(str(ruta_path), "ocr")
+        if not alterno.get("error"):
+            try:
+                _registrar_documento_en_orquestador(
+                    _get_orquestador(),
+                    str(ruta_path),
+                    "ocr",
+                    str(alterno.get("respuesta") or ""),
+                    etiqueta,
+                )
+            except Exception:  # noqa: BLE001
+                pass
         alterno["pasos"] = [
             {
                 "agente": "orquestador",
@@ -350,10 +535,31 @@ def procesar_imagen_auto(
         alterno["nota"] = "MCP directo (fallback)"
         return alterno
 
-    herramientas = set(resultado.get("herramientas") or [])
-    resultado["formato"] = (
-        "texto" if "mcp_extraer_texto_imagen" in herramientas else "markdown"
-    )
+    # Guarda el resultado documental que haya usado el orquestador para que
+    # las consultas de seguimiento no dependan de que el LLM recuerde el path.
+    for herramienta in resultado.get("resultados") or []:
+        nombre_tool = str(herramienta.get("name") or "")
+        salida = str(herramienta.get("salida") or "")
+        if herramienta.get("estado") == "error" or not salida:
+            continue
+        if nombre_tool == "mcp_extraer_texto_imagen":
+            _registrar_documento_en_orquestador(
+                _get_orquestador(),
+                str(ruta_path),
+                "ocr",
+                salida,
+                etiqueta,
+            )
+        elif nombre_tool == "mcp_describir_imagen":
+            _registrar_documento_en_orquestador(
+                _get_orquestador(),
+                str(ruta_path),
+                "descripcion",
+                salida,
+                etiqueta,
+            )
+
+    resultado["formato"] = "markdown"
     modelo_orquestador = resultado.get("modelo")
     resultado["modelo"] = (
         f"{modelo_orquestador} + {MODELO_VISION_POR_DEFECTO}"

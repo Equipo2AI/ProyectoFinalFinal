@@ -2,7 +2,7 @@
 
 Uso:
     python tests/probar_orquestador_mcp.py
-    python tests/probar_orquestador_mcp.py --consulta "¿Qué problemas de calidad tiene el CSV de clientes?"
+    python tests/probar_orquestador_mcp.py --consulta "¿Qué problemas de calidad tiene raw_clientes?"
 """
 
 from __future__ import annotations

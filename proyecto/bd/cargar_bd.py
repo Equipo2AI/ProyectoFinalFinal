@@ -4,7 +4,7 @@ from pathlib import Path
 
 AQUI = Path(__file__).resolve().parent
 SCRIPT = AQUI / "crear_bd.sql"
-DESTINO = AQUI.parent / "data" / "banco.db"
+DESTINO = AQUI / "banamex.db"
 
 DESTINO.unlink(missing_ok=True)  # el script recrea todo desde cero
 conexion = sqlite3.connect(DESTINO)

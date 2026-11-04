@@ -627,20 +627,20 @@ html, body, .stApp { background-color: var(--papel) !important; }
   line-height: 20px !important;
   height: 40px !important;
   min-height: 40px !important;
-  padding: 10px 48px 10px 0 !important;
+  padding: 10px 48px 10px 42px !important;
 }
 .st-key-chat [data-testid="stChatInputTextArea"]::placeholder {
   color: rgba(122, 116, 107, 0.78);
 }
 .st-key-chat [data-testid="stChatInputSubmitButton"] {
-  width: 32px !important;
-  height: 32px !important;
+  width: 34px !important;
+  height: 34px !important;
   background-color: var(--rojo) !important;
   background-image: var(--ico-enviar);
   background-repeat: no-repeat;
   background-position: center;
-  background-size: 15px 15px;
-  border-radius: 10px !important;
+  background-size: 16px 16px;
+  border-radius: 50% !important;
   transition: background-color 0.2s ease;
 }
 .st-key-chat [data-testid="stChatInputSubmitButton"] svg { display: none !important; }

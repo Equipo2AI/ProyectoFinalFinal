@@ -1,3 +1,9 @@
+"""Servidor MCP de normatividad.
+
+La herramienta devuelve una respuesta ya sintetizada por el agente RAG, con las
+fuentes recuperadas. Así el orquestador recibe una respuesta verificable en vez
+de tener que resumir por su cuenta un bloque largo de evidencia.
+"""
 
 from fastmcp import FastMCP
 
@@ -8,14 +14,12 @@ mcp = FastMCP("Normatividad RAG MCP")
 
 @mcp.tool()
 def buscar_normatividad(query: str) -> str:
-    """
-    Busca información en documentos normativos indexados en Pinecone.
+    """Busca y sintetiza normativa, políticas, manuales y avisos de privacidad.
 
     Args:
         query: Pregunta o tema normativo que se desea consultar.
     """
-    herramienta = normatividad_rag_agent.herramientas[0]
-    return herramienta.invoke({"query": query})
+    return normatividad_rag_agent.procesar(query)
 
 
 if __name__ == "__main__":

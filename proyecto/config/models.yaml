@@ -1,10 +1,12 @@
 # Agent model configuration.
-# Change here the model for each agent without touching Python code.
+# Referencia de los modelos que usa cada agente. Hoy cada agente lee su modelo
+# desde su propio código; este archivo documenta el valor efectivo.
+# Si cambias un modelo, actualiza también el agente correspondiente.
 
 agents:
   orchestrator:
     provider: ollama
-    model: "llama3.1:latest"
+    model: "qwen2.5:7b-instruct"
 
   data_steward:
     provider: ollama
@@ -12,11 +14,11 @@ agents:
 
   normatividad_rag:
     provider: ollama
-    model: "qwen2.5:7b-instruct"
+    model: "llama3.1:latest"
 
   data_analyst:
     provider: ollama
-    model: "llama3.1:latest"
+    model: "qwen2.5:7b-instruct"
 
   document_intelligence:
     provider: ollama

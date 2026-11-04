@@ -15,7 +15,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Sistema Multi-Agente Bancario")
     parser.add_argument(
         "--consulta",
-        help="Envía una consulta al Data Steward usando clientes.csv.",
+        help="Envía una consulta al Data Steward sobre la base sintética.",
     )
     args = parser.parse_args()
 

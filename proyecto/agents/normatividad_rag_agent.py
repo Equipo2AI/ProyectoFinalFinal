@@ -2,9 +2,9 @@
 # Domain: policies, manuals, business rules, semantic memory.
 
 import os
+import re
 
 from dotenv import load_dotenv
-from langchain.agents import create_agent
 from langchain_core.tools import tool
 from langchain_ollama import ChatOllama
 from langchain_pinecone import PineconeEmbeddings, PineconeVectorStore
@@ -15,19 +15,15 @@ SYSTEM_PROMPT = """
 Eres un especialista en normatividad: políticas, manuales, reglas de negocio
 y lineamientos internos.
 
-Usa la herramienta de búsqueda normativa siempre que la pregunta dependa de:
-- políticas o lineamientos
-- procedimientos y manuales
-- reglas de negocio
-- requisitos, restricciones o excepciones
-- responsables, plazos o vigencias
+Recibirás una pregunta y la evidencia recuperada del corpus. La evidencia es
+la única fuente válida: no uses conocimiento previo ni inventes artículos,
+requisitos, plazos o excepciones.
 
-Basa tus afirmaciones normativas únicamente en la evidencia recuperada.
-Si la evidencia es insuficiente, contradictoria o no autoriza lo consultado,
-dilo explícitamente. No inventes permisos ni requisitos.
-
-Cuando sea posible, menciona el nombre del archivo fuente que respalda
-la respuesta. Responde en el idioma de la consulta.
+Responde en español, de forma directa, citando textualmente los artículos o
+fragmentos que respondan la pregunta y conservando el archivo y la página de
+las fuentes. Si la evidencia no alcanza para responder, dilo explícitamente.
+No sustituyas la respuesta por una lista de derechos o artículos que no
+aparezcan en la evidencia.
 """
 
 
@@ -42,8 +38,9 @@ class NormatividadRAGAgent:
         # Los componentes pesados se crean al primer uso, para que importar
         # este módulo dentro de la arquitectura mayor no requiera Pinecone/Ollama.
         self._retriever = None
-        self._agente = None
-        self.herramientas = [self._crear_herramienta_busqueda()]
+        self._llm = None
+        self._tools = [self._crear_herramienta_busqueda()]
+        self.herramientas = [herramienta.name for herramienta in self._tools]
 
     def _get_retriever(self):
         if self._retriever is None:
@@ -72,6 +69,8 @@ class NormatividadRAGAgent:
                 fuente = doc.metadata.get("source", "desconocida")
                 pagina = doc.metadata.get("page")
                 fila = doc.metadata.get("row")
+                if isinstance(pagina, float) and pagina.is_integer():
+                    pagina = int(pagina)
 
                 ubicacion = fuente
                 if pagina is not None:
@@ -85,36 +84,42 @@ class NormatividadRAGAgent:
 
         return buscar_normatividad
 
-    def _get_agente(self):
-        if self._agente is None:
-            llm = ChatOllama(model=self.modelo, temperature=0)
-            self._agente = create_agent(
-                model=llm,
-                tools=self.herramientas,
-                system_prompt=SYSTEM_PROMPT,
-            )
-        return self._agente
+    def _get_llm(self):
+        if self._llm is None:
+            self._llm = ChatOllama(model=self.modelo, temperature=0)
+        return self._llm
 
     # Interfaz pública
 
-    @staticmethod
-    def _extraer_texto(resultado) -> str:
-        mensaje = resultado["messages"][-1]
-
-        if isinstance(mensaje.content, str):
-            return mensaje.content
-
-        return "".join(
-            bloque.get("text", "")
-            for bloque in mensaje.content
-            if isinstance(bloque, dict) and bloque.get("type") == "text"
-        )
-
     def procesar(self, consulta: str) -> str:
-        resultado = self._get_agente().invoke(
-            {"messages": [{"role": "user", "content": consulta}]}
+        """Recupera evidencia y responde con una síntesis basada en ella."""
+        evidencia = self._tools[0].invoke({"query": consulta})
+        if not evidencia or evidencia == "No se encontró evidencia normativa relevante.":
+            return "No se encontró evidencia normativa relevante para la consulta."
+
+        prompt = (
+            f"{SYSTEM_PROMPT}\n\n"
+            "EVIDENCIA RECUPERADA (única fuente válida):\n"
+            f"{evidencia}\n\n"
+            f"PREGUNTA: {consulta}\n\n"
+            "Responde citando textualmente los artículos o fragmentos relevantes. "
+            "No agregues artículos que no estén en la evidencia."
         )
-        return self._extraer_texto(resultado)
+        respuesta = self._get_llm().invoke(
+            [("system", prompt), ("human", consulta)]
+        )
+        texto = str(respuesta.content).strip()
+
+        fuentes = []
+        for fuente in re.findall(r"(?im)^FUENTE:\s*(.+?)\s*$", evidencia):
+            if fuente not in fuentes:
+                fuentes.append(fuente)
+        if fuentes:
+            texto += (
+                "\n\nFuentes consultadas:\n"
+                + "\n".join(f"- {fuente}" for fuente in fuentes)
+            )
+        return texto
 
     def __repr__(self) -> str:
         return f"<Agente {self.nombre} | modelo: {self.modelo}>"

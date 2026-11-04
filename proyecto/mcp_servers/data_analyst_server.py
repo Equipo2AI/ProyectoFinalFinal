@@ -14,9 +14,13 @@ _TOOLS = {herramienta.name: herramienta for herramienta in data_analyst_agent._t
 
 
 @mcp.tool()
-def analizar_datos(consulta: str) -> str:
-    """Responde una pregunta cuantitativa en lenguaje natural usando el agente Data Analyst."""
-    return data_analyst_agent.procesar(consulta)
+def analizar_datos(consulta: str, contexto: str = "") -> str:
+    """Responde una pregunta cuantitativa en lenguaje natural usando el agente Data Analyst.
+
+    `contexto` es opcional y permite resolver seguimientos o aclaraciones de
+    una pregunta anterior sin perder el hilo de la conversación.
+    """
+    return data_analyst_agent.procesar(consulta, contexto)
 
 
 @mcp.tool()

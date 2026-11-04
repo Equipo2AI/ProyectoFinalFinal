@@ -27,9 +27,21 @@ from ui import componentes, estilos
 TIPOS_IMAGEN = sorted(extension.lstrip(".") for extension in EXTENSIONES_IMAGEN)
 
 SUGERENCIAS = [
-    ("sug_0", "¿Qué problemas de calidad tiene el CSV de clientes?"),
-    ("sug_1", "¿Qué columnas y tipos tiene el CSV de clientes?"),
-    ("sug_2", "¿Cómo se define un cliente activo en el glosario?"),
+    (
+        "sug_0",
+        "¿Qué medidas de seguridad exige la Ley Federal de Protección de "
+        "Datos Personales en Posesión de los Particulares?",
+    ),
+    (
+        "sug_1",
+        "¿Cuántos clientes hay en la base sintética y cómo se distribuyen por "
+        "tipo de persona?",
+    ),
+    (
+        "sug_2",
+        "¿Qué dice el aviso de privacidad de Banamex sobre el tratamiento de "
+        "datos personales?",
+    ),
 ]
 
 st.set_page_config(
@@ -266,8 +278,30 @@ with izquierda:
                     )
                     componentes.pensando(estado)
 
+                # Streamlit no desplaza solo el contenedor de mensajes. Sin
+                # esto, a partir de la cuarta consulta la respuesta nueva queda
+                # debajo del área visible y parece que la conversación se congeló.
+                if st.session_state.mensajes:
+                    firma = f"{len(st.session_state.mensajes)}-{len(st.session_state.mensajes[-1].get('texto', ''))}"
+                    st.iframe(
+                        f"""
+                        <script>
+                        const doc = window.parent.document;
+                        const el = doc.querySelector('.st-key-chat_scroll');
+                        if (el) {{
+                          const irAlFinal = () => {{ el.scrollTop = el.scrollHeight; }};
+                          irAlFinal();
+                          requestAnimationFrame(irAlFinal);
+                          setTimeout(irAlFinal, 80);
+                        }}
+                        /* {firma} */
+                        </script>
+                        """,
+                        height=1,
+                    )
+
         entrada = st.chat_input(
-            "Pregunta sobre los datos o adjunta una imagen…",
+            "Hazme una consulta",
             accept_file=True,
             file_type=TIPOS_IMAGEN,
             max_upload_size=MAX_IMAGE_BYTES // (1024 * 1024),
