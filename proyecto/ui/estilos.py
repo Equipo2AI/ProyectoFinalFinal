@@ -1230,116 +1230,53 @@ CSS_EXTRA = """
   border: 1px solid var(--borde-suave);
 }
 
-/* Adjuntar imagen: botón + flotante sobre el chat input. */
-.st-key-abrir_adjunto,
-.st-key-cerrar_adjunto {
-  position: absolute !important;
-  left: 26px !important;
-  bottom: 27px !important;
-  width: 32px !important;
-  height: 32px !important;
-  min-height: 32px !important;
-  margin: 0 !important;
-  padding: 0 !important;
-  z-index: 20 !important;
+/* Adjuntar imagen: el botón nativo del chat input se muestra como un +. */
+.st-key-chat [data-testid="stChatInputFileUploadButton"] {
+  order: -1 !important;
+  margin-right: 2px !important;
 }
-.st-key-abrir_adjunto button,
-.st-key-cerrar_adjunto button {
+.st-key-chat [data-testid="stChatInputFileUploadButton"] button {
   width: 32px !important;
   height: 32px !important;
   min-height: 32px !important;
-  margin: 0 !important;
   padding: 0 !important;
   display: flex !important;
   align-items: center !important;
   justify-content: center !important;
   border-radius: 50% !important;
-  background: var(--papel-2) !important;
+  background: transparent !important;
   border: 1px solid var(--borde) !important;
   color: var(--tinta) !important;
-  box-shadow:
-    0 6px 18px rgba(0, 0, 0, 0.28),
-    inset 0 1px 0 rgba(236, 240, 244, 0.05) !important;
   transition: border-color 0.2s ease, color 0.2s ease, transform 0.2s ease;
 }
-.st-key-abrir_adjunto button::before,
-.st-key-cerrar_adjunto button::before {
+.st-key-chat [data-testid="stChatInputFileUploadButton"] button svg {
+  display: none !important;
+}
+.st-key-chat [data-testid="stChatInputFileUploadButton"] button::before {
+  content: "+";
   font-family: 'Inter', sans-serif !important;
   font-size: 21px;
   font-weight: 300;
   line-height: 1;
   color: inherit;
 }
-.st-key-abrir_adjunto button::before { content: "+"; }
-.st-key-cerrar_adjunto button::before { content: "×"; }
-.st-key-abrir_adjunto button p,
-.st-key-cerrar_adjunto button p,
-.st-key-abrir_adjunto button div,
-.st-key-cerrar_adjunto button div {
-  display: none !important;
-  margin: 0 !important;
-  padding: 0 !important;
-}
-.st-key-abrir_adjunto button:hover,
-.st-key-cerrar_adjunto button:hover {
+.st-key-chat [data-testid="stChatInputFileUploadButton"] button:hover {
   color: var(--rojo) !important;
   border-color: rgba(242, 121, 109, 0.38) !important;
   transform: translateY(-1px);
 }
 
-.st-key-chat [data-testid="stChatInputTextArea"] {
-  padding-left: 42px !important;
-}
-
-.st-key-adjunto_panel {
-  margin: 0 20px 8px !important;
-  padding: 12px 14px 10px !important;
-  border: 1px solid var(--borde) !important;
-  border-radius: 16px !important;
-  background: var(--cristal) !important;
-  -webkit-backdrop-filter: blur(22px) saturate(110%);
-  backdrop-filter: blur(22px) saturate(110%);
-  box-shadow:
-    0 18px 44px -32px rgba(0, 0, 0, 0.65),
-    inset 0 1px 0 rgba(236, 240, 244, 0.05);
-}
-.adjunto-titulo {
-  margin-bottom: 8px;
-  font-family: 'Manrope', sans-serif !important;
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--tenue);
-}
-.st-key-adjunto_panel [data-testid="stFileUploader"] { margin-bottom: 0 !important; }
-.st-key-adjunto_panel [data-testid="stFileUploaderDropzone"] {
-  padding: 10px 12px !important;
-  border: 1px dashed var(--borde) !important;
-  border-radius: 12px !important;
-  background: rgba(236, 240, 244, 0.035) !important;
-}
-.st-key-adjunto_panel [data-testid="stFileUploaderDropzone"] small,
-.st-key-adjunto_panel [data-testid="stFileUploaderDropzoneInstructions"] span {
-  color: var(--tenue) !important;
-}
-.st-key-adjunto_panel [data-testid="stFileUploaderDropzone"] button {
-  border: 1px solid var(--borde) !important;
-  background: rgba(236, 240, 244, 0.06) !important;
-  color: var(--tinta-2) !important;
+/* La imagen seleccionada no muestra chip, preview ni metadatos. */
+.st-key-chat [data-testid="stChatInput"] div:has(> [data-testid="stFileChips"]),
+.st-key-chat [data-testid="stFileChips"] {
+  display: none !important;
 }
 
 @media (max-width: 900px) {
-  .st-key-abrir_adjunto,
-  .st-key-cerrar_adjunto {
-    left: 20px !important;
-    bottom: 23px !important;
-  }
-  .st-key-chat [data-testid="stChatInputTextArea"] {
-    padding-left: 40px !important;
-  }
-  .st-key-adjunto_panel {
-    margin: 0 14px 8px !important;
+  .st-key-chat [data-testid="stChatInputFileUploadButton"] button {
+    width: 30px !important;
+    height: 30px !important;
+    min-height: 30px !important;
   }
 }
 </style>

@@ -242,60 +242,124 @@ def preguntar_orquestador(consulta: str) -> Respuesta:
         "duracion": duracion,
         "modelo": getattr(orquestador, "modelo", None),
         "nota": "Orquestador MCP · LangSmith",
+        "formato": (
+            "texto" if "mcp_extraer_texto_imagen" in invocadas else "markdown"
+        ),
+    }
+
+
+_CONSULTAS_IMAGEN_GENERICAS = {
+    "",
+    "analiza la imagen",
+    "analiza la imagen adjunta",
+    "procesa la imagen",
+    "procesa la imagen adjunta",
+}
+
+
+def _preguntar_operacion_imagen(ruta_path: Path, nombre: str) -> Respuesta:
+    """Pregunta en el chat si se quiere OCR o descripción, sin llamar a Qwen."""
+    inicio = time.perf_counter()
+    pregunta = "¿Quieres que extraiga el texto (OCR) o que describa la imagen?"
+    try:
+        orquestador = _get_orquestador()
+        orquestador.registrar_imagen(str(ruta_path), pregunta)
+    except Exception as exc:  # noqa: BLE001 - se informa en la UI
+        duracion = round(time.perf_counter() - inicio, 2)
+        mensaje = (
+            "Recibí la imagen, pero no pude preparar el contexto del "
+            f"orquestador: {type(exc).__name__}: {exc}"
+        )
+        return {
+            "respuesta": mensaje,
+            "pasos": [
+                {
+                    "agente": "orquestador",
+                    "accion": "No pudo registrar la imagen",
+                    "detalle": type(exc).__name__,
+                    "duracion": duracion,
+                    "estado": "error",
+                }
+            ],
+            "agentes": ["orquestador"],
+            "herramientas": [],
+            "duracion": duracion,
+            "error": mensaje,
+            "formato": "markdown",
+        }
+
+    duracion = round(time.perf_counter() - inicio, 2)
+    return {
+        "respuesta": pregunta,
+        "pasos": [
+            {
+                "agente": "document_intelligence",
+                "accion": "Imagen recibida",
+                "detalle": nombre,
+                "duracion": duracion,
+                "estado": "ok",
+            }
+        ],
+        "agentes": ["document_intelligence"],
+        "herramientas": [],
+        "fuentes": [nombre],
+        "duracion": duracion,
+        "modelo": getattr(orquestador, "modelo", None),
+        "nota": "Imagen lista · esperando instrucción",
         "formato": "markdown",
     }
 
 
-def procesar_imagen_orquestador(ruta: str, operacion: str = "ocr") -> Respuesta:
-    """Pide al orquestador que use las tools MCP de imagen; si no, usa MCP directo."""
+def procesar_imagen_auto(
+    ruta: str,
+    consulta: str = "",
+    nombre: str | None = None,
+) -> Respuesta:
+    """Pregunta OCR/descripción o deja que el orquestador decida."""
     ruta_path = Path(ruta).expanduser().resolve()
     if not ruta_path.is_file():
-        return procesar_imagen(str(ruta_path), operacion)
+        return procesar_imagen(str(ruta_path), "ocr")
 
-    if operacion == "descripcion":
-        consulta = (
-            f"Usa la herramienta MCP de descripción de imágenes con "
-            f"image_path='{ruta_path}'. Devuelve únicamente la descripción "
-            "de la herramienta, sin introducciones ni comentarios."
-        )
-        esperada = "mcp_describir_imagen"
-    else:
-        consulta = (
-            f"Usa la herramienta MCP de OCR con image_path='{ruta_path}'. "
-            "Devuelve únicamente el texto transcrito de la imagen, sin "
-            "resúmenes, introducciones ni comentarios."
-        )
-        esperada = "mcp_extraer_texto_imagen"
+    etiqueta = (nombre or ruta_path.name).strip() or ruta_path.name
+    indicacion = (consulta or "").strip().rstrip(" .!?")
+    if indicacion.casefold() in _CONSULTAS_IMAGEN_GENERICAS:
+        return _preguntar_operacion_imagen(ruta_path, etiqueta)
 
-    resultado = preguntar_orquestador(consulta)
-    herramientas = set(resultado.get("herramientas") or [])
-    texto = (resultado.get("respuesta") or "").strip()
-    error_imagen = (
-        "No existe la imagen" in texto
-        or "No se pudo procesar la imagen" in texto
+    prompt = (
+        f"{indicacion}\n\n"
+        f"Adjunté una imagen en {ruta_path}. Decide si necesitas extraer el "
+        "texto (OCR) o describir la imagen. Si parece una factura, recibo o "
+        "comprobante, prefiere OCR; si es una foto general, descríbela. Usa la "
+        "herramienta MCP adecuada. Si la intención no es clara, pregúntame qué "
+        "quiero hacer."
     )
 
-    if resultado.get("error") or esperada not in herramientas or not texto or error_imagen:
-        alterno = procesar_imagen(str(ruta_path), operacion)
+    resultado = preguntar_orquestador(prompt)
+    if resultado.get("error"):
+        alterno = procesar_imagen(str(ruta_path), "ocr")
         alterno["pasos"] = [
             {
                 "agente": "orquestador",
-                "accion": "No invocó la tool de imagen",
-                "detalle": "Se usó el servidor MCP directo",
+                "accion": "Falló el orquestador",
+                "detalle": "Se usó el servidor MCP directo para OCR",
                 "estado": "alerta",
             },
             *alterno.get("pasos", []),
         ]
+        alterno["fuentes"] = [etiqueta]
         alterno["nota"] = "MCP directo (fallback)"
         return alterno
 
+    herramientas = set(resultado.get("herramientas") or [])
+    resultado["formato"] = (
+        "texto" if "mcp_extraer_texto_imagen" in herramientas else "markdown"
+    )
     modelo_orquestador = resultado.get("modelo")
     resultado["modelo"] = (
         f"{modelo_orquestador} + {MODELO_VISION_POR_DEFECTO}"
         if modelo_orquestador
         else MODELO_VISION_POR_DEFECTO
     )
-    resultado["fuentes"] = [ruta_path.name]
+    resultado["fuentes"] = [etiqueta]
     resultado["nota"] = "Orquestador MCP · imagen"
-    resultado["formato"] = "texto" if operacion == "ocr" else "markdown"
     return resultado

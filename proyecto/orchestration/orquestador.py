@@ -11,6 +11,7 @@ load_dotenv()
 from fastmcp import Client
 from fastmcp.client.transports import StdioTransport
 from langchain.agents import create_agent
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
 from langchain_ollama import ChatOllama
 
@@ -50,6 +51,9 @@ Las herramientas disponibles son:
 Reglas:
 - Si la consulta requiere un especialista, llama a la herramienta adecuada.
   Puedes llamar a más de una si la consulta lo necesita.
+- Si la consulta incluye una imagen pero no dice si hay que extraer texto o
+  describirla, elige la opción más útil según la intención. Si sigue siendo
+  ambigua, pregunta al usuario antes de llamar la herramienta.
 - Si la consulta es un saludo o algo general que no requiere especialista,
   responde directamente sin llamar herramientas.
 - No inventes rutas de imágenes ni datos que no existan.
@@ -203,6 +207,16 @@ class Orquestador:
             for bloque in mensaje.content
             if isinstance(bloque, dict) and bloque.get("type") == "text"
         )
+
+    def registrar_imagen(self, ruta: str, pregunta: str) -> None:
+        """Deja una imagen pendiente en el historial para la siguiente consulta."""
+        self._mensajes = [
+            *self._mensajes,
+            HumanMessage(content=f"Adjunté una imagen en {ruta}."),
+            AIMessage(content=pregunta),
+        ]
+        self.agentes_invocados = []
+        self.memory.update(self._mensajes)
 
     def procesar(self, consulta: str) -> str:
         entrada = self.memory.prepare(self._mensajes, consulta)
