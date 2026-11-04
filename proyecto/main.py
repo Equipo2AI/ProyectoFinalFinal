@@ -1,8 +1,14 @@
 """Entry point for listing agents or asking the Data Steward a question."""
 
 import argparse
+import sys
+from pathlib import Path
 
-from orchestration.orquestador import listar_agentes, obtener_agente
+# Permite ejecutar el archivo directamente (`python proyecto/main.py`) y también
+# como módulo (`python -m proyecto.main`) sin depender del directorio actual.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from proyecto.orchestration.orquestador import listar_agentes, obtener_agente
 
 
 def main() -> None:
