@@ -16,6 +16,7 @@ dependencies = [
     "google-genai>=2.28.0",
     "isort>=6.1.0",
     "langchain>=1.4",
+    "langchain-core>=1.6.10",
     "langchain-google-genai>=4.4.1",
     "langchain-googledrive>=0.3.35",
     "langchain-ollama>=0.3.10",
@@ -27,6 +28,7 @@ dependencies = [
     "matplotlib>=3.11.2",
     "pandas>=3.0.6",
     "python-dotenv>=1.1.1",
+    "sqlalchemy>=2.0.44",
     "unstructured>=0.27.10",
 ]
 

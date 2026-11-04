@@ -20,6 +20,8 @@ dist/
 proyecto/data/audit_log.json
 proyecto/data/quality_runs.json
 proyecto/data/data_quality_incidents.json
+*.db
+tests/datos/
 proyecto/data/memory/
 
 AGENTS.md
