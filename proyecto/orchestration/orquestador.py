@@ -1,7 +1,13 @@
-# Orquestador: un agente de LangChain que decide a qué sub-agente delegar.
+# Orquestador: un agente de LangChain que decide qué tool MCP usar.
 
+import asyncio
+import sys
+from pathlib import Path
+
+from fastmcp import Client
+from fastmcp.client.transports import StdioTransport
 from langchain.agents import create_agent
-from langchain_core.tools import StructuredTool
+from langchain_core.tools import tool
 from langchain_ollama import ChatOllama
 
 from proyecto.agents import (
@@ -11,8 +17,9 @@ from proyecto.agents import (
     document_intelligence_agent,
     compliance_agent,
 )
-
 from proyecto.memory.long_term import LongTermMemory
+
+_RAIZ = Path(__file__).resolve().parents[2]
 
 AGENTES = {
     "data_steward": data_steward_agent,
@@ -25,21 +32,123 @@ AGENTES = {
 SYSTEM_PROMPT = """
 Eres el orquestador de un sistema multi-agente bancario.
 
-Tu trabajo es decidir qué agente especialista debe atender cada consulta
-y delegarla usando las herramientas disponibles. Cada herramienta es un
-agente distinto; lee su descripción para elegir el adecuado.
+Tu trabajo es decidir qué herramienta MCP debe atender cada consulta.
+Las herramientas disponibles son:
+
+- data_steward: estructura, columnas, faltantes, duplicados y calidad del CSV
+  de clientes.
+- data_analyst: preguntas cuantitativas que requieren SQL de solo lectura sobre
+  la base bancaria (conteos, sumas, promedios, rankings, comparaciones).
+- normatividad_rag: políticas, manuales, glosario, reglas y normativa indexada.
+- document_intelligence: OCR o descripción de una imagen local. Requiere que la
+  consulta incluya una ruta de imagen existente.
 
 Reglas:
-- Si la consulta requiere un especialista, llama a la herramienta
-  correspondiente. Puedes llamar a más de una si la consulta lo necesita.
+- Si la consulta requiere un especialista, llama a la herramienta adecuada.
+  Puedes llamar a más de una si la consulta lo necesita.
 - Si la consulta es un saludo o algo general que no requiere especialista,
   responde directamente sin llamar herramientas.
-- Basa tu respuesta únicamente en lo que devuelvan los agentes. No inventes
-  datos, permisos ni requisitos.
-- Conserva en tu respuesta final las referencias a archivos fuente que
-  incluyan los agentes.
+- No inventes rutas de imágenes ni datos que no existan.
+- Basa tu respuesta únicamente en lo que devuelvan las herramientas. No inventes
+  cifras, permisos, requisitos ni fuentes.
+- Conserva en tu respuesta final las referencias a archivos o tablas que
+  incluyan las herramientas.
+- Si no hay una herramienta para el tema (por ejemplo compliance/KYC/AML),
+  dilo explícitamente y explica que está fuera del alcance actual.
 - Responde en el idioma de la consulta.
 """
+
+
+def _llamar_mcp(servidor: str, herramienta: str, argumentos: dict) -> str:
+    """Ejecuta una tool MCP por stdio y devuelve su texto."""
+    transporte = StdioTransport(
+        command=sys.executable,
+        args=["-m", f"proyecto.mcp_servers.{servidor}"],
+        cwd=str(_RAIZ),
+    )
+
+    async def ejecutar() -> str:
+        async with Client(transporte) as cliente:
+            resultado = await cliente.call_tool(herramienta, argumentos)
+            if resultado.is_error:
+                raise RuntimeError(
+                    f"El servidor MCP {servidor} falló al ejecutar {herramienta}."
+                )
+            return "\n".join(
+                bloque.text
+                for bloque in resultado.content
+                if bloque.type == "text"
+            ).strip()
+
+    try:
+        return asyncio.run(ejecutar())
+    except Exception as error:  # noqa: BLE001 - se devuelve al agente como texto
+        return (
+            f"Error al llamar {servidor}.{herramienta}: "
+            f"{type(error).__name__}: {error}"
+        )
+
+
+@tool
+def mcp_inspeccionar_dataset() -> str:
+    """Consulta por MCP la estructura, columnas y faltantes del CSV de clientes."""
+    return _llamar_mcp("data_steward_server", "inspeccionar_dataset", {})
+
+
+@tool
+def mcp_validar_calidad_datos() -> str:
+    """Consulta por MCP faltantes, duplicados e IDs repetidos del CSV de clientes."""
+    return _llamar_mcp("data_steward_server", "validar_calidad_datos", {})
+
+
+@tool
+def mcp_buscar_normatividad(query: str) -> str:
+    """Busca políticas, manuales, glosario y normativa en Pinecone."""
+    return _llamar_mcp(
+        "normatividad_rag_server",
+        "buscar_normatividad",
+        {"query": query},
+    )
+
+
+@tool
+def mcp_analizar_datos(consulta: str) -> str:
+    """Responde preguntas cuantitativas con SQL de solo lectura sobre la base bancaria."""
+    return _llamar_mcp(
+        "data_analyst_server",
+        "analizar_datos",
+        {"consulta": consulta},
+    )
+
+
+@tool
+def mcp_extraer_texto_imagen(image_path: str) -> str:
+    """Extrae el texto visible de una imagen local (factura, recibo, comprobante)."""
+    return _llamar_mcp(
+        "document_intelligence_server",
+        "extraer_texto_imagen",
+        {"image_path": image_path},
+    )
+
+
+@tool
+def mcp_describir_imagen(image_path: str) -> str:
+    """Describe una imagen local y resume sus datos visibles si es un comprobante."""
+    return _llamar_mcp(
+        "document_intelligence_server",
+        "describir_imagen",
+        {"image_path": image_path},
+    )
+
+
+HERRAMIENTAS_MCP = [
+    mcp_inspeccionar_dataset,
+    mcp_validar_calidad_datos,
+    mcp_buscar_normatividad,
+    mcp_analizar_datos,
+    mcp_extraer_texto_imagen,
+    mcp_describir_imagen,
+]
 
 
 def listar_agentes() -> dict:
@@ -57,26 +166,6 @@ def obtener_agente(nombre: str):
     return AGENTES.get(nombre)
 
 
-def _crear_herramienta_agente(nombre: str, agente) -> StructuredTool:
-    """Envuelve un sub-agente como herramienta que el orquestador puede llamar."""
-
-    def delegar(consulta: str) -> str:
-        if not hasattr(agente, "procesar"):
-            return f"Error: el agente '{nombre}' no implementa procesar()."
-        try:
-            return agente.procesar(consulta)
-        except Exception as e:
-            # Se devuelve como texto para que el orquestador pueda reportarlo
-            # en lugar de tumbar toda la conversación.
-            return f"Error al ejecutar el agente '{nombre}': {type(e).__name__}: {e}"
-
-    return StructuredTool.from_function(
-        func=delegar,
-        name=nombre,
-        description=agente.descripcion,
-    )
-
-
 class Orquestador:
     def __init__(
         self,
@@ -85,10 +174,7 @@ class Orquestador:
     ):
         self.nombre = "orquestador"
         self.modelo = modelo
-        self.herramientas = [
-            _crear_herramienta_agente(nombre, agente)
-            for nombre, agente in AGENTES.items()
-        ]
+        self.herramientas = list(HERRAMIENTAS_MCP)
         self.agentes_invocados: list[str] = []  # trazas de la última consulta
         self._agente = None
         self._mensajes: list = []  # historial de la conversación
@@ -119,7 +205,7 @@ class Orquestador:
         resultado = self._get_agente().invoke({"messages": entrada})
         mensajes = resultado["messages"]
 
-        # Qué agentes llamó el orquestador en este turno (para depurar).
+        # Qué herramientas MCP llamó el orquestador en este turno.
         nuevos = mensajes[len(entrada):]
         self.agentes_invocados = [
             tc["name"]
@@ -136,7 +222,7 @@ class Orquestador:
         self.agentes_invocados = []
 
     def __repr__(self) -> str:
-        return f"<Orquestador | modelo: {self.modelo} | agentes: {len(self.herramientas)}>"
+        return f"<Orquestador | modelo: {self.modelo} | tools MCP: {len(self.herramientas)}>"
 
 
 orquestador = Orquestador()

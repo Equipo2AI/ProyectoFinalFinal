@@ -30,6 +30,18 @@ from proyecto.agents.document_intelligence_agent import (
 TIEMPO_DEMO = 1.1
 NOTA_DEMO = "Datos sintéticos"
 
+_ORQUESTADOR = None
+
+# Nombres de las tools MCP que expone el orquestador.
+_TOOL_A_AGENTE = {
+    "mcp_inspeccionar_dataset": "data_steward",
+    "mcp_validar_calidad_datos": "data_steward",
+    "mcp_buscar_normatividad": "normatividad_rag",
+    "mcp_analizar_datos": "data_analyst",
+    "mcp_extraer_texto_imagen": "document_intelligence",
+    "mcp_describir_imagen": "document_intelligence",
+}
+
 
 class Paso(TypedDict, total=False):
     agente: str
@@ -331,6 +343,93 @@ def procesar_imagen(ruta: str, operacion: str = "ocr") -> Respuesta:
         "nota": f"Vía {via}",
         "error": error,
         "formato": "texto" if not es_descripcion and not error else "markdown",
+    }
+
+
+def _get_orquestador():
+    global _ORQUESTADOR
+    if _ORQUESTADOR is None:
+        from proyecto.orchestration.orquestador import Orquestador
+
+        _ORQUESTADOR = Orquestador()
+    return _ORQUESTADOR
+
+
+def reiniciar_orquestador() -> None:
+    """Limpia el historial del orquestador compartido por la UI."""
+    if _ORQUESTADOR is not None:
+        _ORQUESTADOR.reiniciar()
+
+
+def preguntar_orquestador(consulta: str) -> Respuesta:
+    """Atiende una consulta de texto con el orquestador y sus tools MCP."""
+    inicio = time.perf_counter()
+    try:
+        orquestador = _get_orquestador()
+        texto = orquestador.procesar(consulta)
+    except Exception as exc:  # noqa: BLE001 - se informa en la UI
+        duracion = round(time.perf_counter() - inicio, 2)
+        mensaje = (
+            "No pude completar la consulta con el orquestador: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        return {
+            "respuesta": mensaje,
+            "pasos": [
+                {
+                    "agente": "orquestador",
+                    "accion": "Falló la consulta",
+                    "detalle": type(exc).__name__,
+                    "duracion": duracion,
+                    "estado": "error",
+                }
+            ],
+            "agentes": ["orquestador"],
+            "duracion": duracion,
+            "error": mensaje,
+            "formato": "markdown",
+        }
+
+    duracion = round(time.perf_counter() - inicio, 2)
+    invocadas = list(getattr(orquestador, "agentes_invocados", []))
+    pasos: list[Paso] = []
+    agentes: list[str] = []
+
+    for herramienta in invocadas:
+        agente = _TOOL_A_AGENTE.get(herramienta, "orquestador")
+        if agente not in agentes:
+            agentes.append(agente)
+        pasos.append(
+            {
+                "agente": agente,
+                "accion": "Herramienta MCP invocada",
+                "detalle": herramienta,
+            }
+        )
+
+    if not pasos:
+        pasos = [
+            {
+                "agente": "orquestador",
+                "accion": "Respondió directamente",
+                "detalle": "Sin herramientas MCP",
+                "duracion": duracion,
+            }
+        ]
+        agentes = ["orquestador"]
+
+    texto = (texto or "").strip()
+    if not texto:
+        texto = "El orquestador no devolvió una respuesta."
+
+    return {
+        "respuesta": texto,
+        "pasos": pasos,
+        "agentes": agentes,
+        "duracion": duracion,
+        "modelo": getattr(orquestador, "modelo", None),
+        "nota": "Orquestador MCP",
+        "formato": "markdown",
     }
 
 

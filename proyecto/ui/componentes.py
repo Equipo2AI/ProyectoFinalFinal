@@ -279,8 +279,8 @@ def vacio_consola(pensando: bool = False) -> None:
             '<div class="vacio-consola">'
             f'<span class="vacio-ico girando">{_ICONOS["loader"]}</span>'
             '<div class="t">Analizando la consulta…</div>'
-            '<div class="s">El orquestador está decidiendo qué agentes '
-            "intervenir.</div></div>",
+            '<div class="s">El orquestador está decidiendo qué herramientas '
+            "MCP intervenir.</div></div>",
             unsafe_allow_html=True,
         )
         return
