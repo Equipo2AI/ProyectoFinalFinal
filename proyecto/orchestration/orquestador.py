@@ -1,6 +1,10 @@
 # Orquestador: un agente de LangChain que decide a qué sub-agente delegar.
 
+import json
+
 from langchain.agents import create_agent
+from langchain.agents.middleware import after_model
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from langchain_ollama import ChatOllama
 
@@ -38,6 +42,13 @@ Reglas:
   datos, permisos ni requisitos.
 - Conserva en tu respuesta final las referencias a archivos fuente que
   incluyan los agentes.
+- Tras recibir el resultado del agente, comunica su contenido fielmente.
+  No escribas llamadas a herramientas como texto ni repitas delegaciones ya resueltas.
+- Si el resultado de un agente es un JSON con estado "demostracion", devuelve
+  literalmente ese JSON como respuesta final, sin texto adicional. Describe una
+  prueba de infraestructura MCP: no confirma analisis, OCR ni cumplimiento real.
+- Solo cita archivos fuente que aparezcan explicitamente en el resultado del
+  agente. No deduzcas nombres de archivos o configuraciones a partir de su nombre.
 - Responde en el idioma de la consulta.
 """
 
@@ -77,6 +88,49 @@ def _crear_herramienta_agente(nombre: str, agente) -> StructuredTool:
     )
 
 
+@after_model(can_jump_to=["end"])
+def _evitar_delegacion_repetida(state, runtime):
+    """Finaliza una repeticion exacta con resultados ya recibidos en este turno.
+
+    No bloquea consultas nuevas, agentes adicionales ni reintentos de errores.
+    """
+    mensajes = state["messages"]
+    ultimo = mensajes[-1]
+    solicitudes = getattr(ultimo, "tool_calls", None) or []
+    if not solicitudes:
+        return None
+
+    def clave(llamada):
+        return llamada["name"], json.dumps(llamada["args"], sort_keys=True, ensure_ascii=False)
+
+    inicio = next(
+        (i for i in range(len(mensajes) - 1, -1, -1) if isinstance(mensajes[i], HumanMessage)),
+        0,
+    )
+    pendientes = {}
+    completadas = {}
+    for mensaje in mensajes[inicio:-1]:
+        for llamada in getattr(mensaje, "tool_calls", None) or []:
+            pendientes[llamada["id"]] = clave(llamada)
+        if (
+            isinstance(mensaje, ToolMessage)
+            and mensaje.tool_call_id in pendientes
+            and getattr(mensaje, "status", "success") != "error"
+            and isinstance(mensaje.content, str)
+            and not mensaje.content.startswith("Error al ejecutar el agente")
+        ):
+            completadas[pendientes[mensaje.tool_call_id]] = mensaje.content
+
+    claves = list(dict.fromkeys(clave(llamada) for llamada in solicitudes))
+    if not all(clave_actual in completadas for clave_actual in claves):
+        return None
+    contenido = "\n\n".join(completadas[clave_actual] for clave_actual in claves)
+    return {
+        "messages": [AIMessage(id=ultimo.id, content=contenido)],
+        "jump_to": "end",
+    }
+
+
 class Orquestador:
     def __init__(
         self,
@@ -101,6 +155,7 @@ class Orquestador:
                 model=llm,
                 tools=self.herramientas,
                 system_prompt=SYSTEM_PROMPT,
+                middleware=[_evitar_delegacion_repetida],
             )
         return self._agente
 
@@ -126,6 +181,23 @@ class Orquestador:
             for m in nuevos
             for tc in (getattr(m, "tool_calls", None) or [])
         ]
+
+        # Una demostracion MCP no necesita reinterpretacion del resultado.
+        # Conservamos el JSON real tambien en el historial y la memoria.
+        if len(set(self.agentes_invocados)) == 1:
+            for mensaje in reversed(nuevos):
+                if (
+                    getattr(mensaje, "type", None) == "tool"
+                    and getattr(mensaje, "name", None) == self.agentes_invocados[0]
+                    and isinstance(mensaje.content, str)
+                ):
+                    try:
+                        datos = json.loads(mensaje.content)
+                    except (ValueError, TypeError):
+                        break
+                    if isinstance(datos, dict) and datos.get("estado") == "demostracion":
+                        mensajes[-1].content = mensaje.content
+                    break
 
         self._mensajes = mensajes
         self.memory.update(mensajes)

@@ -8,11 +8,7 @@ from pathlib import Path
 import pandas as pd
 
 
-import asyncio
-import sys
-
-from fastmcp import Client
-from fastmcp.client.transports import StdioTransport
+from proyecto.mcp_servers.mcp_client import llamar_herramienta, llamar_herramienta_mcp
 
 from langchain.agents import create_agent
 from langchain_core.tools import tool
@@ -130,34 +126,21 @@ def detect_customer_data_quality_issues() -> str:
 
 
 async def _llamar_herramienta_mcp(nombre: str) -> str:
-    transporte = StdioTransport(
-        command=sys.executable,
-        args=["-m", "proyecto.mcp_servers.data_steward_server"],
+    return await llamar_herramienta_mcp(
+        "proyecto.mcp_servers.data_steward_server", nombre
     )
-
-    async with Client(transporte) as cliente:
-        resultado = await cliente.call_tool(nombre, {})
-
-        if resultado.is_error:
-            raise RuntimeError(f"Error al ejecutar la herramienta MCP: {nombre}")
-
-        return "\n".join(
-            bloque.text
-            for bloque in resultado.content
-            if bloque.type == "text"
-        )
 
 
 @tool
 def inspeccionar_dataset_mcp() -> str:
     """Consulta mediante MCP la estructura y los faltantes del CSV de clientes."""
-    return asyncio.run(_llamar_herramienta_mcp("inspeccionar_dataset"))
+    return llamar_herramienta("proyecto.mcp_servers.data_steward_server", "inspeccionar_dataset")
 
 
 @tool
 def validar_calidad_datos_mcp() -> str:
     """Consulta mediante MCP los faltantes, duplicados e IDs repetidos."""
-    return asyncio.run(_llamar_herramienta_mcp("validar_calidad_datos"))
+    return llamar_herramienta("proyecto.mcp_servers.data_steward_server", "validar_calidad_datos")
 
 class DataStewardAgent:
     def __init__(self):
