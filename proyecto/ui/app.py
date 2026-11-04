@@ -63,6 +63,7 @@ for clave, valor in {
     "uploader_key": 0,
     "upload_dir": None,
     "imagen_firma": None,
+    "mostrar_adjunto": False,
 }.items():
     if clave not in st.session_state:
         st.session_state[clave] = valor
@@ -144,6 +145,8 @@ def iniciar(
     st.session_state.imagen_actual = imagen_path
     st.session_state.operacion_actual = operacion
     st.session_state.motor_actual = motor or st.session_state.get("motor", "orquestador")
+    if imagen_path is None:
+        st.session_state.mostrar_adjunto = False
     st.session_state.pensando = True
     st.session_state.consola_abierta = True
     st.rerun()
@@ -158,6 +161,7 @@ def limpiar() -> None:
     st.session_state.imagen_actual = None
     st.session_state.operacion_actual = "ocr"
     st.session_state.motor_actual = st.session_state.get("motor", "orquestador")
+    st.session_state.mostrar_adjunto = False
     st.session_state.pensando = False
     st.session_state.consola_abierta = False
     st.session_state.uploader_key += 1
@@ -342,40 +346,53 @@ with izquierda:
                 ),
             )
 
-        with st.container(key="adjunto"):
-            archivo = st.file_uploader(
-                "Adjuntar imagen",
-                type=TIPOS_IMAGEN,
-                key=f"uploader_{st.session_state.uploader_key}",
-                help="PNG, JPG, WEBP, GIF o BMP. Máximo 10 MB.",
-            )
-            _guardar_imagen(archivo)
-
-            if st.session_state.get("imagen_path"):
-                st.caption(f"Imagen lista: {st.session_state.imagen_nombre}")
-                st.image(st.session_state.imagen_path, width=180)
-                operacion = st.radio(
-                    "Operación sobre la imagen",
-                    options=["ocr", "descripcion"],
-                    format_func=lambda valor: (
-                        "Extraer texto (OCR)"
-                        if valor == "ocr"
-                        else "Describir imagen"
-                    ),
-                    horizontal=True,
-                    key="operacion_imagen",
+        if st.session_state.get("mostrar_adjunto"):
+            with st.container(key="adjunto_panel"):
+                st.markdown(
+                    '<div class="adjunto-titulo">Adjuntar imagen</div>',
+                    unsafe_allow_html=True,
                 )
-                if st.button(
-                    "Procesar imagen",
-                    key="procesar_imagen",
-                    width="stretch",
-                ):
-                    iniciar(
-                        "Procesa la imagen adjunta",
-                        imagen_path=st.session_state.imagen_path,
-                        operacion=operacion,
-                        imagen_nombre=st.session_state.imagen_nombre,
+                archivo = st.file_uploader(
+                    "Imagen",
+                    type=TIPOS_IMAGEN,
+                    key=f"uploader_{st.session_state.uploader_key}",
+                    help="PNG, JPG, WEBP, GIF o BMP. Máximo 10 MB.",
+                    label_visibility="collapsed",
+                )
+                _guardar_imagen(archivo)
+
+                if st.session_state.get("imagen_path"):
+                    st.caption(f"Imagen lista: {st.session_state.imagen_nombre}")
+                    st.image(st.session_state.imagen_path, width=180)
+                    operacion = st.radio(
+                        "Operación sobre la imagen",
+                        options=["ocr", "descripcion"],
+                        format_func=lambda valor: (
+                            "Extraer texto (OCR)"
+                            if valor == "ocr"
+                            else "Describir imagen"
+                        ),
+                        horizontal=True,
+                        key="operacion_imagen",
                     )
+                    if st.button(
+                        "Procesar imagen",
+                        key="procesar_imagen",
+                        width="stretch",
+                    ):
+                        iniciar(
+                            "Procesa la imagen adjunta",
+                            imagen_path=st.session_state.imagen_path,
+                            operacion=operacion,
+                            imagen_nombre=st.session_state.imagen_nombre,
+                        )
+
+        adjunto_abierto = st.session_state.get("mostrar_adjunto", False)
+        etiqueta_adjunto = "Cerrar adjunto" if adjunto_abierto else "Adjuntar imagen"
+        clave_adjunto = "cerrar_adjunto" if adjunto_abierto else "abrir_adjunto"
+        if st.button(etiqueta_adjunto, key=clave_adjunto, help=etiqueta_adjunto):
+            st.session_state.mostrar_adjunto = not adjunto_abierto
+            st.rerun()
 
         consulta = st.chat_input("Pregunta sobre los datos…")
         if consulta:
