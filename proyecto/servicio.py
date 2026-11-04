@@ -2,15 +2,30 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
+import sys
 import time
+from pathlib import Path
 from typing import TypedDict
+
+_RAIZ = Path(__file__).resolve().parents[1]
+if str(_RAIZ) not in sys.path:
+    sys.path.insert(0, str(_RAIZ))
 
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FuncFormatter
+
+from proyecto.agents.document_intelligence_agent import (
+    EXTENSIONES_IMAGEN,
+    MAX_IMAGE_BYTES,
+    MODELO_VISION_POR_DEFECTO,
+    describe_an_image,
+    ocr_image,
+)
 
 TIEMPO_DEMO = 1.1
 NOTA_DEMO = "Datos sintéticos"
@@ -37,6 +52,7 @@ class Respuesta(TypedDict, total=False):
     modelo: str | None
     nota: str | None
     error: str | None
+    formato: str | None
 
 
 def _grafica_demo(datos: list[dict], tema: str = "oscuro") -> bytes:
@@ -223,6 +239,98 @@ def _normativa() -> Respuesta:
         "duracion": 0.9,
         "modelo": "gemma4:e4b",
         "nota": NOTA_DEMO,
+    }
+
+
+def _llamar_mcp_document_intelligence(nombre_tool: str, ruta: str) -> str:
+    """Llama una tool del servidor MCP por stdio."""
+    from fastmcp import Client
+    from fastmcp.client.transports import StdioTransport
+
+    transporte = StdioTransport(
+        command=sys.executable,
+        args=["-m", "proyecto.mcp_servers.document_intelligence_server"],
+        cwd=str(_RAIZ),
+    )
+
+    async def ejecutar() -> str:
+        async with Client(transporte) as cliente:
+            resultado = await cliente.call_tool(nombre_tool, {"image_path": ruta})
+            if resultado.is_error:
+                raise RuntimeError(f"El servidor MCP falló al ejecutar {nombre_tool}.")
+            return "\n".join(
+                bloque.text
+                for bloque in resultado.content
+                if bloque.type == "text"
+            ).strip()
+
+    return asyncio.run(ejecutar())
+
+
+def procesar_imagen(ruta: str, operacion: str = "ocr") -> Respuesta:
+    """Procesa una imagen local mediante el servidor MCP, con respaldo local."""
+    inicio = time.perf_counter()
+    ruta_path = Path(ruta).expanduser()
+    es_descripcion = operacion == "descripcion"
+    etiqueta = "Descripción" if es_descripcion else "OCR"
+    nombre_tool = "describir_imagen" if es_descripcion else "extraer_texto_imagen"
+    herramienta_local = describe_an_image if es_descripcion else ocr_image
+
+    if not ruta_path.is_file():
+        mensaje = f"No existe la imagen: {ruta}"
+        return {
+            "respuesta": mensaje,
+            "pasos": [
+                {
+                    "agente": "document_intelligence",
+                    "accion": f"{etiqueta} de imagen",
+                    "detalle": mensaje,
+                    "estado": "error",
+                }
+            ],
+            "agentes": ["document_intelligence"],
+            "error": mensaje,
+            "formato": "markdown",
+        }
+
+    via = "MCP"
+    error: str | None = None
+    try:
+        texto = _llamar_mcp_document_intelligence(nombre_tool, str(ruta_path))
+    except Exception as exc:  # noqa: BLE001 - se intenta el respaldo local
+        try:
+            texto = herramienta_local.invoke({"image_path": str(ruta_path)})
+            via = f"Fallback local ({type(exc).__name__})"
+        except Exception as exc_local:  # noqa: BLE001
+            texto = (
+                "No se pudo procesar la imagen: "
+                f"{type(exc_local).__name__}: {exc_local}"
+            )
+            via = "Error"
+            error = texto
+
+    if texto.startswith("No se pudo procesar la imagen:"):
+        error = texto
+
+    duracion = round(time.perf_counter() - inicio, 2)
+    return {
+        "respuesta": texto,
+        "pasos": [
+            {
+                "agente": "document_intelligence",
+                "accion": f"{etiqueta} de imagen",
+                "detalle": f"{ruta_path.name} · vía {via}",
+                "duracion": duracion,
+                "estado": "error" if error else "ok",
+            }
+        ],
+        "agentes": ["document_intelligence"],
+        "fuentes": [ruta_path.name],
+        "duracion": duracion,
+        "modelo": MODELO_VISION_POR_DEFECTO,
+        "nota": f"Vía {via}",
+        "error": error,
+        "formato": "texto" if not es_descripcion and not error else "markdown",
     }
 
 

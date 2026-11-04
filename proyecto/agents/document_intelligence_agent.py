@@ -14,9 +14,12 @@ import os
 import re
 from pathlib import Path
 
+from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 from langchain_ollama import ChatOllama
+
+load_dotenv()
 
 MODELO_VISION_POR_DEFECTO = os.getenv("DOCUMENT_INTELLIGENCE_MODEL", "qwen2.5vl:7b")
 MAX_IMAGE_BYTES = 10 * 1024 * 1024

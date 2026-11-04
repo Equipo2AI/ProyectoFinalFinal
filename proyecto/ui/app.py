@@ -5,15 +5,25 @@
 
 from __future__ import annotations
 
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import streamlit as st
 
-from servicio import preguntar, regraficar
+from servicio import (
+    EXTENSIONES_IMAGEN,
+    MAX_IMAGE_BYTES,
+    preguntar,
+    procesar_imagen,
+    regraficar,
+)
 from ui import componentes, estilos
+
+TIPOS_IMAGEN = sorted(extension.lstrip(".") for extension in EXTENSIONES_IMAGEN)
 
 SUGERENCIAS = [
     ("sug_0", "¿Cuál es el saldo promedio en febrero?"),
@@ -35,6 +45,14 @@ for clave, valor in {
     "pensando": False,
     "consola_abierta": False,
     "tema": "oscuro",
+    "imagen_path": None,
+    "imagen_nombre": None,
+    "imagen_actual": None,
+    "operacion_actual": "ocr",
+    "operacion_imagen": "ocr",
+    "uploader_key": 0,
+    "upload_dir": None,
+    "imagen_firma": None,
 }.items():
     if clave not in st.session_state:
         st.session_state[clave] = valor
@@ -42,20 +60,94 @@ for clave, valor in {
 estilos.aplicar(st.session_state.tema)
 
 
-def iniciar(texto: str) -> None:
-    st.session_state.mensajes.append({"rol": "user", "texto": texto})
+def _limpiar_imagen() -> None:
+    ruta = st.session_state.get("imagen_path")
+    if ruta:
+        try:
+            Path(ruta).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    directorio = st.session_state.get("upload_dir")
+    if directorio:
+        shutil.rmtree(directorio, ignore_errors=True)
+
+    st.session_state.imagen_path = None
+    st.session_state.imagen_nombre = None
+    st.session_state.upload_dir = None
+    st.session_state.imagen_firma = None
+
+
+def _guardar_imagen(archivo) -> None:
+    """Guarda la imagen subida en un directorio temporal de la sesión."""
+    if archivo is None:
+        if st.session_state.get("imagen_path") and not st.session_state.get("pensando"):
+            _limpiar_imagen()
+        return
+
+    if archivo.size > MAX_IMAGE_BYTES:
+        st.error("La imagen supera el límite de 10 MB.")
+        return
+
+    sufijo = Path(archivo.name).suffix.lower()
+    if sufijo not in EXTENSIONES_IMAGEN:
+        st.error(f"Formato no soportado: {sufijo}")
+        return
+
+    firma = (archivo.name, archivo.size)
+    if (
+        st.session_state.get("imagen_firma") == firma
+        and st.session_state.get("imagen_path")
+    ):
+        return
+
+    directorio = st.session_state.get("upload_dir")
+    if not directorio:
+        directorio = tempfile.mkdtemp(prefix="docint_ui_")
+        st.session_state.upload_dir = directorio
+
+    anterior = st.session_state.get("imagen_path")
+    if anterior:
+        try:
+            Path(anterior).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    destino = Path(directorio) / f"imagen{sufijo}"
+    destino.write_bytes(archivo.getvalue())
+    st.session_state.imagen_path = str(destino)
+    st.session_state.imagen_nombre = archivo.name
+    st.session_state.imagen_firma = firma
+
+
+def iniciar(
+    texto: str,
+    imagen_path: str | None = None,
+    operacion: str = "ocr",
+    imagen_nombre: str | None = None,
+) -> None:
+    st.session_state.mensajes.append(
+        {"rol": "user", "texto": texto, "imagen": imagen_nombre}
+    )
     st.session_state.consulta_actual = texto
+    st.session_state.imagen_actual = imagen_path
+    st.session_state.operacion_actual = operacion
     st.session_state.pensando = True
     st.session_state.consola_abierta = True
     st.rerun()
 
 
 def limpiar() -> None:
+    _limpiar_imagen()
     st.session_state.mensajes = []
     st.session_state.artefacto = None
     st.session_state.consulta_actual = None
+    st.session_state.imagen_actual = None
+    st.session_state.operacion_actual = "ocr"
     st.session_state.pensando = False
     st.session_state.consola_abierta = False
+    st.session_state.uploader_key += 1
+    st.session_state.operacion_imagen = "ocr"
     st.rerun()
 
 
@@ -161,7 +253,7 @@ with st.container(key="topbar"):
     with columna_marca:
         componentes.cabecera(
             "Asistente de Datos",
-            "Data Steward & Analyst",
+            "Data Steward · Analytics · Documentos",
         )
     with columna_tema:
         boton_tema()
@@ -194,7 +286,12 @@ with izquierda:
             else:
                 for mensaje in st.session_state.mensajes:
                     with st.chat_message(mensaje["rol"]):
-                        st.markdown(componentes.texto(mensaje["texto"]))
+                        if mensaje.get("imagen"):
+                            st.caption(f"Imagen adjunta: {mensaje['imagen']}")
+                        if mensaje.get("formato") == "texto":
+                            st.code(mensaje["texto"], language="text")
+                        else:
+                            st.markdown(componentes.texto(mensaje["texto"]))
                         if mensaje["rol"] == "assistant":
                             st.markdown(
                                 componentes.meta_mensaje(
@@ -204,7 +301,47 @@ with izquierda:
                                 unsafe_allow_html=True,
                             )
                 if st.session_state.pensando:
-                    componentes.pensando()
+                    estado = (
+                        "Procesando imagen…"
+                        if st.session_state.get("imagen_actual")
+                        else "Analizando la consulta…"
+                    )
+                    componentes.pensando(estado)
+
+        with st.container(key="adjunto"):
+            archivo = st.file_uploader(
+                "Adjuntar imagen",
+                type=TIPOS_IMAGEN,
+                key=f"uploader_{st.session_state.uploader_key}",
+                help="PNG, JPG, WEBP, GIF o BMP. Máximo 10 MB.",
+            )
+            _guardar_imagen(archivo)
+
+            if st.session_state.get("imagen_path"):
+                st.caption(f"Imagen lista: {st.session_state.imagen_nombre}")
+                st.image(st.session_state.imagen_path, width=180)
+                operacion = st.radio(
+                    "Operación sobre la imagen",
+                    options=["ocr", "descripcion"],
+                    format_func=lambda valor: (
+                        "Extraer texto (OCR)"
+                        if valor == "ocr"
+                        else "Describir imagen"
+                    ),
+                    horizontal=True,
+                    key="operacion_imagen",
+                )
+                if st.button(
+                    "Procesar imagen",
+                    key="procesar_imagen",
+                    width="stretch",
+                ):
+                    iniciar(
+                        "Procesa la imagen adjunta",
+                        imagen_path=st.session_state.imagen_path,
+                        operacion=operacion,
+                        imagen_nombre=st.session_state.imagen_nombre,
+                    )
 
         consulta = st.chat_input("Pregunta sobre los datos…")
         if consulta:
@@ -222,9 +359,15 @@ if abierta:
 
 if st.session_state.pensando:
     try:
-        artefacto = preguntar(
-            st.session_state.consulta_actual or "", st.session_state.tema
-        )
+        if st.session_state.get("imagen_actual"):
+            artefacto = procesar_imagen(
+                st.session_state.imagen_actual,
+                st.session_state.operacion_actual,
+            )
+        else:
+            artefacto = preguntar(
+                st.session_state.consulta_actual or "", st.session_state.tema
+            )
     except Exception as exc:  # noqa: BLE001
         mensaje = (
             "No pude completar la consulta. Verifica que el orquestador y los "
@@ -255,8 +398,10 @@ if st.session_state.pensando:
                 "texto": artefacto.get("respuesta", ""),
                 "pasos": pasos,
                 "duracion": artefacto.get("duracion"),
+                "formato": artefacto.get("formato"),
             }
         )
     finally:
         st.session_state.pensando = False
+        st.session_state.imagen_actual = None
     st.rerun()

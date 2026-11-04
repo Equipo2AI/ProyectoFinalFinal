@@ -88,8 +88,8 @@ def hero() -> None:
         '<div class="hero">'
         '<div class="hero-kicker">Consulta</div>'
         '<div class="t">¿En qué te puedo ayudar?</div>'
-        '<div class="s">Hola soy un agente de análisis de datos bancarios. Preguntame saldos, calidad de datos, normativa o definiciones del '
-        'glosario.</div>'
+        '<div class="s">Hola soy un agente de análisis de datos bancarios. Pregúntame saldos, calidad de datos, '
+        'normativa o adjunta una factura para leerla.</div>'
         "</div>",
         unsafe_allow_html=True,
     )
@@ -100,7 +100,7 @@ def pensando(estado: str = "Analizando la consulta…") -> None:
         '<div class="analizando">'
         f'<span class="analizando-ico">{_ICONOS["loader"]}</span>'
         f'<div><strong>{_esc(estado)}</strong>'
-        '<small>El orquestador está eligiendo agentes</small></div>'
+        '<small>El sistema está procesando la solicitud</small></div>'
         "</div>",
         unsafe_allow_html=True,
     )
