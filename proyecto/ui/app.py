@@ -17,23 +17,15 @@ import streamlit as st
 from servicio import (
     EXTENSIONES_IMAGEN,
     MAX_IMAGE_BYTES,
-    preguntar,
     preguntar_orquestador,
-    procesar_imagen,
-    regraficar,
+    procesar_imagen_orquestador,
     reiniciar_orquestador,
 )
 from ui import componentes, estilos
 
 TIPOS_IMAGEN = sorted(extension.lstrip(".") for extension in EXTENSIONES_IMAGEN)
 
-SUGERENCIAS_DEMO = [
-    ("sug_0", "¿Cuál es el saldo promedio en febrero?"),
-    ("sug_1", "¿Qué problemas de calidad tiene la tabla de saldos?"),
-    ("sug_2", "¿Cómo se define un cliente activo en el glosario?"),
-]
-
-SUGERENCIAS_ORQUESTADOR = [
+SUGERENCIAS = [
     ("sug_0", "¿Qué problemas de calidad tiene el CSV de clientes?"),
     ("sug_1", "¿Qué columnas y tipos tiene el CSV de clientes?"),
     ("sug_2", "¿Cómo se define un cliente activo en el glosario?"),
@@ -53,8 +45,6 @@ for clave, valor in {
     "pensando": False,
     "consola_abierta": False,
     "tema": "oscuro",
-    "motor": "orquestador",
-    "motor_actual": "orquestador",
     "imagen_path": None,
     "imagen_nombre": None,
     "imagen_actual": None,
@@ -136,7 +126,6 @@ def iniciar(
     imagen_path: str | None = None,
     operacion: str = "ocr",
     imagen_nombre: str | None = None,
-    motor: str | None = None,
 ) -> None:
     st.session_state.mensajes.append(
         {"rol": "user", "texto": texto, "imagen": imagen_nombre}
@@ -144,7 +133,6 @@ def iniciar(
     st.session_state.consulta_actual = texto
     st.session_state.imagen_actual = imagen_path
     st.session_state.operacion_actual = operacion
-    st.session_state.motor_actual = motor or st.session_state.get("motor", "orquestador")
     if imagen_path is None:
         st.session_state.mostrar_adjunto = False
     st.session_state.pensando = True
@@ -160,7 +148,6 @@ def limpiar() -> None:
     st.session_state.consulta_actual = None
     st.session_state.imagen_actual = None
     st.session_state.operacion_actual = "ocr"
-    st.session_state.motor_actual = st.session_state.get("motor", "orquestador")
     st.session_state.mostrar_adjunto = False
     st.session_state.pensando = False
     st.session_state.consola_abierta = False
@@ -180,10 +167,6 @@ def boton_panel(abierta: bool) -> None:
 def boton_tema() -> None:
     if st.button("Cambiar tema", key="btn_tema", help="Cambiar entre claro y oscuro"):
         st.session_state.tema = "claro" if st.session_state.tema == "oscuro" else "oscuro"
-        if st.session_state.artefacto:
-            st.session_state.artefacto = regraficar(
-                st.session_state.artefacto, st.session_state.tema
-            )
         st.rerun()
 
 
@@ -296,13 +279,8 @@ with izquierda:
         with st.container(key="chat_scroll"):
             if not st.session_state.mensajes:
                 componentes.hero()
-                sugerencias = (
-                    SUGERENCIAS_ORQUESTADOR
-                    if st.session_state.get("motor") == "orquestador"
-                    else SUGERENCIAS_DEMO
-                )
                 columnas = st.columns(3, gap="small")
-                for (clave, pregunta), columna in zip(sugerencias, columnas):
+                for (clave, pregunta), columna in zip(SUGERENCIAS, columnas):
                     with columna:
                         if st.button(pregunta, key=clave, width="stretch"):
                             iniciar(pregunta)
@@ -330,21 +308,6 @@ with izquierda:
                         else "Analizando la consulta…"
                     )
                     componentes.pensando(estado)
-
-        with st.container(key="selector_motor"):
-            st.radio(
-                "Motor de consulta de texto",
-                options=["orquestador", "demo"],
-                format_func=lambda valor: (
-                    "Orquestador MCP" if valor == "orquestador" else "Demo"
-                ),
-                horizontal=True,
-                key="motor",
-                help=(
-                    "El orquestador usa los servidores MCP. El modo demo usa "
-                    "respuestas sintéticas. Las imágenes siempre usan MCP."
-                ),
-            )
 
         if st.session_state.get("mostrar_adjunto"):
             with st.container(key="adjunto_panel"):
@@ -411,13 +374,9 @@ if abierta:
 if st.session_state.pensando:
     try:
         if st.session_state.get("imagen_actual"):
-            artefacto = procesar_imagen(
+            artefacto = procesar_imagen_orquestador(
                 st.session_state.imagen_actual,
                 st.session_state.operacion_actual,
-            )
-        elif st.session_state.get("motor_actual") == "demo":
-            artefacto = preguntar(
-                st.session_state.consulta_actual or "", st.session_state.tema
             )
         else:
             artefacto = preguntar_orquestador(

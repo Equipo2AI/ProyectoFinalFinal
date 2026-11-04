@@ -4,6 +4,10 @@ import asyncio
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from fastmcp import Client
 from fastmcp.client.transports import StdioTransport
 from langchain.agents import create_agent
@@ -202,7 +206,17 @@ class Orquestador:
 
     def procesar(self, consulta: str) -> str:
         entrada = self.memory.prepare(self._mensajes, consulta)
-        resultado = self._get_agente().invoke({"messages": entrada})
+        resultado = self._get_agente().invoke(
+            {"messages": entrada},
+            config={
+                "run_name": "orquestador_mcp",
+                "tags": ["orquestador", "mcp", "ui"],
+                "metadata": {
+                    "modelo": self.modelo,
+                    "herramientas": [t.name for t in self.herramientas],
+                },
+            },
+        )
         mensajes = resultado["messages"]
 
         # Qué herramientas MCP llamó el orquestador en este turno.
