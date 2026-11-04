@@ -9,6 +9,8 @@ from langchain_core.tools import tool
 from langchain_ollama import ChatOllama
 from langchain_pinecone import PineconeEmbeddings, PineconeVectorStore
 
+from proyecto.mcp_servers.mcp_client import llamar_herramienta, llamar_herramienta_mcp
+
 load_dotenv()
 
 SYSTEM_PROMPT = """
@@ -35,7 +37,7 @@ class NormatividadRAGAgent:
     def __init__(self, k: int = 3):
         self.nombre = "normatividad_rag"
         self.descripcion = "Búsqueda semántica sobre documentación normativa (RAG)."
-        self.modelo = "gemma4:e4b"
+        self.modelo = "llama3.1:latest"
         self.modelo_embeddings = "llama-text-embed-v2"  # debe coincidir con el usado al indexar
         self.k = k
 
@@ -43,7 +45,7 @@ class NormatividadRAGAgent:
         # este módulo dentro de la arquitectura mayor no requiera Pinecone/Ollama.
         self._retriever = None
         self._agente = None
-        self.herramientas = [self._crear_herramienta_busqueda()]
+        self.herramientas = [self._crear_herramienta_mcp()]
 
     def _get_retriever(self):
         if self._retriever is None:
@@ -83,6 +85,24 @@ class NormatividadRAGAgent:
 
             return "\n\n---\n\n".join(evidencia)
 
+        return buscar_normatividad
+
+    def _crear_herramienta_mcp(self):
+        async def buscar_async(query: str) -> str:
+            return await llamar_herramienta_mcp(
+                "proyecto.mcp_servers.normatividad_rag_server",
+                "buscar_normatividad", {"query": query, "k": self.k},
+            )
+
+        @tool
+        def buscar_normatividad(query: str) -> str:
+            """Busca en la documentacion normativa mediante su servidor MCP independiente."""
+            return llamar_herramienta(
+                "proyecto.mcp_servers.normatividad_rag_server",
+                "buscar_normatividad", {"query": query, "k": self.k},
+            )
+
+        buscar_normatividad.coroutine = buscar_async
         return buscar_normatividad
 
     def _get_agente(self):
