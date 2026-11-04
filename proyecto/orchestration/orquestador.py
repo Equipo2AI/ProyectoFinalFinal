@@ -11,6 +11,7 @@ from agents import (
     document_intelligence_agent,
     compliance_agent,
 )
+from memory import LongTermMemory
 
 AGENTES = {
     "data_steward": data_steward_agent,
@@ -76,7 +77,11 @@ def _crear_herramienta_agente(nombre: str, agente) -> StructuredTool:
 
 
 class Orquestador:
-    def __init__(self, modelo: str = "gemma4:e4b"):
+    def __init__(
+        self,
+        modelo: str = "gemma4:e4b",
+        memory: LongTermMemory | None = None,
+    ):
         self.nombre = "orquestador"
         self.modelo = modelo
         self.herramientas = [
@@ -86,6 +91,7 @@ class Orquestador:
         self.agentes_invocados: list[str] = []  # trazas de la última consulta
         self._agente = None
         self._mensajes: list = []  # historial de la conversación
+        self.memory = memory or LongTermMemory(model=modelo)
 
     def _get_agente(self):
         if self._agente is None:
@@ -108,7 +114,7 @@ class Orquestador:
         )
 
     def procesar(self, consulta: str) -> str:
-        entrada = self._mensajes + [{"role": "user", "content": consulta}]
+        entrada = self.memory.prepare(self._mensajes, consulta)
         resultado = self._get_agente().invoke({"messages": entrada})
         mensajes = resultado["messages"]
 
@@ -121,6 +127,7 @@ class Orquestador:
         ]
 
         self._mensajes = mensajes
+        self.memory.update(mensajes)
         return self._extraer_texto(mensajes[-1])
 
     def reiniciar(self) -> None:
