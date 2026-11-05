@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -12,20 +13,23 @@ from fastmcp.client.transports import StdioTransport
 logger = logging.getLogger(__name__)
 
 
-def crear_transporte(modulo: str) -> StdioTransport:
+def crear_transporte(modulo: str, *, env: dict[str, str] | None = None) -> StdioTransport:
     """Usa el Python activo y una ruta estable, independiente del directorio actual."""
     return StdioTransport(
         command=sys.executable,
         args=["-m", modulo],
         cwd=str(Path(__file__).resolve().parents[2]),
+        env={**os.environ, **env} if env is not None else None,
     )
 
 
 async def llamar_herramienta_mcp(
-    modulo: str, nombre: str, argumentos: dict[str, Any] | None = None
+    modulo: str, nombre: str, argumentos: dict[str, Any] | None = None,
+    *, env: dict[str, str] | None = None,
 ) -> str:
     """Ejecuta una herramienta real y cierra la sesion y el subproceso al terminar."""
-    async with Client(crear_transporte(modulo), timeout=60) as cliente:
+    transporte = crear_transporte(modulo, env=env) if env is not None else crear_transporte(modulo)
+    async with Client(transporte, timeout=60) as cliente:
         resultado = await cliente.call_tool(nombre, argumentos or {})
         if resultado.is_error:
             raise RuntimeError(f"Error al ejecutar la herramienta MCP: {nombre}")
@@ -41,7 +45,8 @@ async def llamar_herramienta_mcp(
 
 
 def llamar_herramienta(
-    modulo: str, nombre: str, argumentos: dict[str, Any] | None = None
+    modulo: str, nombre: str, argumentos: dict[str, Any] | None = None,
+    *, env: dict[str, str] | None = None,
 ) -> str:
     """Adaptador para las interfaces sincronas procesar del orquestador."""
-    return asyncio.run(llamar_herramienta_mcp(modulo, nombre, argumentos))
+    return asyncio.run(llamar_herramienta_mcp(modulo, nombre, argumentos, env=env))
