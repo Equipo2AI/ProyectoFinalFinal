@@ -272,7 +272,14 @@ python tests/probar_data_steward.py --caso 1
 python tests/probar_orquestador_mcp.py --consulta "¿Qué problemas de calidad tiene raw_clientes?"
 python tests/probar_document_intelligence.py --caso 1
 python tests/rag_test.py --caso 1 --sin-evidencia
+
+# Casos de seguridad del Data Analyst (sin LLM, corre contra la base real)
+python tests/probar_data_analyst.py --solo-seguridad
 ```
+
+Este último imprime seis verificaciones con `[OK]` o `[FALLA]`: escritura,
+varias consultas en una, datos personales, capa cruda, columna inexistente y
+un agregado permitido. Es la evidencia automatizable de los casos de prueba.
 
 Los archivos `tests/probar_data_analyst_mcp.py` y los scripts de `mcp_servers/`
 también permiten probar los servidores de forma aislada.
