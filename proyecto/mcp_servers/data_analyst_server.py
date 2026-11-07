@@ -1,50 +1,37 @@
-"""Servidor MCP del Data Analyst.
-
-Expone las tools de solo lectura del agente para que puedan ser consumidas
-por el orquestador o por cualquier otro cliente MCP.
-"""
+"""Servidor STDIO independiente de las cuatro herramientas SQL de Data Analyst."""
 
 from fastmcp import FastMCP
 
-from proyecto.agents.data_analyst_agent import data_analyst_agent
+from proyecto.mcp_servers.data_analyst_backend import DataAnalystSQLBackend
 
-mcp = FastMCP("Data Analyst MCP")
-
-_TOOLS = {herramienta.name: herramienta for herramienta in data_analyst_agent._tools}
-
-
-@mcp.tool()
-def analizar_datos(consulta: str, contexto: str = "") -> str:
-    """Responde una pregunta cuantitativa en lenguaje natural usando el agente Data Analyst.
-
-    `contexto` es opcional y permite resolver seguimientos o aclaraciones de
-    una pregunta anterior sin perder el hilo de la conversación.
-    """
-    return data_analyst_agent.procesar(consulta, contexto)
+mcp = FastMCP("Data Analyst SQL MCP")
+# Solo el backend local: no se instancia el agente cliente ni se llama procesar().
+_backend = DataAnalystSQLBackend()
+_herramientas = {herramienta.name: herramienta for herramienta in _backend._tools}
 
 
 @mcp.tool()
 def listar_tablas() -> str:
-    """Lista las tablas y vistas disponibles y el motor SQL configurado."""
-    return _TOOLS["listar_tablas"].invoke({})
+    """Lista tablas, vistas y motor SQL sin incluir las tablas excluidas."""
+    return _herramientas["listar_tablas"].invoke({})
 
 
 @mcp.tool()
 def describir_tabla(tabla: str) -> str:
-    """Devuelve columnas, tipos, número de filas y relaciones de una tabla o vista."""
-    return _TOOLS["describir_tabla"].invoke({"tabla": tabla})
+    """Devuelve columnas, tipos, conteo de filas y relaciones de una tabla permitida."""
+    return _herramientas["describir_tabla"].invoke({"tabla": tabla})
 
 
 @mcp.tool()
 def valores_columna(tabla: str, columna: str) -> str:
-    """Devuelve los valores distintos más frecuentes de una columna categórica."""
-    return _TOOLS["valores_columna"].invoke({"tabla": tabla, "columna": columna})
+    """Lista valores categoricos frecuentes aplicando los controles de privacidad."""
+    return _herramientas["valores_columna"].invoke({"tabla": tabla, "columna": columna})
 
 
 @mcp.tool()
 def ejecutar_consulta(sql: str) -> str:
-    """Ejecuta una consulta SELECT de solo lectura y devuelve hasta 50 filas."""
-    return _TOOLS["ejecutar_consulta"].invoke({"sql": sql})
+    """Ejecuta una consulta SQL de solo lectura validada y devuelve hasta 50 filas."""
+    return _herramientas["ejecutar_consulta"].invoke({"sql": sql})
 
 
 if __name__ == "__main__":

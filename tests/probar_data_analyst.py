@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager, ExitStack
+import sqlite3
+import tempfile
 import json
 import sys
 import time
@@ -63,17 +66,35 @@ CASOS = [
 ]
 
 
+@contextmanager
+def base_sintetica_temporal():
+    """Crea la base del equipo exclusivamente en una carpeta temporal externa."""
+    with tempfile.TemporaryDirectory(prefix="ProyectoFinalFinal_sql_test_") as directory:
+        destino = Path(directory) / "banco_sintetico.db"
+        conexion = sqlite3.connect(destino)
+        try:
+            conexion.executescript((RAIZ / "proyecto/bd/crear_bd.sql").read_text(encoding="utf-8"))
+        finally:
+            conexion.close()
+        yield "sqlite:///" + destino.as_posix()
+
+
 def probar_seguridad(agente) -> None:
     herramienta = next(t for t in agente._tools if t.name == "ejecutar_consulta")
 
+    fallos = []
     print("\nPRUEBAS DE SEGURIDAD (sin LLM)")
     for categoria, sql, debe_pasar in PRUEBAS_SEGURIDAD:
         respuesta = json.loads(herramienta.invoke({"sql": sql}))
         paso = "error" not in respuesta
+        if paso != debe_pasar:
+            fallos.append(categoria)
         marca = "OK   " if paso == debe_pasar else "FALLA"
         detalle = respuesta.get("error") or f"{len(respuesta['filas'])} filas"
         print(f"  [{marca}] {categoria}: {detalle}")
     print(SEPARADOR)
+    if fallos:
+        raise AssertionError(f"Pruebas de seguridad fallidas: {', '.join(fallos)}")
 
 
 def main() -> None:
@@ -84,42 +105,48 @@ def main() -> None:
         action="store_true",
         help="Solo corre las pruebas de seguridad, sin llamar al LLM",
     )
+    parser.add_argument("--base-temporal", action="store_true", help="Usa solamente la base sintetica temporal del equipo")
+    parser.add_argument("--modelo", help="Modelo Ollama de prueba; no cambia el modelo predeterminado del agente")
     args = parser.parse_args()
 
-    from proyecto.agents.data_analyst_agent import data_analyst_agent as agente
+    with ExitStack() as stack:
+        from proyecto.agents.data_analyst_agent import data_analyst_agent as agente
+        if args.base_temporal:
+            agente.conectar(stack.enter_context(base_sintetica_temporal()))
+        if args.modelo:
+            agente.modelo = args.modelo
 
-    casos = list(enumerate(CASOS, start=1))
-    if args.caso:
-        if not 1 <= args.caso <= len(CASOS):
-            parser.error(f"--caso debe estar entre 1 y {len(CASOS)}")
-        casos = [(args.caso, CASOS[args.caso - 1])]
+        casos = list(enumerate(CASOS, start=1))
+        if args.caso:
+            if not 1 <= args.caso <= len(CASOS):
+                parser.error(f"--caso debe estar entre 1 y {len(CASOS)}")
+            casos = [(args.caso, CASOS[args.caso - 1])]
 
-    print(SEPARADOR)
-    print(f"Data Analyst · modelo: {agente.modelo}")
-    print(f"Base: {agente.url_db}")
-    print(SEPARADOR)
-
-    if not args.caso:
-        probar_seguridad(agente)
-    if args.solo_seguridad:
-        return
-
-    for numero, (categoria, consulta, esperado) in casos:
-        print(f"\nCASO {numero} · {categoria}")
-        print(f"CONSULTA: {consulta}")
-        if esperado:
-            print(f"ESPERADO: {esperado}")
-
-        inicio = time.perf_counter()
-        try:
-            respuesta = agente.procesar(consulta)
-        except Exception as error:  # noqa: BLE001 - seguir con el resto de casos
-            respuesta = f"[ERROR] {type(error).__name__}: {error}"
-
-        print(f"RESPUESTA ({time.perf_counter() - inicio:.1f}s):")
-        print(str(respuesta).strip())
+        print(SEPARADOR)
+        print(f"Data Analyst · modelo: {agente.modelo}")
+        print(f"Base: {agente.url_db}")
         print(SEPARADOR)
 
+        if not args.caso:
+            probar_seguridad(agente)
+        if args.solo_seguridad:
+            return
+
+        for numero, (categoria, consulta, esperado) in casos:
+            print(f"\nCASO {numero} · {categoria}")
+            print(f"CONSULTA: {consulta}")
+            if esperado:
+                print(f"ESPERADO: {esperado}")
+
+            inicio = time.perf_counter()
+            try:
+                respuesta = agente.procesar(consulta)
+            except Exception as error:  # noqa: BLE001 - seguir con el resto de casos
+                respuesta = f"[ERROR] {type(error).__name__}: {error}"
+
+            print(f"RESPUESTA ({time.perf_counter() - inicio:.1f}s):")
+            print(str(respuesta).strip())
+            print(SEPARADOR)
 
 if __name__ == "__main__":
     main()
