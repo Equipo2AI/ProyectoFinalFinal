@@ -377,6 +377,12 @@ def preguntar_orquestador(consulta: str) -> Respuesta:
     if not texto:
         texto = "El orquestador no devolvió una respuesta."
 
+    modo = getattr(orquestador, "modo_efectivo", None)
+    nota = (
+        f"Orquestador {modo} · LangSmith"
+        if modo
+        else "Orquestador MCP · LangSmith"
+    )
     return {
         "respuesta": texto,
         "pasos": pasos,
@@ -388,7 +394,7 @@ def preguntar_orquestador(consulta: str) -> Respuesta:
         "resultados": herramientas,
         "duracion": duracion,
         "modelo": getattr(orquestador, "modelo", None),
-        "nota": "Orquestador MCP · LangSmith",
+        "nota": nota,
         "formato": "markdown",
     }
 

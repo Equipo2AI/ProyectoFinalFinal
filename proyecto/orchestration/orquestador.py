@@ -1,6 +1,9 @@
 # Orquestador: un agente de LangChain que decide qué tool MCP usar.
 
 import asyncio
+import json
+import logging
+import os
 import sys
 import unicodedata
 from contextvars import ContextVar
@@ -24,9 +27,12 @@ from proyecto.agents import (
     document_intelligence_agent,
     compliance_agent,
 )
+from proyecto.agents.document_intelligence_agent import PATRON_RUTA_IMAGEN
 from proyecto.memory.long_term import LongTermMemory
 
 _RAIZ = Path(__file__).resolve().parents[2]
+
+logger = logging.getLogger(__name__)
 
 AGENTES = {
     "data_steward": data_steward_agent,
@@ -39,7 +45,7 @@ AGENTES = {
 SYSTEM_PROMPT = """
 Eres el orquestador de un sistema multi-agente bancario.
 
-Tu trabajo es decidir qué herramienta MCP debe atender cada consulta.
+Tu trabajo es decidir qué herramienta MCP debe atender cada consulta. No respondas preguntas fuera de lo señalado o del ámbito bancario/financiero.
 Las herramientas disponibles son:
 
 - data_steward: estructura, tablas, columnas, faltantes, duplicados y calidad de
@@ -66,6 +72,9 @@ Reglas:
 - Usa data_steward para estructura y calidad (tablas, columnas, faltantes,
   duplicados); usa data_analyst para cifras y agregados. No uses data_analyst
   para preguntas de metadatos ni data_steward para calcular métricas.
+- En la salida de data_steward, `catalogo_tablas` es solo el inventario de
+  tablas disponibles; no son relaciones. Las relaciones reales están en
+  `relaciones` y son foreign keys declaradas.
 - mcp_analizar_datos recibe la pregunta en lenguaje natural, no una consulta
   SQL. Pásale el texto del usuario y deja que el Data Analyst escriba el SQL.
 - Si el usuario responde con una aclaración o confirmación (por ejemplo "sí",
@@ -116,6 +125,13 @@ def _normalizar(texto: str) -> str:
     return "".join(c for c in normalizado if not unicodedata.combining(c))
 
 
+def _ruta_imagen_de_consulta(consulta: str) -> str | None:
+    coincidencia = PATRON_RUTA_IMAGEN.search(consulta or "")
+    if not coincidencia:
+        return None
+    return coincidencia.group(1) or coincidencia.group(2)
+
+
 def _es_consulta_normativa(consulta: str) -> bool:
     """Ruta de alta confianza para preguntas legales o normativas.
 
@@ -143,6 +159,8 @@ def _es_consulta_normativa(consulta: str) -> bool:
             "obligacion",
             "sancion",
             "consentimiento",
+            "términos",
+            "condiciones"
         )
     )
 
@@ -288,6 +306,11 @@ class Orquestador:
         self._mensajes: list = []  # historial de la conversación
         self._documentos: list[dict] = []  # OCR/descripción usados como contexto
         self._imagen_pendiente: str | None = None
+        self._ultimo_agente: str | None = None
+        self.modo = os.getenv("ORCHESTRATION_MODE", "graph").strip().lower()
+        if self.modo not in {"graph", "hub"}:
+            self.modo = "graph"
+        self.modo_efectivo = self.modo
         self.memory = memory or LongTermMemory(model=modelo)
 
     def _get_agente(self):
@@ -359,6 +382,7 @@ class Orquestador:
             }
         )
         self._documentos = self._documentos[-5:]
+        self._ultimo_agente = "document_intelligence"
         if self._imagen_pendiente == ruta_resuelta:
             self._imagen_pendiente = None
 
@@ -405,6 +429,49 @@ class Orquestador:
             rol = "Usuario" if tipo == "human" else "Asistente"
             partes.append(f"{rol}: {texto[:800]}")
         return "\n".join(partes)
+
+    def _resultados_data_steward(self) -> list[dict]:
+        """Recupera las salidas estructuradas del Data Steward para verificarlas."""
+        nombres = {
+            "mcp_inspeccionar_dataset",
+            "mcp_validar_calidad_datos",
+        }
+        if not self.ultimas_herramientas:
+            return []
+
+        resultados: list[dict] = []
+        for registro in self.ultimas_herramientas:
+            nombre = registro.get("name")
+            if nombre not in nombres:
+                return []
+            salida = str(registro.get("salida") or "").strip()
+            if not salida or registro.get("estado") == "error":
+                return []
+            try:
+                datos = json.loads(salida)
+            except (TypeError, ValueError):
+                return []
+            herramienta = (
+                "inspeccionar_dataset"
+                if nombre == "mcp_inspeccionar_dataset"
+                else "validar_calidad_datos"
+            )
+            resultados.append({"herramienta": herramienta, "datos": datos})
+        return resultados
+
+    def _guardar_respuesta_verificada(self, respuesta: str, mensajes: list) -> str:
+        mensajes = [
+            mensaje
+            for mensaje in mensajes
+            if getattr(mensaje, "type", "") != "system"
+        ]
+        if mensajes and getattr(mensajes[-1], "type", "") == "ai":
+            mensajes = [*mensajes[:-1], AIMessage(content=respuesta)]
+        else:
+            mensajes = [*mensajes, AIMessage(content=respuesta)]
+        self._mensajes = mensajes
+        self.memory.update(self._mensajes)
+        return respuesta
 
     def _registrar_herramientas(self, nuevos: list) -> None:
         """Empareja tool calls con sus resultados para una traza verificable."""
@@ -471,10 +538,93 @@ class Orquestador:
             HumanMessage(content=consulta),
             AIMessage(content=salida),
         ]
+        self._ultimo_agente = "normatividad_rag"
         self.memory.update(self._mensajes)
         return salida
 
     def procesar(self, consulta: str) -> str:
+        """Atiende una consulta con el modo de orquestación configurado.
+
+        ``ORCHESTRATION_MODE=graph`` usa el grafo explícito de LangGraph.
+        ``ORCHESTRATION_MODE=hub`` conserva el orquestador anterior como
+        respaldo. Si el grafo falla, se intenta el hub para no dejar la UI sin
+        respuesta.
+        """
+        if self.modo == "hub":
+            return self._procesar_hub(consulta)
+
+        try:
+            return self._procesar_grafo(consulta)
+        except Exception as error:  # noqa: BLE001 - fallback deliberado
+            logger.exception("Falló el grafo; se usa el orquestador hub: %s", error)
+            self.modo_efectivo = "hub (fallback)"
+            return self._procesar_hub(consulta)
+
+    def _procesar_grafo(self, consulta: str) -> str:
+        from proyecto.orchestration.grafo import ejecutar_grafo
+
+        historial = self.memory.prepare(self._mensajes, consulta)
+        estado = ejecutar_grafo(
+            consulta,
+            historial=historial,
+            contexto_documentos=self._contexto_documentos(),
+            contexto_analista=self._contexto_analista(),
+            modelo=self.modelo,
+            imagen_pendiente=self._imagen_pendiente,
+            ultimo_agente=self._ultimo_agente,
+        )
+
+        respuesta = str(estado.get("respuesta") or "").strip()
+        if not respuesta:
+            raise RuntimeError("El grafo terminó sin respuesta.")
+
+        trazas = list(estado.get("trazas") or [])
+        self.ultimas_herramientas = trazas
+        self.agentes_invocados = [
+            str(traza.get("name"))
+            for traza in trazas
+            if traza.get("name")
+        ]
+
+        # Si el grafo procesó una imagen, guardamos el resultado para las
+        # preguntas de seguimiento y limpiamos la imagen pendiente.
+        ruta_documento = estado.get("imagen_pendiente")
+        for traza in trazas:
+            nombre = str(traza.get("name") or "")
+            if (
+                nombre not in {"mcp_extraer_texto_imagen", "mcp_describir_imagen"}
+                or traza.get("estado") == "error"
+            ):
+                continue
+            ruta = ruta_documento or _ruta_imagen_de_consulta(consulta)
+            if not ruta:
+                continue
+            operacion = (
+                "descripcion"
+                if nombre == "mcp_describir_imagen"
+                else "ocr"
+            )
+            self.registrar_documento(
+                ruta,
+                operacion,
+                str(traza.get("salida") or ""),
+                Path(ruta).name,
+            )
+
+        plan = list(estado.get("plan") or [])
+        if plan and plan[-1] != "directo":
+            self._ultimo_agente = plan[-1]
+        self._mensajes = [
+            *self._mensajes,
+            HumanMessage(content=consulta),
+            AIMessage(content=respuesta),
+        ]
+        self.memory.update(self._mensajes)
+        self.modo_efectivo = "grafo"
+        return respuesta
+
+    def _procesar_hub(self, consulta: str) -> str:
+        self.modo_efectivo = "hub"
         if _es_consulta_normativa(consulta):
             return self._responder_normatividad(consulta)
 
@@ -504,6 +654,15 @@ class Orquestador:
         nuevos = mensajes[len(entrada):]
         self._registrar_herramientas(nuevos)
 
+        # El Data Steward devuelve JSON de metadatos. Lo formateamos sin pasar
+        # por el LLM para que no invente columnas, conteos ni relaciones.
+        resultados_steward = self._resultados_data_steward()
+        if resultados_steward:
+            respuesta = data_steward_agent.formatear_resultados_verificados(
+                resultados_steward
+            )
+            return self._guardar_respuesta_verificada(respuesta, mensajes)
+
         # Normatividad y Data Analyst ya devuelven una respuesta verificada.
         # Si fueron la única herramienta, se usa tal cual: evita que el modelo
         # orquestador reescriba la evidencia, el SQL o las cifras.
@@ -515,18 +674,7 @@ class Orquestador:
             and self.ultimas_herramientas[0].get("salida")
         ):
             respuesta = str(self.ultimas_herramientas[0]["salida"]).strip()
-            mensajes = [
-                mensaje
-                for mensaje in mensajes
-                if getattr(mensaje, "type", "") != "system"
-            ]
-            if mensajes and getattr(mensajes[-1], "type", "") == "ai":
-                mensajes = [*mensajes[:-1], AIMessage(content=respuesta)]
-            else:
-                mensajes = [*mensajes, AIMessage(content=respuesta)]
-            self._mensajes = mensajes
-            self.memory.update(self._mensajes)
-            return respuesta
+            return self._guardar_respuesta_verificada(respuesta, mensajes)
 
         # El contexto documental y el resumen de memoria se reconstruyen en
         # cada turno; no deben acumularse en el historial ni en la memoria.
@@ -544,9 +692,14 @@ class Orquestador:
         self.ultimas_herramientas = []
         self._documentos = []
         self._imagen_pendiente = None
+        self._ultimo_agente = None
+        self.modo_efectivo = self.modo
 
     def __repr__(self) -> str:
-        return f"<Orquestador | modelo: {self.modelo} | tools MCP: {len(self.herramientas)}>"
+        return (
+            f"<Orquestador | modo: {self.modo} | modelo: {self.modelo} | "
+            f"tools MCP: {len(self.herramientas)}>"
+        )
 
 
 orquestador = Orquestador()

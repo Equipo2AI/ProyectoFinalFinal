@@ -1,0 +1,768 @@
+"""Orquestación explícita en grafo con LangGraph.
+
+El grafo reemplaza el enrutamiento opaco del hub por un flujo con estado
+compartido:
+
+    planear -> despachar -> especialista -> despachar -> ... -> verificar
+       ^                                                        |
+       └──────────────────── reintento (máx. 1) ────────────────┘
+                                                                |
+                                                           sintetizar
+
+Cada especialista lee el estado común y deja allí su resultado. El verificador
+puede pedir un reintento de los especialistas que fallaron, y el sintetizador
+compone la respuesta final sin inventar datos.
+
+El modo se controla con ``ORCHESTRATION_MODE``:
+- ``graph`` (por defecto): usa este grafo.
+- ``hub``: usa el orquestador anterior como respaldo.
+"""
+
+from __future__ import annotations
+
+import json
+import operator
+import re
+from pathlib import Path
+from typing import Annotated, Any, TypedDict
+
+from langchain_ollama import ChatOllama
+from langgraph.graph import END, START, StateGraph
+
+from proyecto.agents import data_steward_agent
+from proyecto.agents.document_intelligence_agent import (
+    PALABRAS_DESCRIPCION,
+    PATRON_RUTA_IMAGEN,
+)
+from proyecto.orchestration.orquestador import (
+    _es_consulta_normativa,
+    _llamar_mcp,
+    _normalizar,
+)
+
+_ESPECIALISTAS = {
+    "data_steward",
+    "data_analyst",
+    "normatividad_rag",
+    "document_intelligence",
+    "compliance",
+}
+
+_ETIQUETAS = {
+    "data_steward": "Data Steward",
+    "data_analyst": "Data Analyst",
+    "normatividad_rag": "Normatividad",
+    "document_intelligence": "Document Intelligence",
+    "compliance": "Compliance",
+}
+
+_RE_TABLA = re.compile(
+    r"\b(?:raw_|dim_|fact_|vw_)[a-z0-9_]+\b",
+    re.IGNORECASE,
+)
+_RE_METADATA = re.compile(
+    r"\b(?:tabla|tablas|columna|columnas|esquema|estructura|metadatos?|"
+    r"filas?|registros?|faltantes?|nulos?|duplicad\w*|calidad|"
+    r"relacion\w*|foreign\s+keys?)\b",
+    re.IGNORECASE,
+)
+_RE_ANALITICA = re.compile(
+    r"\b(?:cuantos?|cuantas?|total|suma|sumar|promedio|media|saldo|saldos|"
+    r"monto|montos|distribucion|distribuyen|ranking|top|porcentaje|"
+    r"metricas?|transacciones?|clientes?|cuentas?|movimientos?|"
+    r"tendencia|comparacion|comparar)\b",
+    re.IGNORECASE,
+)
+_RE_CALIDAD = re.compile(
+    r"\b(?:duplicad\w*|faltantes?|nulos?|calidad|problemas?|"
+    r"inconsistencias?)\b",
+    re.IGNORECASE,
+)
+_RE_COMPLIANCE = re.compile(
+    r"\b(?:kyc|aml|lavado|compliance|regulatori[oa]|"
+    r"reportes?\s+regulatori[oa]s?|sanciones?)\b",
+    re.IGNORECASE,
+)
+_RE_DOCUMENTO = re.compile(
+    r"\b(?:factura|recibo|comprobante|documento|imagen|ocr|"
+    r"folio|emisor|subtotal|iva)\b",
+    re.IGNORECASE,
+)
+_RE_DOCUMENTO_AMPLIO = re.compile(
+    r"\b(?:monto|total|fecha|importe|moneda|concepto)\b",
+    re.IGNORECASE,
+)
+_RE_SEGUIMIENTO = re.compile(
+    r"\b(?:si|no|por|solo|ahora|entonces|otra|otro|desglosa|desglosalo|"
+    r"filtra|filtras|muestra|dame|agrega|quita|cambia)\b",
+    re.IGNORECASE,
+)
+
+PROMPT_DIRECTO = """
+Eres el nodo de respuesta directa de un sistema multi-agente bancario.
+
+Responde en español, de forma breve y clara. Solo atiende saludos,
+aclaraciones generales o preguntas que no correspondan a un especialista.
+Si la consulta requiere datos, normativa, imágenes o compliance, dilo y pide
+que se reformule para enviarla al especialista adecuado.
+
+No inventes cifras, leyes, fuentes, tablas ni datos personales. Si no tienes
+contexto suficiente, dilo explícitamente.
+"""
+
+
+def _merge_dicts(actual: dict, nuevo: dict) -> dict:
+    """Reducer de LangGraph: mezcla resultados sin perder especialistas."""
+    return {**(actual or {}), **(nuevo or {})}
+
+
+class EstadoGrafo(TypedDict, total=False):
+    """Estado compartido por todos los nodos del grafo."""
+
+    consulta: str
+    historial: list
+    contexto_documentos: str
+    contexto_analista: str
+    modelo: str
+    imagen_pendiente: str | None
+    ultimo_agente: str | None
+
+    plan: list[str]
+    rutas: list[str]
+    pendientes: list[str]
+    siguiente: str
+    reintento: bool
+    fallidos: list[str]
+    intentos: int
+    verificacion: dict
+
+    resultados: Annotated[dict[str, dict], _merge_dicts]
+    trazas: Annotated[list[dict], operator.add]
+    errores: Annotated[list[str], operator.add]
+
+    respuesta: str
+
+
+def _texto(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            bloque.get("text", "")
+            for bloque in content
+            if isinstance(bloque, dict) and bloque.get("type") == "text"
+        )
+    return str(content or "")
+
+
+def _normalizar_historial(historial: list) -> list[dict]:
+    """Convierte mensajes de LangChain a dicts aceptados por ChatOllama."""
+    normalizado: list[dict] = []
+    for mensaje in historial or []:
+        if isinstance(mensaje, dict):
+            normalizado.append(
+                {
+                    "role": str(mensaje.get("role") or "user"),
+                    "content": str(mensaje.get("content") or ""),
+                }
+            )
+            continue
+
+        tipo = str(getattr(mensaje, "type", "human"))
+        rol = "assistant" if tipo in {"ai", "assistant"} else "user"
+        normalizado.append(
+            {"role": rol, "content": _texto(getattr(mensaje, "content", ""))}
+        )
+    return normalizado
+
+
+def _tiene_ruta_imagen(consulta: str) -> bool:
+    return bool(PATRON_RUTA_IMAGEN.search(consulta or ""))
+
+
+def _ruta_imagen(consulta: str) -> str | None:
+    coincidencia = PATRON_RUTA_IMAGEN.search(consulta or "")
+    if not coincidencia:
+        return None
+    return coincidencia.group(1) or coincidencia.group(2)
+
+
+def _tabla_mencionada(consulta: str) -> str:
+    coincidencia = _RE_TABLA.search(consulta or "")
+    return coincidencia.group(0) if coincidencia else ""
+
+
+def _es_seguimiento(consulta: str) -> bool:
+    texto = _normalizar(consulta or "")
+    palabras = re.findall(r"[a-z0-9_]+", texto)
+    return len(palabras) <= 8 and bool(_RE_SEGUIMIENTO.search(texto))
+
+
+def planear_rutas(
+    consulta: str,
+    ultimo_agente: str | None = None,
+    imagen_pendiente: str | None = None,
+    contexto_documentos: str = "",
+) -> list[str]:
+    """Decide qué especialistas deben intervenir.
+
+    Es un planificador determinista y auditable. La intención es que el grafo
+    no dependa de que un modelo pequeño acierte la ruta; el LLM se reserva para
+    la respuesta directa y para los especialistas que ya la usan internamente.
+    """
+    if imagen_pendiente or _tiene_ruta_imagen(consulta):
+        return ["document_intelligence"]
+
+    texto = _normalizar(consulta or "")
+
+    # Si ya hay un documento procesado, las preguntas sobre su contenido se
+    # responden con el contexto documental; no deben desviarse a SQL.
+    if contexto_documentos and (
+        _RE_DOCUMENTO.search(texto)
+        or (
+            ultimo_agente == "document_intelligence"
+            and _RE_DOCUMENTO_AMPLIO.search(texto)
+        )
+    ):
+        return ["directo"]
+
+    tabla = _tabla_mencionada(consulta)
+    metadata = bool(_RE_METADATA.search(texto))
+    analitica = bool(_RE_ANALITICA.search(texto))
+    normativa = _es_consulta_normativa(consulta)
+    compliance = bool(_RE_COMPLIANCE.search(texto))
+
+    rutas: list[str] = []
+    if normativa:
+        rutas.append("normatividad_rag")
+    if metadata:
+        rutas.append("data_steward")
+
+    # Si la consulta menciona una tabla concreta y pide metadatos (por ejemplo
+    # "cuántas filas tiene raw_clientes"), Data Steward es el especialista
+    # correcto; no hace falta mandarla también al Data Analyst.
+    if analitica and not (metadata and tabla):
+        rutas.append("data_analyst")
+
+    if compliance and not rutas:
+        rutas.append("compliance")
+
+    if not rutas and ultimo_agente and _es_seguimiento(consulta):
+        if ultimo_agente in _ESPECIALISTAS:
+            rutas.append(ultimo_agente)
+
+    return list(dict.fromkeys(rutas)) or ["directo"]
+
+
+def _traza(nombre: str, args: dict, salida: str, estado: str) -> dict:
+    return {
+        "name": nombre,
+        "args": args,
+        "salida": salida,
+        "estado": estado,
+    }
+
+
+def _ejecutar_mcp(
+    servidor: str,
+    herramienta: str,
+    argumentos: dict,
+    nombre_traza: str,
+) -> tuple[str, dict, str]:
+    salida = _llamar_mcp(servidor, herramienta, argumentos)
+    estado = "error" if salida.startswith("Error al llamar ") else "ok"
+    if not salida.strip():
+        estado = "error"
+        salida = f"El servidor MCP {servidor} devolvió una salida vacía."
+    return salida, _traza(nombre_traza, argumentos, salida, estado), estado
+
+
+def _json_dict(salida: str) -> dict | None:
+    try:
+        datos = json.loads(salida)
+    except (TypeError, ValueError):
+        return None
+    return datos if isinstance(datos, dict) else None
+
+
+def _nodo_planear(estado: EstadoGrafo) -> dict:
+    if estado.get("reintento"):
+        fallidos = [
+            ruta
+            for ruta in estado.get("fallidos") or []
+            if ruta in _ESPECIALISTAS
+        ]
+        return {"pendientes": fallidos, "reintento": False}
+
+    rutas = planear_rutas(
+        estado.get("consulta") or "",
+        ultimo_agente=estado.get("ultimo_agente"),
+        imagen_pendiente=estado.get("imagen_pendiente"),
+        contexto_documentos=estado.get("contexto_documentos") or "",
+    )
+    return {
+        "rutas": rutas,
+        "plan": rutas,
+        "pendientes": rutas,
+        "reintento": False,
+    }
+
+
+def _nodo_despachar(estado: EstadoGrafo) -> dict:
+    pendientes = list(estado.get("pendientes") or [])
+    if not pendientes:
+        return {"siguiente": "verificar", "pendientes": []}
+    siguiente = pendientes.pop(0)
+    if siguiente not in _ESPECIALISTAS:
+        return {"siguiente": "verificar", "pendientes": pendientes}
+    return {"siguiente": siguiente, "pendientes": pendientes}
+
+
+def _siguiente_despacho(estado: EstadoGrafo) -> str:
+    siguiente = estado.get("siguiente") or "verificar"
+    return siguiente if siguiente in _ESPECIALISTAS else "verificar"
+
+
+def _nodo_data_steward(estado: EstadoGrafo) -> dict:
+    consulta = estado.get("consulta") or ""
+    tabla = _tabla_mencionada(consulta)
+    pide_calidad = bool(_RE_CALIDAD.search(_normalizar(consulta)))
+
+    llamadas = [
+        (
+            "inspeccionar_dataset",
+            "mcp_inspeccionar_dataset",
+            {"tabla": tabla},
+        )
+    ]
+    if pide_calidad:
+        llamadas.append(
+            (
+                "validar_calidad_datos",
+                "mcp_validar_calidad_datos",
+                {"tabla": tabla},
+            )
+        )
+
+    resultados_json: list[dict] = []
+    salidas: list[str] = []
+    trazas: list[dict] = []
+    errores: list[str] = []
+
+    for herramienta, nombre_traza, argumentos in llamadas:
+        salida, traza, estado_llamada = _ejecutar_mcp(
+            "data_steward_server",
+            herramienta,
+            argumentos,
+            nombre_traza,
+        )
+        trazas.append(traza)
+        salidas.append(salida)
+        datos = _json_dict(salida)
+        if (
+            estado_llamada == "error"
+            or not isinstance(datos, dict)
+            or "error" in datos
+        ):
+            detalle = (
+                str(datos.get("error"))
+                if isinstance(datos, dict) and datos.get("error")
+                else salida
+            )
+            errores.append(f"{herramienta}: {detalle}")
+            continue
+        resultados_json.append({"herramienta": herramienta, "datos": datos})
+
+    if resultados_json:
+        try:
+            respuesta = data_steward_agent.formatear_resultados_verificados(
+                resultados_json
+            )
+        except Exception as error:  # noqa: BLE001 - se conserva la salida cruda
+            respuesta = "\n\n".join(salidas)
+            errores.append(f"formateo: {type(error).__name__}: {error}")
+        if errores:
+            respuesta += "\n\n" + "\n".join(
+                f"- No se pudo completar: {error}" for error in errores
+            )
+        estado_resultado = "ok"
+    else:
+        respuesta = "\n".join(
+            [f"- {error}" for error in errores]
+            or ["No se obtuvieron datos de las herramientas de metadatos."]
+        )
+        estado_resultado = "error"
+
+    return {
+        "resultados": {
+            "data_steward": {
+                "agente": "data_steward",
+                "respuesta": respuesta,
+                "estado": estado_resultado,
+            }
+        },
+        "trazas": trazas,
+        "errores": errores,
+    }
+
+
+def _contexto_previo(estado: EstadoGrafo) -> str:
+    partes: list[str] = []
+    for agente, resultado in (estado.get("resultados") or {}).items():
+        if agente == "data_analyst" or resultado.get("estado") == "error":
+            continue
+        texto = str(resultado.get("respuesta") or "").strip()
+        if texto:
+            partes.append(f"{agente}: {texto[:1200]}")
+    return "\n\n".join(partes)
+
+
+def _nodo_data_analyst(estado: EstadoGrafo) -> dict:
+    contexto = estado.get("contexto_analista") or ""
+    previo = _contexto_previo(estado)
+    if previo:
+        contexto = (
+            f"{contexto}\n\nResultados previos de otros especialistas:\n{previo}"
+        ).strip()
+    argumentos = {
+        "consulta": estado.get("consulta") or "",
+        "contexto": contexto,
+    }
+    salida, traza, estado_llamada = _ejecutar_mcp(
+        "data_analyst_server",
+        "analizar_datos",
+        argumentos,
+        "mcp_analizar_datos",
+    )
+    return {
+        "resultados": {
+            "data_analyst": {
+                "agente": "data_analyst",
+                "respuesta": salida,
+                "estado": estado_llamada,
+            }
+        },
+        "trazas": [traza],
+        "errores": [f"data_analyst: {salida}"] if estado_llamada == "error" else [],
+    }
+
+
+def _nodo_normatividad(estado: EstadoGrafo) -> dict:
+    argumentos = {"query": estado.get("consulta") or ""}
+    salida, traza, estado_llamada = _ejecutar_mcp(
+        "normatividad_rag_server",
+        "buscar_normatividad",
+        argumentos,
+        "mcp_buscar_normatividad",
+    )
+    return {
+        "resultados": {
+            "normatividad_rag": {
+                "agente": "normatividad_rag",
+                "respuesta": salida,
+                "estado": estado_llamada,
+            }
+        },
+        "trazas": [traza],
+        "errores": (
+            [f"normatividad_rag: {salida}"]
+            if estado_llamada == "error"
+            else []
+        ),
+    }
+
+
+def _nodo_documento(estado: EstadoGrafo) -> dict:
+    consulta = estado.get("consulta") or ""
+    ruta = estado.get("imagen_pendiente") or _ruta_imagen(consulta)
+    if not ruta:
+        respuesta = (
+            "Proporciona la ruta local de una imagen "
+            "(por ejemplo: tests/modelo-factura-ex.png)."
+        )
+        return {
+            "resultados": {
+                "document_intelligence": {
+                    "agente": "document_intelligence",
+                    "respuesta": respuesta,
+                    "estado": "error",
+                }
+            },
+            "trazas": [],
+            "errores": ["document_intelligence: falta la ruta de la imagen"],
+        }
+
+    texto = _normalizar(consulta)
+    pide_ocr = any(
+        palabra in texto
+        for palabra in (
+            "ocr",
+            "texto",
+            "transcribe",
+            "transcripcion",
+            "extrae",
+            "extraer",
+            "leer",
+            "lectura",
+            "literal",
+        )
+    )
+    pide_descripcion = any(
+        _normalizar(palabra) in texto for palabra in PALABRAS_DESCRIPCION
+    )
+    describir = pide_descripcion and not pide_ocr
+    herramienta = "describir_imagen" if describir else "extraer_texto_imagen"
+    nombre_traza = (
+        "mcp_describir_imagen"
+        if describir
+        else "mcp_extraer_texto_imagen"
+    )
+    salida, traza, estado_llamada = _ejecutar_mcp(
+        "document_intelligence_server",
+        herramienta,
+        {"image_path": ruta},
+        nombre_traza,
+    )
+    if salida.startswith("No se pudo procesar la imagen:"):
+        estado_llamada = "error"
+    return {
+        "resultados": {
+            "document_intelligence": {
+                "agente": "document_intelligence",
+                "respuesta": salida,
+                "estado": estado_llamada,
+            }
+        },
+        "trazas": [traza],
+        "errores": (
+            [f"document_intelligence: {salida}"]
+            if estado_llamada == "error"
+            else []
+        ),
+    }
+
+
+def _nodo_compliance(estado: EstadoGrafo) -> dict:
+    respuesta = (
+        "El módulo de compliance, KYC y AML está fuera del alcance del MVP "
+        "actual (fase 2). No puedo emitir una evaluación regulatoria ni "
+        "confirmar cumplimiento con esa normativa."
+    )
+    return {
+        "resultados": {
+            "compliance": {
+                "agente": "compliance",
+                "respuesta": respuesta,
+                "estado": "ok",
+            }
+        },
+        "trazas": [],
+        "errores": [],
+    }
+
+
+def _nodo_verificar(estado: EstadoGrafo) -> dict:
+    plan = [
+        ruta
+        for ruta in estado.get("plan") or []
+        if ruta in _ESPECIALISTAS
+    ]
+    resultados = estado.get("resultados") or {}
+    fallidos = [
+        ruta
+        for ruta in plan
+        if ruta not in resultados
+        or resultados[ruta].get("estado") == "error"
+    ]
+    intentos = int(estado.get("intentos") or 0)
+
+    if fallidos and intentos < 1:
+        return {
+            "reintento": True,
+            "fallidos": fallidos,
+            "intentos": intentos + 1,
+            "verificacion": {
+                "estado": "reintentar",
+                "fallidos": fallidos,
+            },
+        }
+
+    return {
+        "reintento": False,
+        "verificacion": {
+            "estado": "ok" if not fallidos else "incompleto",
+            "fallidos": fallidos,
+        },
+    }
+
+
+def _decidir_verificacion(estado: EstadoGrafo) -> str:
+    return "reintentar" if estado.get("reintento") else "sintetizar"
+
+
+def _respuesta_directa(estado: EstadoGrafo) -> str:
+    historial = _normalizar_historial(estado.get("historial") or [])
+    if not historial:
+        historial = [{"role": "user", "content": estado.get("consulta") or ""}]
+
+    contexto = str(estado.get("contexto_documentos") or "").strip()
+    system = PROMPT_DIRECTO
+    if contexto:
+        system += "\n\nContexto documental de la conversación:\n" + contexto
+
+    mensajes = [{"role": "system", "content": system}, *historial]
+    try:
+        respuesta = ChatOllama(
+            model=estado.get("modelo") or "qwen2.5:7b-instruct",
+            temperature=0,
+        ).invoke(mensajes)
+        texto = _texto(getattr(respuesta, "content", respuesta)).strip()
+        return texto or "No pude generar una respuesta directa."
+    except Exception as error:  # noqa: BLE001 - se informa al usuario
+        return (
+            "No pude generar una respuesta directa: "
+            f"{type(error).__name__}: {error}"
+        )
+
+
+def _nodo_sintetizar(estado: EstadoGrafo) -> dict:
+    plan = list(estado.get("plan") or [])
+    resultados = estado.get("resultados") or {}
+
+    if not plan or plan == ["directo"]:
+        return {"respuesta": _respuesta_directa(estado)}
+
+    partes: list[str] = []
+    for agente in plan:
+        resultado = resultados.get(agente)
+        etiqueta = _ETIQUETAS.get(agente, agente)
+        if not resultado:
+            partes.append(
+                f"### {etiqueta}\nNo se obtuvo respuesta de este especialista."
+            )
+            continue
+        if resultado.get("estado") == "error":
+            partes.append(
+                f"### {etiqueta}\nNo se pudo completar: "
+                f"{resultado.get('respuesta', 'error desconocido')}"
+            )
+            continue
+        partes.append(f"### {etiqueta}\n{resultado.get('respuesta', '')}")
+
+    if len(partes) == 1:
+        resultado = resultados.get(plan[0]) or {}
+        respuesta = str(resultado.get("respuesta") or "").strip()
+    else:
+        respuesta = "\n\n".join(partes).strip()
+
+    if not respuesta:
+        respuesta = (
+            "El grafo no obtuvo una respuesta de los especialistas. "
+            "Revisa la traza para ver el error."
+        )
+    return {"respuesta": respuesta}
+
+
+_GRAFO = None
+
+
+def _construir_grafo():
+    grafo = StateGraph(EstadoGrafo)
+
+    grafo.add_node("planear", _nodo_planear)
+    grafo.add_node("despachar", _nodo_despachar)
+    grafo.add_node("data_steward", _nodo_data_steward)
+    grafo.add_node("data_analyst", _nodo_data_analyst)
+    grafo.add_node("normatividad_rag", _nodo_normatividad)
+    grafo.add_node("document_intelligence", _nodo_documento)
+    grafo.add_node("compliance", _nodo_compliance)
+    grafo.add_node("verificar", _nodo_verificar)
+    grafo.add_node("sintetizar", _nodo_sintetizar)
+
+    grafo.add_edge(START, "planear")
+    grafo.add_edge("planear", "despachar")
+    grafo.add_conditional_edges(
+        "despachar",
+        _siguiente_despacho,
+        {
+            "data_steward": "data_steward",
+            "data_analyst": "data_analyst",
+            "normatividad_rag": "normatividad_rag",
+            "document_intelligence": "document_intelligence",
+            "compliance": "compliance",
+            "verificar": "verificar",
+        },
+    )
+
+    for especialista in (
+        "data_steward",
+        "data_analyst",
+        "normatividad_rag",
+        "document_intelligence",
+        "compliance",
+    ):
+        grafo.add_edge(especialista, "despachar")
+
+    grafo.add_conditional_edges(
+        "verificar",
+        _decidir_verificacion,
+        {
+            "reintentar": "planear",
+            "sintetizar": "sintetizar",
+        },
+    )
+    grafo.add_edge("sintetizar", END)
+    return grafo.compile()
+
+
+def _get_grafo():
+    global _GRAFO
+    if _GRAFO is None:
+        _GRAFO = _construir_grafo()
+    return _GRAFO
+
+
+def ejecutar_grafo(
+    consulta: str,
+    *,
+    historial: list | None = None,
+    contexto_documentos: str = "",
+    contexto_analista: str = "",
+    modelo: str = "qwen2.5:7b-instruct",
+    imagen_pendiente: str | None = None,
+    ultimo_agente: str | None = None,
+) -> EstadoGrafo:
+    """Ejecuta el grafo para una consulta y devuelve el estado final."""
+    estado_inicial: EstadoGrafo = {
+        "consulta": consulta,
+        "historial": list(historial or []),
+        "contexto_documentos": contexto_documentos,
+        "contexto_analista": contexto_analista,
+        "modelo": modelo,
+        "imagen_pendiente": (
+            str(Path(imagen_pendiente).expanduser().resolve())
+            if imagen_pendiente
+            else None
+        ),
+        "ultimo_agente": ultimo_agente,
+        "plan": [],
+        "rutas": [],
+        "pendientes": [],
+        "siguiente": "",
+        "reintento": False,
+        "fallidos": [],
+        "intentos": 0,
+        "resultados": {},
+        "trazas": [],
+        "errores": [],
+        "respuesta": "",
+    }
+    return _get_grafo().invoke(
+        estado_inicial,
+        config={
+            "run_name": "orquestador_grafo",
+            "tags": ["orquestador", "grafo", "ui"],
+            "metadata": {"modelo": modelo},
+            "recursion_limit": 20,
+        },
+    )
