@@ -34,7 +34,7 @@ SUGERENCIAS = [
     ),
     (
         "sug_1",
-        "¿Cuántos clientes hay en la base sintética y cómo se distribuyen por "
+        "¿Cuántos clientes hay en la base y cómo se distribuyen por "
         "tipo de persona?",
     ),
     (
@@ -110,7 +110,6 @@ def iniciar(
     st.session_state.imagen_actual = imagen_path
     st.session_state.imagen_nombre_actual = imagen_nombre
     st.session_state.pensando = True
-    st.session_state.consola_abierta = True
     st.rerun()
 
 
@@ -278,28 +277,6 @@ with izquierda:
                     )
                     componentes.pensando(estado)
 
-                # Streamlit no desplaza solo el contenedor de mensajes. Sin
-                # esto, a partir de la cuarta consulta la respuesta nueva queda
-                # debajo del área visible y parece que la conversación se congeló.
-                if st.session_state.mensajes:
-                    firma = f"{len(st.session_state.mensajes)}-{len(st.session_state.mensajes[-1].get('texto', ''))}"
-                    st.iframe(
-                        f"""
-                        <script>
-                        const doc = window.parent.document;
-                        const el = doc.querySelector('.st-key-chat_scroll');
-                        if (el) {{
-                          const irAlFinal = () => {{ el.scrollTop = el.scrollHeight; }};
-                          irAlFinal();
-                          requestAnimationFrame(irAlFinal);
-                          setTimeout(irAlFinal, 80);
-                        }}
-                        /* {firma} */
-                        </script>
-                        """,
-                        height=1,
-                    )
-
         entrada = st.chat_input(
             "Hazme una consulta",
             accept_file=True,
@@ -335,6 +312,33 @@ if abierta:
                 )
             with st.container(key="consola_scroll"):
                 panel_consola(st.session_state.artefacto, st.session_state.pensando)
+
+# Autoscroll fuera del contenedor del chat. Si el iframe vive dentro de
+# chat_scroll altera su scrollHeight y puede colapsar el layout durante el
+# rerun. El bucle reintenta mientras Streamlit termina de montar los mensajes.
+if st.session_state.mensajes:
+    firma = f"{len(st.session_state.mensajes)}-{len(st.session_state.mensajes[-1].get('texto', ''))}"
+    st.iframe(
+        f"""
+        <script>
+        const doc = window.parent.document;
+        const inicio = performance.now();
+        const alFinal = () => {{
+          const contenedores = [...doc.querySelectorAll('.st-key-chat_scroll')];
+          const el = contenedores.find((n) => n.offsetParent !== null && n.clientHeight > 0)
+            || contenedores[contenedores.length - 1];
+          if (el) el.scrollTop = el.scrollHeight;
+        }};
+        const bucle = () => {{
+          alFinal();
+          if (performance.now() - inicio < 2500) requestAnimationFrame(bucle);
+        }};
+        bucle();
+        /* {firma} */
+        </script>
+        """,
+        height=1,
+    )
 
 if st.session_state.pensando:
     try:
