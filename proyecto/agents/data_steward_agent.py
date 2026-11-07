@@ -37,6 +37,13 @@ reglas de negocio ni causas. Distingue un conteo de faltantes de una fila con
 algún faltante. Un duplicado o una clave repetida requiere revisión; no implica
 borrar datos.
 
+En `inspeccionar_dataset`, `catalogo_tablas` es solo el inventario de tablas y
+vistas disponibles: no son relaciones. Las relaciones reales son las que
+aparecen en `relaciones` (foreign keys declaradas). Si `relaciones` está vacío,
+di que no hay foreign keys declaradas; no deduzcas relaciones por la lista de
+tablas. Si la consulta menciona faltantes, nulos, duplicados, calidad o
+problemas, llama a `validar_calidad_datos` además de inspeccionar la tabla.
+
 Nunca muestres nombres, correos, teléfonos, CURP, RFC, direcciones ni valores
 de registros individuales. Trabaja con agregados y metadatos. No modifiques la
 base ni afirmes haberlo hecho.
@@ -66,6 +73,37 @@ def _get_engine():
 def _normalizar(texto: str) -> str:
     normalizado = unicodedata.normalize("NFKD", texto.casefold())
     return "".join(c for c in normalizado if not unicodedata.combining(c))
+
+
+_CIFRAS = re.compile(r"\d")
+_NOMBRE_TABLA = re.compile(r"\b(?:raw_|dim_|fact_|vw_)[a-z0-9_]+\b", re.IGNORECASE)
+_PALABRAS_METADATA = re.compile(
+    r"\b(?:tabla|columna|filas?|registros?|faltantes?|nulos?|"
+    r"duplicad\w*|relacion\w*|foreign\s+keys?)\b",
+    re.IGNORECASE,
+)
+_SOLICITA_CALIDAD = re.compile(
+    r"\b(?:duplicad\w*|faltantes?|nulos?|calidad|problemas?|"
+    r"inconsistencias?)\b",
+    re.IGNORECASE,
+)
+_MENSAJE_SIN_HERRAMIENTA = (
+    "No consulté las herramientas de metadatos en este turno, así que no "
+    "tengo datos verificados para responder. Para evitar inventar tablas, "
+    "columnas, faltantes o relaciones, no voy a dar detalles. Reformula la "
+    "pregunta indicando la tabla o vista que quieres revisar y lo intento de "
+    "nuevo."
+)
+
+
+def _parece_respuesta_sin_herramienta(texto: str) -> bool:
+    return bool(
+        _CIFRAS.search(texto)
+        or (
+            _NOMBRE_TABLA.search(texto)
+            and _PALABRAS_METADATA.search(texto)
+        )
+    )
 
 
 def _solicita_registros_personales(consulta: str) -> bool:
@@ -123,6 +161,19 @@ def _resolver_tabla(tabla: str):
     return engine, inspector, solicitada, tablas, vistas, disponibles, None
 
 
+def _relaciones_tabla(inspector, tabla: str) -> list[dict]:
+    return [
+        {
+            "columnas": fk["constrained_columns"],
+            "referencia": (
+                f"{fk['referred_table']}("
+                f"{', '.join(fk['referred_columns'])})"
+            ),
+        }
+        for fk in inspector.get_foreign_keys(tabla)
+    ]
+
+
 @tool
 def inspeccionar_dataset(tabla: str = "") -> str:
     """Devuelve tablas/vistas, columnas, tipos, filas y faltantes de la base sintética.
@@ -134,7 +185,7 @@ def inspeccionar_dataset(tabla: str = "") -> str:
         engine, inspector, nombre, tablas, vistas, disponibles, error = _resolver_tabla(tabla)
         if error:
             return json.dumps(
-                {"error": error, "tablas_disponibles": disponibles},
+                {"error": error, "catalogo_tablas": disponibles},
                 ensure_ascii=False,
             )
 
@@ -166,7 +217,13 @@ def inspeccionar_dataset(tabla: str = "") -> str:
                 "es_vista": nombre in vistas,
                 "filas": int(filas or 0),
                 "columnas": columnas,
-                "tablas_disponibles": disponibles,
+                "relaciones": _relaciones_tabla(inspector, nombre),
+                "catalogo_tablas": disponibles,
+                "nota_catalogo": (
+                    "catalogo_tablas es solo el inventario de tablas y vistas "
+                    "disponibles; no implica que estén relacionadas con la "
+                    "tabla inspeccionada. Usa relaciones para las foreign keys."
+                ),
             },
             ensure_ascii=False,
             default=str,
@@ -215,7 +272,7 @@ def validar_calidad_datos(tabla: str = "") -> str:
         engine, inspector, nombre, tablas, vistas, disponibles, error = _resolver_tabla(tabla)
         if error:
             return json.dumps(
-                {"error": error, "tablas_disponibles": disponibles},
+                {"error": error, "catalogo_tablas": disponibles},
                 ensure_ascii=False,
             )
 
@@ -291,6 +348,178 @@ def validar_calidad_datos(tabla: str = "") -> str:
         )
 
 
+_HERRAMIENTAS_METADATA = {"inspeccionar_dataset", "validar_calidad_datos"}
+
+
+def _resultados_herramientas(mensajes) -> list[dict]:
+    """Recupera las salidas JSON de las tools de metadatos."""
+    pendientes: dict[str, str] = {}
+    resultados: list[dict] = []
+    vistos: set[tuple[str, str]] = set()
+
+    for mensaje in mensajes:
+        for llamada in getattr(mensaje, "tool_calls", None) or []:
+            nombre = llamada.get("name")
+            if nombre in _HERRAMIENTAS_METADATA:
+                pendientes[llamada.get("id") or ""] = nombre
+
+        nombre = getattr(mensaje, "name", None)
+        if nombre not in _HERRAMIENTAS_METADATA:
+            continue
+
+        contenido = getattr(mensaje, "content", None)
+        if isinstance(contenido, dict):
+            datos = contenido
+        else:
+            try:
+                datos = json.loads(contenido)
+            except (TypeError, ValueError):
+                continue
+        if not isinstance(datos, dict):
+            continue
+
+        herramienta = pendientes.get(
+            getattr(mensaje, "tool_call_id", "") or "",
+            nombre,
+        )
+        tabla = str(datos.get("tabla") or datos.get("error") or "")
+        clave = (herramienta, tabla)
+        if clave in vistos:
+            continue
+        vistos.add(clave)
+        resultados.append({"herramienta": herramienta, "datos": datos})
+
+    return resultados
+
+
+def _formatear_error(nombre: str, datos: dict) -> str:
+    lineas = [
+        f"No se pudo completar `{nombre}`: {datos.get('error', 'error desconocido')}"
+    ]
+    catalogo = datos.get("catalogo_tablas") or []
+    if catalogo:
+        lineas.append(
+            "Tablas/vistas disponibles: "
+            + ", ".join(f"`{tabla}`" for tabla in catalogo)
+        )
+    return "\n".join(lineas)
+
+
+def _formatear_inspeccion(datos: dict) -> str:
+    if "error" in datos:
+        return _formatear_error("inspeccionar_dataset", datos)
+
+    tabla = datos.get("tabla", "?")
+    es_vista = "vista" if datos.get("es_vista") else "tabla"
+    columnas = datos.get("columnas") or []
+    filas = int(datos.get("filas") or 0)
+
+    lineas = [
+        f"**{tabla}** ({es_vista})",
+        f"- Filas: {filas:,}",
+        f"- Columnas: {len(columnas)}",
+        "",
+        "| Columna | Tipo | Valores faltantes |",
+        "|---|---|---:|",
+    ]
+    for columna in columnas:
+        lineas.append(
+            "| `{}` | {} | {:,} |".format(
+                columna.get("nombre", "?"),
+                columna.get("tipo", "?"),
+                int(columna.get("valores_faltantes") or 0),
+            )
+        )
+
+    relaciones = datos.get("relaciones") or []
+    lineas.append("")
+    if relaciones:
+        lineas.append("**Relaciones (foreign keys):**")
+        for relacion in relaciones:
+            columnas_fk = ", ".join(relacion.get("columnas") or [])
+            lineas.append(
+                f"- `{columnas_fk}` → `{relacion.get('referencia', '?')}`"
+            )
+    else:
+        lineas.append("**Relaciones (foreign keys):** ninguna declarada.")
+
+    catalogo = datos.get("catalogo_tablas") or []
+    if catalogo:
+        lineas.append("")
+        lineas.append(
+            "**Catálogo de tablas/vistas disponibles** "
+            "(no son relaciones): "
+            + ", ".join(f"`{tabla}`" for tabla in catalogo)
+        )
+
+    return "\n".join(lineas)
+
+
+def _formatear_calidad(datos: dict) -> str:
+    if "error" in datos:
+        return _formatear_error("validar_calidad_datos", datos)
+
+    tabla = datos.get("tabla", "?")
+    filas = int(datos.get("filas") or 0)
+    faltantes = datos.get("valores_faltantes_por_columna") or {}
+    filas_con_faltante = int(
+        datos.get("filas_con_algun_valor_faltante") or 0
+    )
+    duplicadas = int(datos.get("filas_duplicadas_exactas") or 0)
+    sobrantes = datos.get("filas_sobrantes_por_clave")
+
+    lineas = [
+        f"**Calidad de `{tabla}`:**",
+        f"- Filas: {filas:,}",
+        f"- Filas con algún valor faltante: {filas_con_faltante:,}",
+    ]
+
+    if faltantes:
+        lineas.extend([
+            "",
+            "| Columna | Valores faltantes |",
+            "|---|---:|",
+        ])
+        for columna, cantidad in faltantes.items():
+            lineas.append(f"| `{columna}` | {int(cantidad):,} |")
+    else:
+        lineas.append("- Valores faltantes por columna: ninguno.")
+
+    lineas.append(f"- Filas duplicadas exactas: {duplicadas:,}")
+    if sobrantes is None:
+        lineas.append(
+            "- Filas sobrantes por clave: no aplica (sin clave detectable)."
+        )
+    else:
+        lineas.append(f"- Filas sobrantes por clave: {int(sobrantes):,}")
+
+    nota = datos.get("nota")
+    if nota:
+        lineas.append(f"- Nota: {nota}")
+
+    return "\n".join(lineas)
+
+
+def formatear_resultados_verificados(resultados: list[dict]) -> str:
+    """Convierte salidas de tools en una respuesta determinista y verificable."""
+    if not resultados:
+        return ""
+
+    partes = ["Respuesta verificada con las herramientas de metadatos:"]
+    for resultado in resultados:
+        nombre = resultado.get("herramienta")
+        datos = resultado.get("datos") or {}
+        if nombre == "inspeccionar_dataset":
+            partes.append(_formatear_inspeccion(datos))
+        elif nombre == "validar_calidad_datos":
+            partes.append(_formatear_calidad(datos))
+        else:
+            partes.append(f"Resultado de `{nombre}`: {json.dumps(datos, ensure_ascii=False)}")
+
+    partes.append("No se exponen valores individuales de clientes.")
+    return "\n\n".join(partes)
+
+
 class DataStewardAgent:
     def __init__(self):
         self.nombre = "data_steward"
@@ -313,6 +542,9 @@ class DataStewardAgent:
             )
         return self._agent
 
+    def formatear_resultados_verificados(self, resultados: list[dict]) -> str:
+        return formatear_resultados_verificados(resultados)
+
     def procesar(self, consulta: str) -> str:
         if _solicita_registros_personales(consulta):
             return (
@@ -325,14 +557,47 @@ class DataStewardAgent:
         resultado = self._get_agent().invoke(
             {"messages": [{"role": "user", "content": consulta}]}
         )
-        mensaje = resultado["messages"][-1]
+        mensajes = resultado["messages"]
+        verificados = _resultados_herramientas(mensajes)
+        if verificados:
+            hay_calidad = any(
+                item["herramienta"] == "validar_calidad_datos"
+                for item in verificados
+            )
+            if _SOLICITA_CALIDAD.search(consulta) and not hay_calidad:
+                tablas = [
+                    item["datos"].get("tabla")
+                    for item in verificados
+                    if item["herramienta"] == "inspeccionar_dataset"
+                    and "error" not in item["datos"]
+                    and item["datos"].get("tabla")
+                ]
+                for tabla in dict.fromkeys(tablas):
+                    try:
+                        calidad = json.loads(
+                            validar_calidad_datos.invoke({"tabla": tabla})
+                        )
+                    except Exception:  # noqa: BLE001 - se conserva la inspección
+                        continue
+                    verificados.append({
+                        "herramienta": "validar_calidad_datos",
+                        "datos": calidad,
+                    })
+            return formatear_resultados_verificados(verificados)
+
+        mensaje = mensajes[-1]
         if isinstance(mensaje.content, str):
-            return mensaje.content
-        return "".join(
-            bloque.get("text", "")
-            for bloque in mensaje.content
-            if isinstance(bloque, dict) and bloque.get("type") == "text"
-        )
+            respuesta = mensaje.content
+        else:
+            respuesta = "".join(
+                bloque.get("text", "")
+                for bloque in mensaje.content
+                if isinstance(bloque, dict) and bloque.get("type") == "text"
+            )
+
+        if _parece_respuesta_sin_herramienta(respuesta):
+            return _MENSAJE_SIN_HERRAMIENTA
+        return respuesta
 
     def __repr__(self) -> str:
         return f"<Agente {self.nombre} | modelo: {self.modelo}>"
