@@ -20,8 +20,6 @@ if str(_RAIZ) not in sys.path:
     sys.path.insert(0, str(_RAIZ))
 
 from proyecto.agents.document_intelligence_agent import (
-    EXTENSIONES_IMAGEN,
-    MAX_IMAGE_BYTES,
     MODELO_VISION_POR_DEFECTO,
     describe_an_image,
     ocr_image,

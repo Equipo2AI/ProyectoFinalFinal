@@ -7,16 +7,6 @@ from langchain_ollama import ChatOllama
 from proyecto.mcp_servers.data_analyst_backend import (
     DataAnalystSQLBackend,
     SYSTEM_PROMPT,
-    MAX_FILAS,
-    TABLAS_EXCLUIDAS,
-    COLUMNAS_SENSIBLES,
-    _normalizar,
-    _validar_consulta,
-    _sqlite_solo_lectura,
-    _json,
-    _SOLO_LECTURA,
-    _PALABRAS_PROHIBIDAS,
-    _TABLAS_EXCLUIDAS,
 )
 from proyecto.mcp_servers.mcp_client import llamar_herramienta, llamar_herramienta_mcp
 

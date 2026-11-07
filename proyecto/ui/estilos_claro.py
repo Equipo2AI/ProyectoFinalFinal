@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import streamlit as st
-
 CSS = """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Manrope:wght@300;400;500;600;700&display=swap');

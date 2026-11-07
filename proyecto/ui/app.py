@@ -16,12 +16,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import streamlit as st
 
 from servicio import (
-    EXTENSIONES_IMAGEN,
-    MAX_IMAGE_BYTES,
     preguntar_orquestador,
     procesar_imagen_auto,
     reiniciar_orquestador,
 )
+from agents.document_intelligence_agent import EXTENSIONES_IMAGEN, MAX_IMAGE_BYTES
 from ui import componentes, estilos
 
 TIPOS_IMAGEN = sorted(extension.lstrip(".") for extension in EXTENSIONES_IMAGEN)

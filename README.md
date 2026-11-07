@@ -10,35 +10,48 @@ Streamlit que muestra la respuesta junto con la traza de herramientas.
 
 ## Arquitectura
 
+El orquestador ocupa el centro: recibe la consulta, decide qué especialistas
+participan y reparte el trabajo. Ningún especialista llama a otro; todos leen y
+escriben en el mismo estado del grafo.
+
 ```text
-Usuario
-  │
-  ▼
-Streamlit (chat + panel de traza)
-  │
-  ▼
-Orquestador (grafo LangGraph)
-  ├── Data Steward ──────────► MCP ──► banamex.db   (metadatos y calidad)
-  ├── Data Analyst ──────────► MCP ──► banamex.db   (SQL de solo lectura)
-  ├── Normatividad RAG ──────────────► Pinecone     (leyes, políticas, avisos)
-  └── Document Intelligence ─────────► OCR / visión (imágenes locales)
+  ┌───────────────────┐                            ┌───────────────────┐
+  │    Data Steward   │                            │    Data Analyst   │
+  │ metadatos/calidad │                            │  SQL solo lectura │
+  └─────────┬─────────┘                            └─────────┬─────────┘
+            │                                                │
+            │             ┌───────────────────┐              │
+            └─────────────│    Orquestador    │──────────────┘
+            ┌─────────────│     LangGraph     │──────────────┐
+            │             └───────────────────┘              │
+            │                                                │
+  ┌─────────▼─────────┐                            ┌─────────▼─────────┐
+  │  Normatividad RAG │                            │      Document     │
+  │      Pinecone     │                            │    Intelligence   │
+  └───────────────────┘                            └───────────────────┘
 ```
 
-`compliance` (KYC/AML) existe como stub y queda para fase 2: no está conectado al
-grafo ni tiene servidor MCP.
+Las líneas son de ida y vuelta: el orquestador despacha y recibe resultados.
+Data Steward y Data Analyst hablan por MCP `stdio` con `proyecto/bd/banamex.db`;
+Normatividad consulta el índice Pinecone; Document Intelligence usa Ollama con
+Qwen2.5-VL sobre una imagen local. Encima de todo está Streamlit, que muestra la
+respuesta y la traza de herramientas.
+
+`compliance` (KYC/AML) solo tiene un servidor MCP de demostración y el grafo lo
+usa para rechazar ese tipo de consultas; las reglas reales quedan para fase 2.
 
 ## Qué cubre esta entrega
 
 | Entregable Sprint 2 | Estado |
 |---|---|
-| Base sintética generada con los scripts SQL de Banamex | ✅ `proyecto/bd/crear_bd.sql` + `cargar_bd.py` |
-| Agente que consulta y analiza la base con herramientas | ✅ Data Steward y Data Analyst sobre `banamex.db` |
-| Integración MCP para acceso a datos y servicios | ✅ 4 servidores funcionales por `stdio` (+ `compliance` en fase 2) |
-| RAG de gobernanza | ✅ Pinecone con 7 documentos y citas de fuente |
-| Al menos cinco casos de prueba documentados | ✅ abajo, con aciertos, fallos y causas |
-| Diagrama de arquitectura | ✅ arriba |
-| Repo con código, dependencias e instrucciones | ✅ `pyproject.toml` + `uv.lock` |
-| Demo que consume la base de verdad | ✅ las respuestas usan el resultado de las herramientas |
+| Base sintética generada con los scripts SQL de Banamex | Sí: `proyecto/bd/crear_bd.sql` + `cargar_bd.py` |
+| Agente que consulta y analiza la base con herramientas | Sí: Data Steward y Data Analyst sobre `banamex.db` |
+| Integración MCP para acceso a datos y servicios | Sí: 5 servidores por `stdio`; `compliance` es demostración |
+| RAG de gobernanza | Sí: Pinecone con 7 documentos y citas de fuente |
+| Al menos cinco casos de prueba documentados | Sí: abajo, con aciertos, fallos y causas |
+| Diagrama de arquitectura | Sí: arriba |
+| Repo con código, dependencias e instrucciones | Sí: `pyproject.toml` + `uv.lock` |
+| Demo que consume la base de verdad | Sí: las respuestas usan el resultado de las herramientas |
 
 ## Requisitos
 
@@ -89,6 +102,10 @@ Mantén el panel de traza abierto: ahí se ve la herramienta MCP invocada, sus
 argumentos, el estado, la consulta SQL y las fuentes. La interfaz también permite
 adjuntar imágenes para OCR o descripción.
 
+Ejemplo de una consulta de normatividad respondida con evidencia y fuentes:
+
+![Consulta de normatividad en la interfaz, con la traza y las fuentes a la derecha](files/consulta.png)
+
 ## CLI
 
 ```bash
@@ -107,7 +124,7 @@ python proyecto/main.py --consulta "¿Qué problemas de calidad tiene raw_client
 | `data_analyst` | Análisis cuantitativo sobre datos bancarios | `qwen2.5:7b-instruct` | `analizar_datos`, `listar_tablas`, `describir_tabla`, `valores_columna`, `ejecutar_consulta` |
 | `normatividad_rag` | Búsqueda semántica sobre documentación | `llama3.1:latest` | `buscar_normatividad` |
 | `document_intelligence` | Lectura de imágenes y documentos | `qwen2.5vl:7b` | `extraer_texto_imagen`, `describir_imagen` |
-| `compliance` | Reglas regulatorias: KYC, AML | `llama3.1:latest` | — (fase 2) |
+| `compliance` | Reglas regulatorias: KYC, AML | `llama3.1:latest` | `revisar_compliance_demo` (demostración, fase 2) |
 
 El orquestador usa `qwen2.5:7b-instruct` para enrutar cuando las reglas
 deterministas no alcanzan.
@@ -123,7 +140,7 @@ Todos los especialistas se exponen como servidores MCP y el grafo los invoca por
 | Data Analyst | `proyecto/mcp_servers/data_analyst_server.py` |
 | Normatividad | `proyecto/mcp_servers/normatividad_rag_server.py` |
 | Document Intelligence | `proyecto/mcp_servers/document_intelligence_server.py` |
-| Compliance | `proyecto/mcp_servers/compliance_server.py` (sin tools, fase 2) |
+| Compliance | `proyecto/mcp_servers/compliance_server.py` (demostración, fase 2) |
 
 La demo se sostiene en esto: el orquestador no describe la base en el prompt,
 pide metadatos o ejecuta SQL y devuelve lo que la herramienta respondió.
@@ -157,29 +174,29 @@ la norma con los datos almacenados; eso hoy no está resuelto (ver casos abajo).
 
 ## Casos de prueba
 
-Observaciones de la demo del 4 de noviembre. ✅ responde bien · ❌ falla.
+Observaciones de la demo del 4 de noviembre. **Sí** = responde bien · **No** = falla.
 
 ### Casos que funcionan
 
 | Pregunta | Agente | Resultado |
 |---|---|---|
-| ¿Qué dice la Ley Federal de Protección de Datos Personales en Posesión de los Particulares? | Normatividad | ✅ Cita artículos y fuente (archivo y página). |
-| ¿Qué dice la ley de protección de datos por privados? | Normatividad | ✅ El enrutamiento de alta confianza reconoce la variante y responde con la misma evidencia. |
-| ¿Qué dice el aviso de privacidad de Banamex sobre el tratamiento de datos personales? | Normatividad | ✅ Recupera el aviso y responde con citas. |
-| ¿Cuál es el promedio de los sueldos? | Data Analyst | ✅ Se enruta como agregado y responde. **Ojo:** la base sintética no tiene columna `sueldo`, así que hay que verificar que declare el proxy o la ausencia del dato, no que invente una cifra. |
-| ¿Qué problemas de calidad tiene `raw_clientes`? | Data Steward | ✅ Nombra la tabla y devuelve faltantes, duplicados y claves repetidas reales. |
-| Adjuntar una factura y pedir el texto | Document Intelligence | ✅ Transcribe el contenido visible con OCR. |
-| ¿Y en enero? (después de una consulta de saldos) | Data Analyst | ✅ La memoria de corto plazo conserva el hilo y reutiliza el contexto. |
+| ¿Qué dice la Ley Federal de Protección de Datos Personales en Posesión de los Particulares? | Normatividad | Sí: cita artículos y fuente (archivo y página). |
+| ¿Qué dice la ley de protección de datos por privados? | Normatividad | Sí: el enrutamiento de alta confianza reconoce la variante y responde con la misma evidencia. |
+| ¿Qué dice el aviso de privacidad de Banamex sobre el tratamiento de datos personales? | Normatividad | Sí: recupera el aviso y responde con citas. |
+| ¿Cuál es el promedio de los sueldos? | Data Analyst | Sí: se enruta como agregado y responde. **Ojo:** la base sintética no tiene columna `sueldo`, así que hay que verificar que declare el proxy o la ausencia del dato, no que invente una cifra. |
+| ¿Qué problemas de calidad tiene `raw_clientes`? | Data Steward | Sí: nombra la tabla y devuelve faltantes, duplicados y claves repetidas reales. |
+| Adjuntar una factura y pedir el texto | Document Intelligence | Sí: transcribe el contenido visible con OCR. |
+| ¿Y en enero? (después de una consulta de saldos) | Data Analyst | Sí: la memoria de corto plazo conserva el hilo y reutiliza el contexto. |
 
 ### Casos que fallan
 
 | Pregunta | Agente | Síntoma | Causa |
 |---|---|---|---|
-| ¿Cuál es la estructura de las tablas? | Data Steward | ❌ Alucina: agrega columnas que no existen, por ejemplo "puntaje de buró de crédito". | Sin tabla explícita, el verificador no contrasta la salida contra el esquema real y la síntesis rellena el hueco. |
-| ¿Qué relación tiene la ley de protección de datos con los datos almacenados? | Normatividad (solo) | ❌ No conecta los dos puntos; se queda en la fase de recuperación del RAG. | Falta un plan multi-agente que cruce evidencia normativa con metadatos. El plan actual enruta a un solo especialista. |
-| Consultas SQL complejas (varios joins, condiciones o pasos) | Data Analyst | ❌ El ciclo no termina: se corta antes de verificar y sintetizar. | El orquestador de 7B no sostiene el plan; el verificador reintenta una sola vez y no hay descomposición en pasos. |
-| Preguntas donde el agente debe pedir una aclaración al usuario | Cualquiera | ❌ Se rompe el turno. | No existe un nodo de aclaración: el grafo no puede suspender la ejecución para preguntar y retomar. |
-| Preguntas que exigen inferir entre dos ideas | Cualquiera | ❌ Responde una parte o cambia de tema. | El sintetizador compone bloques, no razona sobre ellos; no hay contraste entre evidencias. |
+| ¿Cuál es la estructura de las tablas? | Data Steward | No: alucina y agrega columnas que no existen, por ejemplo "puntaje de buró de crédito". | Sin tabla explícita, el verificador no contrasta la salida contra el esquema real y la síntesis rellena el hueco. |
+| ¿Qué relación tiene la ley de protección de datos con los datos almacenados? | Normatividad (solo) | No: no conecta los dos puntos; se queda en la fase de recuperación del RAG. | Falta un plan multi-agente que cruce evidencia normativa con metadatos. El plan actual enruta a un solo especialista. |
+| Consultas SQL complejas (varios joins, condiciones o pasos) | Data Analyst | No: el ciclo no termina, se corta antes de verificar y sintetizar. | El orquestador de 7B no sostiene el plan; el verificador reintenta una sola vez y no hay descomposición en pasos. |
+| Preguntas donde el agente debe pedir una aclaración al usuario | Cualquiera | No: se rompe el turno. | No existe un nodo de aclaración: el grafo no puede suspender la ejecución para preguntar y retomar. |
+| Preguntas que exigen inferir entre dos ideas | Cualquiera | No: responde una parte o cambia de tema. | El sintetizador compone bloques, no razona sobre ellos; no hay contraste entre evidencias. |
 
 ### Diagnóstico
 
@@ -199,7 +216,7 @@ El fallo principal está en el **orquestador**, no en los especialistas:
 Funciona mejor cuando la consulta es explícita y, sobre todo, cuando nombra la
 herramienta o la tabla:
 
-| ❌ Vago | ✅ Explícito |
+| Vago | Explícito |
 |---|---|
 | ¿Cuál es la estructura de las tablas? | Inspecciona la tabla `raw_clientes` con el Data Steward. |
 | ¿Cómo va lo de los clientes? | ¿Cuántos clientes hay por tipo de persona en la base sintética? |
@@ -224,7 +241,10 @@ planear -> despachar -> especialista -> despachar -> ... -> verificar
 - `planear` decide rutas con reglas deterministas y auditables.
 - `despachar` ejecuta los especialistas en orden y comparte el estado.
 - `verificar` revisa si todos los especialistas pidieron respuesta; si falló
-  alguno, reintenta una vez.
+  alguno, reintenta una vez. El tope es uno solo: el fallo típico de un modelo de
+  7B es de planificación, y repetir el mismo plan no lo corrige, solo suma
+  latencia. Si el reintento también falla, el sintetizador responde con lo que sí
+  llegó y deja el error visible en la traza.
 - `sintetizar` compone la respuesta final. Si hay un solo especialista, conserva
   su salida verificada; si hay varios, presenta cada bloque con su agente.
 - El estado guarda `plan`, `resultados`, `trazas`, `errores` e `intentos`.

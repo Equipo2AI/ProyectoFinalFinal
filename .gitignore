@@ -25,3 +25,6 @@ tests/datos/
 proyecto/data/memory/
 
 AGENTS.md
+
+# Herramientas
+.ruff_cache/
