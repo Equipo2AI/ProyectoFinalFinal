@@ -134,6 +134,31 @@ class DataAnalystSQLBackend:
         self.url_db = url_db
         self._engine = None
 
+    def _get_agente(self):
+        if self._agente is None:
+            from langchain.agents import create_agent
+            from langchain_ollama import ChatOllama
+
+            llm = ChatOllama(model=self.modelo, temperature=0)
+            self._agente = create_agent(
+                model=llm,
+                tools=self._tools,
+                system_prompt=SYSTEM_PROMPT,
+            )
+        return self._agente
+
+    def procesar(self, consulta: str, contexto: str = "") -> str:
+        contenido = consulta
+        if contexto.strip():
+            contenido = (
+                f"Contexto de la conversación:\n{contexto}\n\nPregunta: {consulta}"
+            )
+        resultado = self._get_agente().invoke(
+            {"messages": [{"role": "user", "content": contenido}]},
+            config={"recursion_limit": 25},
+        )
+        return resultado["messages"][-1].content
+
     def _get_engine(self):
         if self._engine is None:
             if not self.url_db:
