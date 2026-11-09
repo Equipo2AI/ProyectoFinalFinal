@@ -26,7 +26,7 @@ CSS = """
   --cristal: rgba(26, 30, 34, 0.68);
   --radio: 26px;
 
-  --ico-enviar: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23FFFFFF' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'><path d='m5 12 7-7 7 7'/><path d='M12 19V5'/></svg>");
+  --ico-enviar: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23FFFFFF' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'><path d='m22 2-7 20-4-9-9-4Z'/><path d='M22 2 11 13'/></svg>");
   --ico-user: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2316191C' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'><path d='M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2'/><circle cx='12' cy='7' r='4'/></svg>");
   --ico-marca: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23F2EEE8' stroke-width='1.4' stroke-linecap='round'><circle cx='12' cy='12' r='8.6'/><circle cx='12' cy='12' r='2.4' fill='%23E23B45' stroke='none'/></svg>");
   --ico-chart: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%239E9991' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'><path d='M3 3v18h18'/><path d='M8 17V9'/><path d='M13 17V5'/><path d='M18 17v-5'/></svg>");
@@ -630,20 +630,20 @@ html, body, .stApp { background-color: var(--papel) !important; }
   line-height: 20px !important;
   height: 40px !important;
   min-height: 40px !important;
-  padding: 10px 48px 10px 0 !important;
+  padding: 10px 48px 10px 42px !important;
 }
 .st-key-chat [data-testid="stChatInputTextArea"]::placeholder {
   color: rgba(156, 144, 130, 0.78);
 }
 .st-key-chat [data-testid="stChatInputSubmitButton"] {
-  width: 32px !important;
-  height: 32px !important;
+  width: 34px !important;
+  height: 34px !important;
   background-color: var(--rojo) !important;
   background-image: var(--ico-enviar);
   background-repeat: no-repeat;
   background-position: center;
-  background-size: 15px 15px;
-  border-radius: 10px !important;
+  background-size: 16px 16px;
+  border-radius: 50% !important;
   transition: background-color 0.2s ease;
 }
 .st-key-chat [data-testid="stChatInputSubmitButton"] svg { display: none !important; }
@@ -1208,15 +1208,16 @@ html, body, .stApp { background-color: var(--papel) !important; }
 </style>
 """
 
-CSS_EXTRA = """
+# Reglas de layout/ajustes que deben ser idénticas en ambos temas.
+CSS_COMPARTIDO = """
 <style>
 .st-key-chat [data-testid="stChatInput"] div:has(> [data-testid="stChatInputSubmitButton"]) {
   position: absolute !important;
   top: 0 !important;
-  right: 3px !important;
+  right: 12px !important;
   bottom: 0 !important;
   left: auto !important;
-  width: 32px !important;
+  width: 34px !important;
   height: auto !important;
   margin: 0 !important;
   align-items: center !important;
@@ -1229,6 +1230,181 @@ CSS_EXTRA = """
   border-radius: 14px;
   border: 1px solid var(--borde-suave);
 }
+
+/* Adjuntar imagen: el botón nativo del chat input se muestra como un +. */
+/* Se ancla al borde izquierdo para que la barra mantenga la misma altura
+   también en el layout apilado de tablet/móvil. */
+.st-key-chat [data-testid="stChatInput"] div:has(> [data-testid="stChatInputFileUploadButton"]):not(:has(> [data-testid="stChatInputSubmitButton"])) {
+  position: absolute !important;
+  top: 50% !important;
+  left: 12px !important;
+  width: 34px !important;
+  height: 34px !important;
+  transform: translateY(-50%) !important;
+  z-index: 2 !important;
+}
+.st-key-chat [data-testid="stChatInputFileUploadButton"] {
+  order: -1 !important;
+  width: 34px !important;
+  height: 34px !important;
+  margin: 0 !important;
+}
+.st-key-chat [data-testid="stChatInputFileUploadButton"] button {
+  width: 34px !important;
+  height: 34px !important;
+  min-height: 34px !important;
+  padding: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  border-radius: 50% !important;
+  background: rgba(236, 240, 244, 0.035) !important;
+  border: 1px solid var(--borde) !important;
+  color: var(--tinta) !important;
+  transition: border-color 0.2s ease, color 0.2s ease, transform 0.2s ease;
+}
+.st-key-chat [data-testid="stChatInputFileUploadButton"] button svg {
+  display: none !important;
+}
+.st-key-chat [data-testid="stChatInputFileUploadButton"] button::before {
+  content: "+";
+  font-family: 'Inter', sans-serif !important;
+  font-size: 22px;
+  font-weight: 300;
+  line-height: 1;
+  color: inherit;
+}
+.st-key-chat [data-testid="stChatInputFileUploadButton"] button:hover {
+  color: var(--rojo) !important;
+  border-color: rgba(242, 121, 109, 0.38) !important;
+  transform: translateY(-1px);
+}
+
+/* Confirmación visual: miniatura dentro de la barra, junto al +. */
+.st-key-chat [data-testid="stChatInput"] {
+  position: relative !important;
+}
+.st-key-chat [data-testid="stChatInput"] div:has(> [data-testid="stFileChips"]) {
+  display: contents !important;
+}
+.st-key-chat [data-testid="stFileChips"] {
+  position: absolute !important;
+  left: 52px !important;
+  top: 50% !important;
+  transform: translateY(-50%) !important;
+  display: flex !important;
+  width: 34px !important;
+  height: 34px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  z-index: 5 !important;
+  pointer-events: none !important;
+}
+.st-key-chat [data-testid="stFileChips"] > div,
+.st-key-chat [data-testid="stFileChips"] > div > div {
+  display: flex !important;
+  align-items: center !important;
+  gap: 0 !important;
+  width: 34px !important;
+  min-width: 0 !important;
+  max-width: 34px !important;
+  flex: 0 0 34px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+.st-key-chat [data-testid="stFileChip"] {
+  position: relative !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 0 !important;
+  width: 34px !important;
+  min-width: 0 !important;
+  max-width: 34px !important;
+  flex: 0 0 34px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  pointer-events: auto !important;
+}
+.st-key-chat [data-testid="stFileChip"] > div:first-child {
+  display: block !important;
+  width: 34px !important;
+  height: 34px !important;
+  border-radius: 9px !important;
+  overflow: hidden !important;
+  border: 1px solid var(--borde) !important;
+  background: rgba(236, 240, 244, 0.04) !important;
+}
+.st-key-chat [data-testid="stFileChipImagePreview"] {
+  display: block !important;
+  width: 34px !important;
+  height: 34px !important;
+  object-fit: cover !important;
+  border-radius: 9px !important;
+}
+.st-key-chat [data-testid="stFileChip"] > div:nth-child(2),
+.st-key-chat [data-testid="stFileChipName"] {
+  display: none !important;
+}
+.st-key-chat [data-testid="stFileChipDeleteBtn"] {
+  position: absolute !important;
+  top: 1px !important;
+  right: 1px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 14px !important;
+  height: 14px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border-radius: 50% !important;
+  background: rgba(16, 18, 21, 0.88) !important;
+  border: 1px solid rgba(236, 240, 244, 0.28) !important;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  pointer-events: auto !important;
+  z-index: 7 !important;
+}
+.st-key-chat [data-testid="stFileChip"]:hover [data-testid="stFileChipDeleteBtn"] {
+  opacity: 1;
+}
+.st-key-chat [data-testid="stFileChipDeleteBtn"] button {
+  width: 14px !important;
+  height: 14px !important;
+  min-height: 14px !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  background: transparent !important;
+  border: 0 !important;
+  color: var(--tinta) !important;
+}
+.st-key-chat [data-testid="stFileChipDeleteBtn"] button svg {
+  width: 10px !important;
+  height: 10px !important;
+}
+/* Layout compartido por ambos temas: la barra de chat reserva el mismo
+   espacio para el + y el botón de envío. Solo cambian los colores. */
+.st-key-chat [data-testid="stChatInputTextArea"] {
+  padding: 10px 48px 10px 42px !important;
+}
+.st-key-chat [data-testid="stChatInputSubmitButton"] {
+  width: 34px !important;
+  height: 34px !important;
+  border-radius: 50% !important;
+}
+.st-key-chat [data-testid="stChatInput"]:has([data-testid="stFileChips"]) [data-testid="stChatInputTextArea"] {
+  padding-left: 82px !important;
+}
 </style>
 """
 
@@ -1236,4 +1412,4 @@ CSS_EXTRA = """
 def aplicar(tema: str = "oscuro") -> None:
     base = CSS_CLARO if tema == "claro" else CSS
     st.markdown(base, unsafe_allow_html=True)
-    st.markdown(CSS_EXTRA, unsafe_allow_html=True)
+    st.markdown(CSS_COMPARTIDO, unsafe_allow_html=True)

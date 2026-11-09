@@ -88,8 +88,8 @@ def hero() -> None:
         '<div class="hero">'
         '<div class="hero-kicker">Consulta</div>'
         '<div class="t">¿En qué te puedo ayudar?</div>'
-        '<div class="s">Hola soy un agente de análisis de datos bancarios. Preguntame saldos, calidad de datos, normativa o definiciones del '
-        'glosario.</div>'
+        '<div class="s">Hola soy un agente de análisis de datos bancarios. Pregúntame saldos, calidad de datos, '
+        'normativa o calidad de datos.</div>'
         "</div>",
         unsafe_allow_html=True,
     )
@@ -100,7 +100,7 @@ def pensando(estado: str = "Analizando la consulta…") -> None:
         '<div class="analizando">'
         f'<span class="analizando-ico">{_ICONOS["loader"]}</span>'
         f'<div><strong>{_esc(estado)}</strong>'
-        '<small>El orquestador está eligiendo agentes</small></div>'
+        '<small>El sistema está procesando la solicitud</small></div>'
         "</div>",
         unsafe_allow_html=True,
     )
@@ -279,8 +279,8 @@ def vacio_consola(pensando: bool = False) -> None:
             '<div class="vacio-consola">'
             f'<span class="vacio-ico girando">{_ICONOS["loader"]}</span>'
             '<div class="t">Analizando la consulta…</div>'
-            '<div class="s">El orquestador está decidiendo qué agentes '
-            "intervenir.</div></div>",
+            '<div class="s">El orquestador está decidiendo qué herramientas '
+            "deben intervenir.</div></div>",
             unsafe_allow_html=True,
         )
         return

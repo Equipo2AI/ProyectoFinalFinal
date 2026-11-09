@@ -1,9 +1,12 @@
 # Orquestador: un agente de LangChain que decide a qué sub-agente delegar.
 
 import json
+import re
+from contextvars import ContextVar
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import after_model
+from langchain.agents.middleware import after_model, before_model
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from langchain_ollama import ChatOllama
@@ -25,6 +28,92 @@ AGENTES = {
     "document_intelligence": document_intelligence_agent,
     "compliance": compliance_agent,
 }
+
+
+_estadisticas_steward = ContextVar("estadisticas_steward", default=None)
+
+
+class _RegistrarEstadisticasSteward(BaseCallbackHandler):
+    """Conserva solo resultados agregados de la herramienta en este turno."""
+
+    def on_tool_end(self, output, **kwargs):
+        resultados = _estadisticas_steward.get()
+        if resultados is None or getattr(output, "name", None) != "inspeccionar_dataset_mcp":
+            return
+        try:
+            datos = json.loads(output.content)
+            columnas = datos["columnas"]
+            if (
+                datos.get("archivo") == "clientes.csv"
+                and type(datos["filas"]) is int and datos["filas"] >= 0
+                and isinstance(columnas, list) and columnas
+                and all(
+                    isinstance(c, dict)
+                    and set(c) == {"nombre", "tipo_detectado", "valores_faltantes"}
+                    and isinstance(c["nombre"], str)
+                    and type(c["valores_faltantes"]) is int
+                    and 0 <= c["valores_faltantes"] <= datos["filas"]
+                    for c in columnas
+                )
+            ):
+                resultados.append(datos)
+        except (ValueError, TypeError, KeyError, AttributeError):
+            return
+
+
+def _respuesta_agregada_verificada(texto: str, datos: dict) -> bool:
+    """Acepta un formato agregado acotado y contrasta cada cifra con MCP.
+
+    El resto de las respuestas conserva el flujo habitual. El formato cerrado
+    evita aprobar texto arbitrario por el mero hecho de contener números.
+    """
+    columnas = datos["columnas"]
+    faltantes = [c for c in columnas if c["valores_faltantes"]]
+    estructura = (
+        f"El CSV sintético tiene {datos['filas']} filas y {len(columnas)} columnas."
+    )
+    if not faltantes:
+        return texto.strip() == estructura + " No hay valores faltantes."
+    if len({c["valores_faltantes"] for c in faltantes}) != 1:
+        return False
+    # Solo nombres del esquema, nunca valores de registros ni texto libre.
+    nombres = [c["nombre"] for c in faltantes]
+    if not all(re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", n) for n in nombres):
+        return False
+    nombres = [json.dumps(n, ensure_ascii=False) for n in nombres]
+    lista = " y ".join(nombres) if len(nombres) <= 2 else ", ".join(nombres[:-1]) + " y " + nombres[-1]
+    cantidad = faltantes[0]["valores_faltantes"]
+    unidad = "valor faltante" if cantidad == 1 else "valores faltantes"
+    esperado = (
+        estructura + f" Hay valores faltantes en {len(faltantes)} columnas: "
+        + lista + f", con {cantidad} {unidad} cada una."
+    )
+    return texto.strip() == esperado
+
+
+@before_model(can_jump_to=["end"])
+def _conservar_agregado_steward(state, runtime):
+    mensajes = state["messages"]
+    inicio = next(
+        (i for i in range(len(mensajes) - 1, -1, -1) if isinstance(mensajes[i], HumanMessage)),
+        0,
+    )
+    nuevos = mensajes[inicio + 1:]
+    llamadas = [tc for m in nuevos for tc in (getattr(m, "tool_calls", None) or [])]
+    resultados = _estadisticas_steward.get()
+    if len(llamadas) != 1 or llamadas[0]["name"] != "data_steward" or not resultados:
+        return None
+    ultimo = mensajes[-1]
+    if (
+        isinstance(ultimo, ToolMessage)
+        and ultimo.tool_call_id == llamadas[0]["id"]
+        and getattr(ultimo, "status", "success") != "error"
+        and isinstance(ultimo.content, str)
+        and len(resultados) == 1
+        and _respuesta_agregada_verificada(ultimo.content, resultados[0])
+    ):
+        return {"messages": [AIMessage(content=ultimo.content)], "jump_to": "end"}
+    return None
 
 SYSTEM_PROMPT = """
 Eres el orquestador de un sistema multi-agente bancario.
@@ -161,7 +250,7 @@ class Orquestador:
                 model=llm,
                 tools=self.herramientas,
                 system_prompt=SYSTEM_PROMPT,
-                middleware=[_evitar_delegacion_repetida],
+                middleware=[_conservar_agregado_steward, _evitar_delegacion_repetida],
             )
         return self._agente
 
@@ -177,7 +266,14 @@ class Orquestador:
 
     def procesar(self, consulta: str) -> str:
         entrada = self.memory.prepare(self._mensajes, consulta)
-        resultado = self._get_agente().invoke({"messages": entrada})
+        token = _estadisticas_steward.set([])
+        try:
+            resultado = self._get_agente().invoke(
+                {"messages": entrada},
+                config={"callbacks": [_RegistrarEstadisticasSteward()]},
+            )
+        finally:
+            _estadisticas_steward.reset(token)
         mensajes = resultado["messages"]
 
         # Qué agentes llamó el orquestador en este turno (para depurar).
