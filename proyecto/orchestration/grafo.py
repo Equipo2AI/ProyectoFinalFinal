@@ -285,6 +285,60 @@ def _json_dict(salida: str) -> dict | None:
     return datos if isinstance(datos, dict) else None
 
 
+def _validar_salida_steward(herramienta: str, datos: dict) -> str | None:
+    """Contrasta el contrato de las tools antes de formatear la respuesta.
+
+    Solo se publican agregados cuyos tipos y rangos son consistentes. Una
+    salida fuera de contrato se reporta como error y no se formatea, de modo
+    que la respuesta nunca presente una cifra que la tool no devolvió.
+    """
+    if herramienta == "inspeccionar_dataset":
+        filas = datos.get("filas")
+        if type(filas) is not int or filas < 0:
+            return "filas debe ser un entero no negativo"
+        columnas = datos.get("columnas")
+        if not isinstance(columnas, list) or not columnas:
+            return "columnas debe ser una lista no vacía"
+        for columna in columnas:
+            if not isinstance(columna, dict):
+                return "columna inválida"
+            nombre = columna.get("nombre")
+            if not isinstance(nombre, str) or not nombre:
+                return "columna sin nombre"
+            faltantes = columna.get("valores_faltantes")
+            if type(faltantes) is not int or not 0 <= faltantes <= filas:
+                return f"valores_faltantes inválido en {nombre!r}"
+        return None
+
+    if herramienta == "validar_calidad_datos":
+        filas = datos.get("filas")
+        if type(filas) is not int or filas < 0:
+            return "filas debe ser un entero no negativo"
+        for clave in (
+            "filas_con_algun_valor_faltante",
+            "filas_duplicadas_exactas",
+        ):
+            valor = datos.get(clave)
+            if type(valor) is not int or not 0 <= valor <= filas:
+                return f"{clave} debe ser un entero entre 0 y filas"
+        sobrantes = datos.get("filas_sobrantes_por_clave")
+        if sobrantes is not None and (
+            type(sobrantes) is not int or not 0 <= sobrantes <= filas
+        ):
+            return "filas_sobrantes_por_clave debe ser nulo o un entero entre 0 y filas"
+        faltantes = datos.get("valores_faltantes_por_columna")
+        if not isinstance(faltantes, dict):
+            return "valores_faltantes_por_columna debe ser un objeto"
+        for nombre, valor in faltantes.items():
+            if not isinstance(nombre, str) or not nombre:
+                return "valores_faltantes_por_columna tiene una columna sin nombre"
+            if type(valor) is not int or not 0 <= valor <= filas:
+                return f"faltantes inválidos en {nombre!r}"
+        return None
+
+    return None
+
+
 def _nodo_planear(estado: EstadoGrafo) -> dict:
     if estado.get("reintento"):
         fallidos = [
@@ -370,6 +424,12 @@ def _nodo_data_steward(estado: EstadoGrafo) -> dict:
                 else salida
             )
             errores.append(f"{herramienta}: {detalle}")
+            continue
+        fuera_de_contrato = _validar_salida_steward(herramienta, datos)
+        if fuera_de_contrato:
+            errores.append(
+                f"{herramienta}: salida fuera de contrato ({fuera_de_contrato})"
+            )
             continue
         resultados_json.append({"herramienta": herramienta, "datos": datos})
 
