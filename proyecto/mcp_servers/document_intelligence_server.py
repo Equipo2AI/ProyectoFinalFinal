@@ -1,26 +1,29 @@
-"""Servidor MCP demostrativo de document_intelligence."""
+"""Servidor MCP de lectura de imágenes (OCR y descripción).
 
-import json
+Expone las dos tools del agente `document_intelligence` para que el
+orquestador principal pueda llamarlas sin cargar un agente adicional.
+"""
 
 from fastmcp import FastMCP
 
-mcp = FastMCP("document_intelligence MCP")
+from proyecto.agents.document_intelligence_agent import (
+    describe_an_image,
+    ocr_image,
+)
+
+mcp = FastMCP("Document Intelligence MCP")
 
 
 @mcp.tool()
-def analizar_documento_demo(consulta: str) -> str:
-    """Lectura demostrativa de documentos; no realiza OCR ni extrae archivos reales."""
-    if not consulta.strip():
-        raise ValueError("La consulta no puede estar vacia.")
-    return json.dumps(
-        {
-            "agente": "document_intelligence",
-            "estado": "demostracion",
-            "consulta": consulta,
-            "mensaje": "Lectura demostrativa de documentos; no realiza OCR ni extrae archivos reales.",
-        },
-        ensure_ascii=False,
-    )
+def extraer_texto_imagen(image_path: str) -> str:
+    """Extrae el texto visible de una imagen local (factura, recibo, comprobante)."""
+    return ocr_image.invoke({"image_path": image_path})
+
+
+@mcp.tool()
+def describir_imagen(image_path: str) -> str:
+    """Describe una imagen local y resume sus datos visibles si es un comprobante."""
+    return describe_an_image.invoke({"image_path": image_path})
 
 
 if __name__ == "__main__":

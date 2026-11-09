@@ -108,8 +108,17 @@ class DataAnalystSQLBackend:
             "base de datos bancaria: conteos, sumas, promedios, rankings y "
             "comparaciones entre tablas."
         )
-        self.modelo = "qwen2.5:7b"
+        self.modelo = "qwen2.5:7b-instruct"
         self.url_db = url_db or os.environ.get("DATABASE_URL")
+        if not self.url_db:
+            # Sin DATABASE_URL se usa la misma fuente que el Data Steward:
+            # config/data_connection.yaml -> proyecto/bd/banamex.db.
+            try:
+                from proyecto.agents.database import get_database_url
+
+                self.url_db = get_database_url()
+            except Exception:  # noqa: BLE001 - importar no debe exigir base
+                self.url_db = None
 
         # El engine y el agente se crean al primer uso, igual que en el RAG,
         # para que importar el módulo no requiera una base configurada.
@@ -124,6 +133,31 @@ class DataAnalystSQLBackend:
             self._engine.dispose()
         self.url_db = url_db
         self._engine = None
+
+    def _get_agente(self):
+        if self._agente is None:
+            from langchain.agents import create_agent
+            from langchain_ollama import ChatOllama
+
+            llm = ChatOllama(model=self.modelo, temperature=0)
+            self._agente = create_agent(
+                model=llm,
+                tools=self._tools,
+                system_prompt=SYSTEM_PROMPT,
+            )
+        return self._agente
+
+    def procesar(self, consulta: str, contexto: str = "") -> str:
+        contenido = consulta
+        if contexto.strip():
+            contenido = (
+                f"Contexto de la conversación:\n{contexto}\n\nPregunta: {consulta}"
+            )
+        resultado = self._get_agente().invoke(
+            {"messages": [{"role": "user", "content": contenido}]},
+            config={"recursion_limit": 25},
+        )
+        return resultado["messages"][-1].content
 
     def _get_engine(self):
         if self._engine is None:

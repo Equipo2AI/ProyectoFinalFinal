@@ -11,6 +11,16 @@ _herramientas = {herramienta.name: herramienta for herramienta in _backend._tool
 
 
 @mcp.tool()
+def analizar_datos(consulta: str, contexto: str = "") -> str:
+    """Responde una pregunta cuantitativa en lenguaje natural usando el backend SQL local.
+
+    `contexto` es opcional y conserva el hilo de una pregunta anterior. El agente
+    usa las cuatro herramientas SQL del backend, sin volver a llamar por MCP.
+    """
+    return _backend.procesar(consulta, contexto)
+
+
+@mcp.tool()
 def listar_tablas() -> str:
     """Lista tablas, vistas y motor SQL sin incluir las tablas excluidas."""
     return _herramientas["listar_tablas"].invoke({})

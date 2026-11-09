@@ -66,7 +66,7 @@ def config_from_file(path: Path | None = None) -> MemoryConfig:
 class LongTermMemory:
     def __init__(
         self,
-        model: str = "gemma4:e4b",
+        model: str = "llama3.1:latest",
         config: MemoryConfig | None = None,
     ) -> None:
         self.model = model

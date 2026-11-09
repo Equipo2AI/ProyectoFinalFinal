@@ -145,7 +145,7 @@ def main() -> None:
         casos = [(args.caso, CASOS[args.caso - 1])]
 
     agente = _cargar_agente()
-    herramienta = agente.herramientas[0]
+    herramienta = agente._tools[0]
 
     print(SEPARADOR)
     print(f"Normatividad / RAG · modelo: {agente.modelo}")

@@ -1,14 +1,23 @@
-# Orquestador: un agente de LangChain que decide a qué sub-agente delegar.
+# Orquestador: un agente de LangChain que decide qué tool MCP usar.
 
+import asyncio
 import json
-import re
+import logging
+import os
+import sys
+import unicodedata
 from contextvars import ContextVar
+from pathlib import Path
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
+from fastmcp import Client
+from fastmcp.client.transports import StdioTransport
 from langchain.agents import create_agent
-from langchain.agents.middleware import after_model, before_model
-from langchain_core.callbacks import BaseCallbackHandler
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langchain_core.tools import StructuredTool
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.tools import tool
 from langchain_ollama import ChatOllama
 
 from proyecto.agents import (
@@ -18,8 +27,12 @@ from proyecto.agents import (
     document_intelligence_agent,
     compliance_agent,
 )
-
+from proyecto.agents.document_intelligence_agent import PATRON_RUTA_IMAGEN
 from proyecto.memory.long_term import LongTermMemory
+
+_RAIZ = Path(__file__).resolve().parents[2]
+
+logger = logging.getLogger(__name__)
 
 AGENTES = {
     "data_steward": data_steward_agent,
@@ -29,123 +42,238 @@ AGENTES = {
     "compliance": compliance_agent,
 }
 
-
-_estadisticas_steward = ContextVar("estadisticas_steward", default=None)
-
-
-class _RegistrarEstadisticasSteward(BaseCallbackHandler):
-    """Conserva solo resultados agregados de la herramienta en este turno."""
-
-    def on_tool_end(self, output, **kwargs):
-        resultados = _estadisticas_steward.get()
-        if resultados is None or getattr(output, "name", None) != "inspeccionar_dataset_mcp":
-            return
-        try:
-            datos = json.loads(output.content)
-            columnas = datos["columnas"]
-            if (
-                datos.get("archivo") == "clientes.csv"
-                and type(datos["filas"]) is int and datos["filas"] >= 0
-                and isinstance(columnas, list) and columnas
-                and all(
-                    isinstance(c, dict)
-                    and set(c) == {"nombre", "tipo_detectado", "valores_faltantes"}
-                    and isinstance(c["nombre"], str)
-                    and type(c["valores_faltantes"]) is int
-                    and 0 <= c["valores_faltantes"] <= datos["filas"]
-                    for c in columnas
-                )
-            ):
-                resultados.append(datos)
-        except (ValueError, TypeError, KeyError, AttributeError):
-            return
-
-
-def _respuesta_agregada_verificada(texto: str, datos: dict) -> bool:
-    """Acepta un formato agregado acotado y contrasta cada cifra con MCP.
-
-    El resto de las respuestas conserva el flujo habitual. El formato cerrado
-    evita aprobar texto arbitrario por el mero hecho de contener números.
-    """
-    columnas = datos["columnas"]
-    faltantes = [c for c in columnas if c["valores_faltantes"]]
-    estructura = (
-        f"El CSV sintético tiene {datos['filas']} filas y {len(columnas)} columnas."
-    )
-    if not faltantes:
-        return texto.strip() == estructura + " No hay valores faltantes."
-    if len({c["valores_faltantes"] for c in faltantes}) != 1:
-        return False
-    # Solo nombres del esquema, nunca valores de registros ni texto libre.
-    nombres = [c["nombre"] for c in faltantes]
-    if not all(re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", n) for n in nombres):
-        return False
-    nombres = [json.dumps(n, ensure_ascii=False) for n in nombres]
-    lista = " y ".join(nombres) if len(nombres) <= 2 else ", ".join(nombres[:-1]) + " y " + nombres[-1]
-    cantidad = faltantes[0]["valores_faltantes"]
-    unidad = "valor faltante" if cantidad == 1 else "valores faltantes"
-    esperado = (
-        estructura + f" Hay valores faltantes en {len(faltantes)} columnas: "
-        + lista + f", con {cantidad} {unidad} cada una."
-    )
-    return texto.strip() == esperado
-
-
-@before_model(can_jump_to=["end"])
-def _conservar_agregado_steward(state, runtime):
-    mensajes = state["messages"]
-    inicio = next(
-        (i for i in range(len(mensajes) - 1, -1, -1) if isinstance(mensajes[i], HumanMessage)),
-        0,
-    )
-    nuevos = mensajes[inicio + 1:]
-    llamadas = [tc for m in nuevos for tc in (getattr(m, "tool_calls", None) or [])]
-    resultados = _estadisticas_steward.get()
-    if len(llamadas) != 1 or llamadas[0]["name"] != "data_steward" or not resultados:
-        return None
-    ultimo = mensajes[-1]
-    if (
-        isinstance(ultimo, ToolMessage)
-        and ultimo.tool_call_id == llamadas[0]["id"]
-        and getattr(ultimo, "status", "success") != "error"
-        and isinstance(ultimo.content, str)
-        and len(resultados) == 1
-        and _respuesta_agregada_verificada(ultimo.content, resultados[0])
-    ):
-        return {"messages": [AIMessage(content=ultimo.content)], "jump_to": "end"}
-    return None
-
 SYSTEM_PROMPT = """
 Eres el orquestador de un sistema multi-agente bancario.
 
-Tu trabajo es decidir qué agente especialista debe atender cada consulta
-y delegarla usando las herramientas disponibles. Cada herramienta es un
-agente distinto; lee su descripción para elegir el adecuado.
+Tu trabajo es decidir qué herramienta MCP debe atender cada consulta. No respondas preguntas fuera de lo señalado o del ámbito bancario/financiero.
+Las herramientas disponibles son:
+
+- data_steward: estructura, tablas, columnas, faltantes, duplicados y calidad de
+  la base sintética bancaria. No devuelve registros personales.
+- data_analyst: preguntas cuantitativas que requieren SQL de solo lectura sobre
+  la misma base sintética (conteos, sumas, promedios, rankings, comparaciones).
+- normatividad_rag: políticas, manuales, glosario, reglas y normativa indexada.
+- document_intelligence: OCR o descripción de una imagen local. Requiere que la
+  consulta incluya una ruta de imagen existente.
 
 Reglas:
-- Estructura o calidad del CSV (columnas, faltantes, duplicados e identificadores
-  repetidos): delega a data_steward. Un CSV no es una tabla de la base SQL.
-- Analisis cuantitativo de la base bancaria, consultas SQL, tablas o vistas:
-  delega a data_analyst. No le envies revisiones de calidad del CSV.
-- Al delegar, conserva la pregunta del usuario. No la conviertas en SQL ni
-  inventes tablas, columnas o herramientas; el especialista consulta su esquema.
-- Si la consulta requiere un especialista, llama a la herramienta
-  correspondiente. Puedes llamar a más de una si la consulta lo necesita.
+- Si la consulta requiere un especialista, llama a la herramienta adecuada.
+  Puedes llamar a más de una si la consulta lo necesita.
+- Para preguntas sobre leyes, protección de datos, privacidad, avisos de
+  privacidad, políticas, manuales o normativa, SIEMPRE llama primero a
+  mcp_buscar_normatividad. No respondas de memoria ni inventes artículos.
+- Después de una búsqueda normativa, responde con la evidencia recuperada y
+  conserva las referencias FUENTE (archivo y página) en tu respuesta.
+- La salida de mcp_buscar_normatividad es la única fuente válida para una
+  pregunta normativa. Si la evidencia contiene el artículo o la frase que
+  responde, cítala textualmente. No digas "la información no incluye" ni
+  "podemos inferir" cuando el dato sí aparece en la evidencia. No agregues
+  derechos, obligaciones ni artículos que no estén en la evidencia.
+- Usa data_steward para estructura y calidad (tablas, columnas, faltantes,
+  duplicados); usa data_analyst para cifras y agregados. No uses data_analyst
+  para preguntas de metadatos ni data_steward para calcular métricas.
+- En la salida de data_steward, `catalogo_tablas` es solo el inventario de
+  tablas disponibles; no son relaciones. Las relaciones reales están en
+  `relaciones` y son foreign keys declaradas.
+- mcp_analizar_datos recibe la pregunta en lenguaje natural, no una consulta
+  SQL. Pásale el texto del usuario y deja que el Data Analyst escriba el SQL.
+- Si el usuario responde con una aclaración o confirmación (por ejemplo "sí",
+  "por género" o "solo 2026") a una pregunta anterior de Data Analyst, vuelve
+  a llamar mcp_analizar_datos con una consulta autocontenida que incluya la
+  pregunta original y la aclaración.
+- Si la consulta incluye una imagen pero no dice si hay que extraer texto o
+  describirla, elige la opción más útil según la intención. Si sigue siendo
+  ambigua, pregunta al usuario antes de llamar la herramienta.
 - Si la consulta es un saludo o algo general que no requiere especialista,
   responde directamente sin llamar herramientas.
-- Basa tu respuesta únicamente en lo que devuelvan los agentes. No inventes
-  datos, permisos ni requisitos.
-- Conserva en tu respuesta final las referencias a archivos fuente que
-  incluyan los agentes.
-- Tras recibir el resultado del agente, comunica su contenido fielmente.
-  No escribas llamadas a herramientas como texto ni repitas delegaciones ya resueltas.
-- Si el resultado de un agente es un JSON con estado "demostracion", devuelve
-  literalmente ese JSON como respuesta final, sin texto adicional. Describe una
-  prueba de infraestructura MCP: no confirma analisis, OCR ni cumplimiento real.
-- Solo cita archivos fuente que aparezcan explicitamente en el resultado del
-  agente. No deduzcas nombres de archivos o configuraciones a partir de su nombre.
+- No inventes rutas de imágenes ni datos que no existan.
+- Basa tu respuesta únicamente en lo que devuelvan las herramientas. No inventes
+  cifras, permisos, requisitos ni fuentes.
+- Eres un asistente documental, no un abogado: puedes resumir y citar normativa,
+  avisos de privacidad y políticas internas. No rechaces una pregunta legítima
+  sobre una ley o un aviso de privacidad; respóndela con la evidencia recuperada
+  y aclara que no sustituye asesoría legal personalizada.
+- Conserva en tu respuesta final las referencias a archivos o tablas que
+  incluyan las herramientas.
+- Si el contexto incluye una imagen o documento ya procesado, úsalo para
+  responder preguntas sobre su contenido (totales, fechas, folios, partes,
+  condiciones, etc.). Esas preguntas no son consultas a la base bancaria:
+  no uses data_analyst para responderlas.
+- Si el contexto documental ya contiene el texto o la descripción, responde
+  directamente con esa evidencia. No vuelvas a llamar a las herramientas de
+  imagen para preguntas de seguimiento; la imagen ya fue procesada.
+- Cuando uses mcp_extraer_texto_imagen, reproduce el texto extraído completo
+  en un bloque de código, sin resumirlo, salvo que el usuario pida
+  explícitamente un resumen o una descripción.
+- No atribuyas una cifra, conclusión o fuente a una herramienta que no la
+  devolvió. Si usaste el contexto de un documento, dilo con claridad.
+- No incluyas rutas locales, enlaces Markdown ni imágenes en la respuesta;
+  menciona el nombre del documento como texto si necesitas identificarlo.
+- Si una herramienta devuelve un error, informa el error y no lo presentes
+  como si fuera un resultado válido.
+- Si no hay una herramienta para el tema (por ejemplo compliance/KYC/AML),
+  dilo explícitamente y explica que está fuera del alcance actual.
 - Responde en el idioma de la consulta.
 """
+
+_MARCADOR_CONTEXTO = "[CONTEXTO_DOCUMENTOS]"
+_CONTEXTO_ANALISTA: ContextVar[str] = ContextVar("contexto_analista", default="")
+
+
+def _normalizar(texto: str) -> str:
+    normalizado = unicodedata.normalize("NFKD", texto.casefold())
+    return "".join(c for c in normalizado if not unicodedata.combining(c))
+
+
+def _ruta_imagen_de_consulta(consulta: str) -> str | None:
+    coincidencia = PATRON_RUTA_IMAGEN.search(consulta or "")
+    if not coincidencia:
+        return None
+    return coincidencia.group(1) or coincidencia.group(2)
+
+
+def _es_consulta_normativa(consulta: str) -> bool:
+    """Ruta de alta confianza para preguntas legales o normativas.
+
+    El modelo orquestador puede reformular la consulta y perder artículos
+    relevantes. Para la demo, estas preguntas se envían directo al servidor de
+    normatividad con el texto original y se devuelve su respuesta con fuentes.
+    """
+    texto = _normalizar(consulta)
+    return any(
+        clave in texto
+        for clave in (
+            "ley",
+            "leyes",
+            "normativ",
+            "reglamento",
+            "regulacion",
+            "politica",
+            "manual",
+            "lineamiento",
+            "aviso de privacidad",
+            "proteccion de datos",
+            "datos personales",
+            "privacidad",
+            "derechos arco",
+            "obligacion",
+            "sancion",
+            "consentimiento",
+            "términos",
+            "condiciones"
+        )
+    )
+
+
+def _llamar_mcp(servidor: str, herramienta: str, argumentos: dict) -> str:
+    """Ejecuta una tool MCP por stdio y devuelve su texto."""
+    transporte = StdioTransport(
+        command=sys.executable,
+        args=["-m", f"proyecto.mcp_servers.{servidor}"],
+        cwd=str(_RAIZ),
+    )
+
+    async def ejecutar() -> str:
+        async with Client(transporte) as cliente:
+            resultado = await cliente.call_tool(herramienta, argumentos)
+            if resultado.is_error:
+                raise RuntimeError(
+                    f"El servidor MCP {servidor} falló al ejecutar {herramienta}."
+                )
+            return "\n".join(
+                bloque.text
+                for bloque in resultado.content
+                if bloque.type == "text"
+            ).strip()
+
+    try:
+        return asyncio.run(ejecutar())
+    except Exception as error:  # noqa: BLE001 - se devuelve al agente como texto
+        return (
+            f"Error al llamar {servidor}.{herramienta}: "
+            f"{type(error).__name__}: {error}"
+        )
+
+
+@tool
+def mcp_inspeccionar_dataset(tabla: str = "") -> str:
+    """Consulta por MCP tablas, columnas, tipos y faltantes de la base sintética.
+
+    Args:
+        tabla: Tabla o vista a inspeccionar. Vacío usa raw_clientes.
+    """
+    return _llamar_mcp(
+        "data_steward_server",
+        "inspeccionar_dataset",
+        {"tabla": tabla},
+    )
+
+
+@tool
+def mcp_validar_calidad_datos(tabla: str = "") -> str:
+    """Consulta por MCP faltantes, duplicados e IDs repetidos de la base sintética.
+
+    Args:
+        tabla: Tabla o vista a validar. Vacío usa raw_clientes.
+    """
+    return _llamar_mcp(
+        "data_steward_server",
+        "validar_calidad_datos",
+        {"tabla": tabla},
+    )
+
+
+@tool
+def mcp_buscar_normatividad(query: str) -> str:
+    """Busca políticas, manuales, glosario y normativa en Pinecone."""
+    return _llamar_mcp(
+        "normatividad_rag_server",
+        "buscar_normatividad",
+        {"query": query},
+    )
+
+
+@tool
+def mcp_analizar_datos(consulta: str) -> str:
+    """Responde preguntas cuantitativas con SQL de solo lectura sobre la base bancaria."""
+    return _llamar_mcp(
+        "data_analyst_server",
+        "analizar_datos",
+        {
+            "consulta": consulta,
+            "contexto": _CONTEXTO_ANALISTA.get(),
+        },
+    )
+
+
+@tool
+def mcp_extraer_texto_imagen(image_path: str) -> str:
+    """Extrae el texto visible de una imagen local (factura, recibo, comprobante)."""
+    return _llamar_mcp(
+        "document_intelligence_server",
+        "extraer_texto_imagen",
+        {"image_path": image_path},
+    )
+
+
+@tool
+def mcp_describir_imagen(image_path: str) -> str:
+    """Describe una imagen local y resume sus datos visibles si es un comprobante."""
+    return _llamar_mcp(
+        "document_intelligence_server",
+        "describir_imagen",
+        {"image_path": image_path},
+    )
+
+
+HERRAMIENTAS_MCP = [
+    mcp_inspeccionar_dataset,
+    mcp_validar_calidad_datos,
+    mcp_buscar_normatividad,
+    mcp_analizar_datos,
+    mcp_extraer_texto_imagen,
+    mcp_describir_imagen,
+]
 
 
 def listar_agentes() -> dict:
@@ -163,84 +291,26 @@ def obtener_agente(nombre: str):
     return AGENTES.get(nombre)
 
 
-def _crear_herramienta_agente(nombre: str, agente) -> StructuredTool:
-    """Envuelve un sub-agente como herramienta que el orquestador puede llamar."""
-
-    def delegar(consulta: str) -> str:
-        if not hasattr(agente, "procesar"):
-            return f"Error: el agente '{nombre}' no implementa procesar()."
-        try:
-            return agente.procesar(consulta)
-        except Exception as e:
-            # Se devuelve como texto para que el orquestador pueda reportarlo
-            # en lugar de tumbar toda la conversación.
-            return f"Error al ejecutar el agente '{nombre}': {type(e).__name__}: {e}"
-
-    return StructuredTool.from_function(
-        func=delegar,
-        name=nombre,
-        description=agente.descripcion,
-    )
-
-
-@after_model(can_jump_to=["end"])
-def _evitar_delegacion_repetida(state, runtime):
-    """Finaliza una repeticion exacta con resultados ya recibidos en este turno.
-
-    No bloquea consultas nuevas, agentes adicionales ni reintentos de errores.
-    """
-    mensajes = state["messages"]
-    ultimo = mensajes[-1]
-    solicitudes = getattr(ultimo, "tool_calls", None) or []
-    if not solicitudes:
-        return None
-
-    def clave(llamada):
-        return llamada["name"], json.dumps(llamada["args"], sort_keys=True, ensure_ascii=False)
-
-    inicio = next(
-        (i for i in range(len(mensajes) - 1, -1, -1) if isinstance(mensajes[i], HumanMessage)),
-        0,
-    )
-    pendientes = {}
-    completadas = {}
-    for mensaje in mensajes[inicio:-1]:
-        for llamada in getattr(mensaje, "tool_calls", None) or []:
-            pendientes[llamada["id"]] = clave(llamada)
-        if (
-            isinstance(mensaje, ToolMessage)
-            and mensaje.tool_call_id in pendientes
-            and getattr(mensaje, "status", "success") != "error"
-            and isinstance(mensaje.content, str)
-            and not mensaje.content.startswith("Error al ejecutar el agente")
-        ):
-            completadas[pendientes[mensaje.tool_call_id]] = mensaje.content
-
-    claves = list(dict.fromkeys(clave(llamada) for llamada in solicitudes))
-    if not all(clave_actual in completadas for clave_actual in claves):
-        return None
-    contenido = "\n\n".join(completadas[clave_actual] for clave_actual in claves)
-    return {
-        "messages": [AIMessage(id=ultimo.id, content=contenido)],
-        "jump_to": "end",
-    }
-
-
 class Orquestador:
     def __init__(
         self,
-        modelo: str = "llama3.1:latest",
+        modelo: str = "qwen2.5:7b-instruct",
         memory: LongTermMemory | None = None,
     ):
         self.nombre = "orquestador"
         self.modelo = modelo
-        self.herramientas = [
-            _crear_herramienta_agente(nombre, agente)
-            for nombre, agente in AGENTES.items()
-        ]
+        self.herramientas = list(HERRAMIENTAS_MCP)
         self.agentes_invocados: list[str] = []  # trazas de la última consulta
+        self.ultimas_herramientas: list[dict] = []  # nombre, args, salida, estado
         self._agente = None
         self._mensajes: list = []  # historial de la conversación
+        self._documentos: list[dict] = []  # OCR/descripción usados como contexto
+        self._imagen_pendiente: str | None = None
+        self._ultimo_agente: str | None = None
+        self.modo = os.getenv("ORCHESTRATION_MODE", "graph").strip().lower()
+        if self.modo not in {"graph", "hub"}:
+            self.modo = "graph"
+        self.modo_efectivo = self.modo
         self.memory = memory or LongTermMemory(model=modelo)
 
     def _get_agente(self):
@@ -250,7 +320,6 @@ class Orquestador:
                 model=llm,
                 tools=self.herramientas,
                 system_prompt=SYSTEM_PROMPT,
-                middleware=[_conservar_agregado_steward, _evitar_delegacion_repetida],
             )
         return self._agente
 
@@ -264,53 +333,373 @@ class Orquestador:
             if isinstance(bloque, dict) and bloque.get("type") == "text"
         )
 
+    def registrar_imagen(self, ruta: str, pregunta: str) -> None:
+        """Deja una imagen pendiente en el historial para la siguiente consulta."""
+        self._imagen_pendiente = str(Path(ruta).expanduser().resolve())
+        self._mensajes = [
+            *self._mensajes,
+            HumanMessage(content=f"Adjunté una imagen en {self._imagen_pendiente}."),
+            AIMessage(content=pregunta),
+        ]
+        self.agentes_invocados = []
+        self.ultimas_herramientas = []
+        self.memory.update(self._mensajes)
+
+    @property
+    def imagen_pendiente(self) -> str | None:
+        return self._imagen_pendiente
+
+    def limpiar_imagen_pendiente(self) -> None:
+        self._imagen_pendiente = None
+
+    def marcar_imagen_pendiente(self, ruta: str) -> None:
+        self._imagen_pendiente = str(Path(ruta).expanduser().resolve())
+
+    def registrar_documento(
+        self,
+        ruta: str,
+        operacion: str,
+        texto: str,
+        nombre: str | None = None,
+    ) -> None:
+        """Guarda el texto de una imagen para responder consultas posteriores."""
+        texto = (texto or "").strip()
+        if not texto or texto.startswith("No se pudo procesar la imagen:"):
+            return
+
+        ruta_resuelta = str(Path(ruta).expanduser().resolve())
+        self._documentos = [
+            documento
+            for documento in self._documentos
+            if documento.get("ruta") != ruta_resuelta
+        ]
+        self._documentos.append(
+            {
+                "ruta": ruta_resuelta,
+                "nombre": nombre or Path(ruta_resuelta).name,
+                "operacion": operacion,
+                "texto": texto,
+            }
+        )
+        self._documentos = self._documentos[-5:]
+        self._ultimo_agente = "document_intelligence"
+        if self._imagen_pendiente == ruta_resuelta:
+            self._imagen_pendiente = None
+
+    def _contexto_documentos(self) -> str:
+        partes: list[str] = []
+        for documento in self._documentos[-3:]:
+            texto = str(documento.get("texto") or "")
+            if len(texto) > 6000:
+                texto = texto[:6000].rstrip() + "\n[…texto truncado…]"
+            partes.append(
+                f"Documento: {documento.get('nombre')} "
+                f"({documento.get('operacion')})\n"
+                f"Ruta original: {documento.get('ruta')}\n"
+                f"Texto ya extraído:\n{texto}"
+            )
+
+        if self._imagen_pendiente:
+            partes.append(
+                "Imagen pendiente sin procesar: "
+                f"{self._imagen_pendiente}. Si el usuario pide leerla o "
+                "describirla, usa la herramienta MCP de document_intelligence."
+            )
+
+        if not partes:
+            return ""
+        return (
+            f"{_MARCADOR_CONTEXTO}\n"
+            "Contexto documental de esta conversación. Úsalo como evidencia "
+            "para preguntas de seguimiento; no lo envíes a data_analyst ni "
+            "vuelvas a procesar la imagen salvo que el usuario lo pida.\n\n"
+            + "\n\n".join(partes)
+        )
+
+    def _contexto_analista(self) -> str:
+        """Resumen breve del hilo para resolver aclaraciones de SQL."""
+        partes: list[str] = []
+        for mensaje in self._mensajes[-6:]:
+            tipo = getattr(mensaje, "type", "")
+            if tipo not in {"human", "ai"}:
+                continue
+            texto = self._extraer_texto(mensaje).strip()
+            if not texto:
+                continue
+            rol = "Usuario" if tipo == "human" else "Asistente"
+            partes.append(f"{rol}: {texto[:800]}")
+        return "\n".join(partes)
+
+    def _resultados_data_steward(self) -> list[dict]:
+        """Recupera las salidas estructuradas del Data Steward para verificarlas."""
+        nombres = {
+            "mcp_inspeccionar_dataset",
+            "mcp_validar_calidad_datos",
+        }
+        if not self.ultimas_herramientas:
+            return []
+
+        resultados: list[dict] = []
+        for registro in self.ultimas_herramientas:
+            nombre = registro.get("name")
+            if nombre not in nombres:
+                return []
+            salida = str(registro.get("salida") or "").strip()
+            if not salida or registro.get("estado") == "error":
+                return []
+            try:
+                datos = json.loads(salida)
+            except (TypeError, ValueError):
+                return []
+            herramienta = (
+                "inspeccionar_dataset"
+                if nombre == "mcp_inspeccionar_dataset"
+                else "validar_calidad_datos"
+            )
+            resultados.append({"herramienta": herramienta, "datos": datos})
+        return resultados
+
+    def _guardar_respuesta_verificada(self, respuesta: str, mensajes: list) -> str:
+        mensajes = [
+            mensaje
+            for mensaje in mensajes
+            if getattr(mensaje, "type", "") != "system"
+        ]
+        if mensajes and getattr(mensajes[-1], "type", "") == "ai":
+            mensajes = [*mensajes[:-1], AIMessage(content=respuesta)]
+        else:
+            mensajes = [*mensajes, AIMessage(content=respuesta)]
+        self._mensajes = mensajes
+        self.memory.update(self._mensajes)
+        return respuesta
+
+    def _registrar_herramientas(self, nuevos: list) -> None:
+        """Empareja tool calls con sus resultados para una traza verificable."""
+        registros: list[dict] = []
+        por_id: dict[str, dict] = {}
+
+        for mensaje in nuevos:
+            for llamada in getattr(mensaje, "tool_calls", None) or []:
+                registro = {
+                    "name": llamada.get("name"),
+                    "args": llamada.get("args") or {},
+                    "salida": "",
+                    "estado": "ok",
+                }
+                registros.append(registro)
+                if llamada.get("id"):
+                    por_id[llamada["id"]] = registro
+
+            if getattr(mensaje, "type", "") == "tool":
+                registro = por_id.get(getattr(mensaje, "tool_call_id", None))
+                if registro is None and registros:
+                    registro = registros[-1]
+                if registro is None:
+                    continue
+                salida = self._extraer_texto(mensaje).strip()
+                registro["salida"] = salida
+                if getattr(mensaje, "status", None) == "error" or salida.startswith(
+                    ("Error al llamar", "No se pudo procesar la imagen:")
+                ):
+                    registro["estado"] = "error"
+
+        self.ultimas_herramientas = registros
+        self.agentes_invocados = [
+            registro["name"]
+            for registro in registros
+            if registro.get("name")
+        ]
+
+    def _responder_normatividad(self, consulta: str) -> str:
+        """Ruta directa al servidor de normatividad para consultas legales."""
+        salida = _llamar_mcp(
+            "normatividad_rag_server",
+            "buscar_normatividad",
+            {"query": consulta},
+        )
+        estado = (
+            "error"
+            if salida.startswith("Error al llamar ")
+            else "ok"
+        )
+        self.ultimas_herramientas = [
+            {
+                "name": "mcp_buscar_normatividad",
+                "args": {"query": consulta},
+                "salida": salida,
+                "estado": estado,
+            }
+        ]
+        self.agentes_invocados = (
+            ["mcp_buscar_normatividad"] if estado == "ok" else []
+        )
+        self._mensajes = [
+            *self._mensajes,
+            HumanMessage(content=consulta),
+            AIMessage(content=salida),
+        ]
+        self._ultimo_agente = "normatividad_rag"
+        self.memory.update(self._mensajes)
+        return salida
+
     def procesar(self, consulta: str) -> str:
+        """Atiende una consulta con el modo de orquestación configurado.
+
+        ``ORCHESTRATION_MODE=graph`` usa el grafo explícito de LangGraph.
+        ``ORCHESTRATION_MODE=hub`` conserva el orquestador anterior como
+        respaldo. Si el grafo falla, se intenta el hub para no dejar la UI sin
+        respuesta.
+        """
+        if self.modo == "hub":
+            return self._procesar_hub(consulta)
+
+        try:
+            return self._procesar_grafo(consulta)
+        except Exception as error:  # noqa: BLE001 - fallback deliberado
+            logger.exception("Falló el grafo; se usa el orquestador hub: %s", error)
+            self.modo_efectivo = "hub (fallback)"
+            return self._procesar_hub(consulta)
+
+    def _procesar_grafo(self, consulta: str) -> str:
+        from proyecto.orchestration.grafo import ejecutar_grafo
+
+        historial = self.memory.prepare(self._mensajes, consulta)
+        estado = ejecutar_grafo(
+            consulta,
+            historial=historial,
+            contexto_documentos=self._contexto_documentos(),
+            contexto_analista=self._contexto_analista(),
+            modelo=self.modelo,
+            imagen_pendiente=self._imagen_pendiente,
+            ultimo_agente=self._ultimo_agente,
+        )
+
+        respuesta = str(estado.get("respuesta") or "").strip()
+        if not respuesta:
+            raise RuntimeError("El grafo terminó sin respuesta.")
+
+        trazas = list(estado.get("trazas") or [])
+        self.ultimas_herramientas = trazas
+        self.agentes_invocados = [
+            str(traza.get("name"))
+            for traza in trazas
+            if traza.get("name")
+        ]
+
+        # Si el grafo procesó una imagen, guardamos el resultado para las
+        # preguntas de seguimiento y limpiamos la imagen pendiente.
+        ruta_documento = estado.get("imagen_pendiente")
+        for traza in trazas:
+            nombre = str(traza.get("name") or "")
+            if (
+                nombre not in {"mcp_extraer_texto_imagen", "mcp_describir_imagen"}
+                or traza.get("estado") == "error"
+            ):
+                continue
+            ruta = ruta_documento or _ruta_imagen_de_consulta(consulta)
+            if not ruta:
+                continue
+            operacion = (
+                "descripcion"
+                if nombre == "mcp_describir_imagen"
+                else "ocr"
+            )
+            self.registrar_documento(
+                ruta,
+                operacion,
+                str(traza.get("salida") or ""),
+                Path(ruta).name,
+            )
+
+        plan = list(estado.get("plan") or [])
+        if plan and plan[-1] != "directo":
+            self._ultimo_agente = plan[-1]
+        self._mensajes = [
+            *self._mensajes,
+            HumanMessage(content=consulta),
+            AIMessage(content=respuesta),
+        ]
+        self.memory.update(self._mensajes)
+        self.modo_efectivo = "grafo"
+        return respuesta
+
+    def _procesar_hub(self, consulta: str) -> str:
+        self.modo_efectivo = "hub"
+        if _es_consulta_normativa(consulta):
+            return self._responder_normatividad(consulta)
+
         entrada = self.memory.prepare(self._mensajes, consulta)
-        token = _estadisticas_steward.set([])
+        contexto = self._contexto_documentos()
+        if contexto:
+            entrada = [{"role": "system", "content": contexto}, *entrada]
+
+        token_contexto = _CONTEXTO_ANALISTA.set(self._contexto_analista())
         try:
             resultado = self._get_agente().invoke(
                 {"messages": entrada},
-                config={"callbacks": [_RegistrarEstadisticasSteward()]},
+                config={
+                    "run_name": "orquestador_mcp",
+                    "tags": ["orquestador", "mcp", "ui"],
+                    "metadata": {
+                        "modelo": self.modelo,
+                        "herramientas": [t.name for t in self.herramientas],
+                    },
+                },
             )
         finally:
-            _estadisticas_steward.reset(token)
+            _CONTEXTO_ANALISTA.reset(token_contexto)
         mensajes = resultado["messages"]
 
-        # Qué agentes llamó el orquestador en este turno (para depurar).
+        # Qué herramientas MCP llamó el orquestador en este turno.
         nuevos = mensajes[len(entrada):]
-        self.agentes_invocados = [
-            tc["name"]
-            for m in nuevos
-            for tc in (getattr(m, "tool_calls", None) or [])
+        self._registrar_herramientas(nuevos)
+
+        # El Data Steward devuelve JSON de metadatos. Lo formateamos sin pasar
+        # por el LLM para que no invente columnas, conteos ni relaciones.
+        resultados_steward = self._resultados_data_steward()
+        if resultados_steward:
+            respuesta = data_steward_agent.formatear_resultados_verificados(
+                resultados_steward
+            )
+            return self._guardar_respuesta_verificada(respuesta, mensajes)
+
+        # Normatividad y Data Analyst ya devuelven una respuesta verificada.
+        # Si fueron la única herramienta, se usa tal cual: evita que el modelo
+        # orquestador reescriba la evidencia, el SQL o las cifras.
+        if (
+            len(self.ultimas_herramientas) == 1
+            and self.ultimas_herramientas[0].get("name")
+            in {"mcp_buscar_normatividad", "mcp_analizar_datos"}
+            and self.ultimas_herramientas[0].get("estado") == "ok"
+            and self.ultimas_herramientas[0].get("salida")
+        ):
+            respuesta = str(self.ultimas_herramientas[0]["salida"]).strip()
+            return self._guardar_respuesta_verificada(respuesta, mensajes)
+
+        # El contexto documental y el resumen de memoria se reconstruyen en
+        # cada turno; no deben acumularse en el historial ni en la memoria.
+        self._mensajes = [
+            mensaje
+            for mensaje in mensajes
+            if getattr(mensaje, "type", "") != "system"
         ]
-
-        # Una demostracion MCP no necesita reinterpretacion del resultado.
-        # Conservamos el JSON real tambien en el historial y la memoria.
-        if len(set(self.agentes_invocados)) == 1:
-            for mensaje in reversed(nuevos):
-                if (
-                    getattr(mensaje, "type", None) == "tool"
-                    and getattr(mensaje, "name", None) == self.agentes_invocados[0]
-                    and isinstance(mensaje.content, str)
-                ):
-                    try:
-                        datos = json.loads(mensaje.content)
-                    except (ValueError, TypeError):
-                        break
-                    if isinstance(datos, dict) and datos.get("estado") == "demostracion":
-                        mensajes[-1].content = mensaje.content
-                    break
-
-        self._mensajes = mensajes
-        self.memory.update(mensajes)
+        self.memory.update(self._mensajes)
         return self._extraer_texto(mensajes[-1])
 
     def reiniciar(self) -> None:
         self._mensajes = []
         self.agentes_invocados = []
+        self.ultimas_herramientas = []
+        self._documentos = []
+        self._imagen_pendiente = None
+        self._ultimo_agente = None
+        self.modo_efectivo = self.modo
 
     def __repr__(self) -> str:
-        return f"<Orquestador | modelo: {self.modelo} | agentes: {len(self.herramientas)}>"
+        return (
+            f"<Orquestador | modo: {self.modo} | modelo: {self.modelo} | "
+            f"tools MCP: {len(self.herramientas)}>"
+        )
 
 
 orquestador = Orquestador()

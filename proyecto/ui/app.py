@@ -1,20 +1,29 @@
 """Interfaz Streamlit del agente.
 
-    python -m streamlit run proyecto/ui/app.py
+    uv run --with streamlit streamlit run proyecto/ui/app.py
 """
 
 from __future__ import annotations
 
+import shutil
 import sys
+import tempfile
+import uuid
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import streamlit as st
 
-from ui.adaptador import preguntar_orquestador, reiniciar_orquestador
+from servicio import (
+    preguntar_orquestador,
+    procesar_imagen_auto,
+    reiniciar_orquestador,
+)
+from agents.document_intelligence_agent import EXTENSIONES_IMAGEN, MAX_IMAGE_BYTES
 from ui import componentes, estilos
+
+TIPOS_IMAGEN = sorted(extension.lstrip(".") for extension in EXTENSIONES_IMAGEN)
 
 SUGERENCIAS = [
     (
@@ -24,7 +33,7 @@ SUGERENCIAS = [
     ),
     (
         "sug_1",
-        "¿Cuántos clientes hay en la base sintética y cómo se distribuyen por "
+        "¿Cuántos clientes hay en la base y cómo se distribuyen por "
         "tipo de persona?",
     ),
     (
@@ -48,6 +57,9 @@ for clave, valor in {
     "pensando": False,
     "consola_abierta": False,
     "tema": "oscuro",
+    "imagen_actual": None,
+    "imagen_nombre_actual": None,
+    "upload_dir": None,
 }.items():
     if clave not in st.session_state:
         st.session_state[clave] = valor
@@ -55,19 +67,59 @@ for clave, valor in {
 estilos.aplicar(st.session_state.tema)
 
 
-def iniciar(texto: str) -> None:
+def _limpiar_imagen() -> None:
+    directorio = st.session_state.get("upload_dir")
+    if directorio:
+        shutil.rmtree(directorio, ignore_errors=True)
+
+    st.session_state.upload_dir = None
+
+
+def _guardar_imagen_chat(archivo) -> tuple[str, str] | None:
+    """Guarda la imagen enviada desde el chat en un directorio temporal."""
+    if archivo is None:
+        return None
+
+    if archivo.size > MAX_IMAGE_BYTES:
+        st.error("La imagen supera el límite de 10 MB.")
+        return None
+
+    sufijo = Path(archivo.name).suffix.lower()
+    if sufijo not in EXTENSIONES_IMAGEN:
+        st.error(f"Formato no soportado: {sufijo}")
+        return None
+
+    directorio = st.session_state.get("upload_dir")
+    if not directorio:
+        directorio = tempfile.mkdtemp(prefix="docint_ui_")
+        st.session_state.upload_dir = directorio
+
+    destino = Path(directorio) / f"imagen_{uuid.uuid4().hex}{sufijo}"
+    destino.write_bytes(archivo.getvalue())
+    return str(destino), archivo.name
+
+
+def iniciar(
+    texto: str,
+    imagen_path: str | None = None,
+    imagen_nombre: str | None = None,
+) -> None:
     st.session_state.mensajes.append({"rol": "user", "texto": texto})
     st.session_state.consulta_actual = texto
+    st.session_state.imagen_actual = imagen_path
+    st.session_state.imagen_nombre_actual = imagen_nombre
     st.session_state.pensando = True
-    st.session_state.consola_abierta = True
     st.rerun()
 
 
 def limpiar() -> None:
+    _limpiar_imagen()
     reiniciar_orquestador()
     st.session_state.mensajes = []
     st.session_state.artefacto = None
     st.session_state.consulta_actual = None
+    st.session_state.imagen_actual = None
+    st.session_state.imagen_nombre_actual = None
     st.session_state.pensando = False
     st.session_state.consola_abierta = False
     st.rerun()
@@ -217,34 +269,38 @@ with izquierda:
                                 unsafe_allow_html=True,
                             )
                 if st.session_state.pensando:
-                    componentes.pensando("Analizando la consulta…")
-
-                # Streamlit no desplaza solo el contenedor de mensajes. Sin
-                # esto, a partir de la cuarta consulta la respuesta nueva queda
-                # debajo del área visible y parece que la conversación se congeló.
-                if st.session_state.mensajes:
-                    firma = f"{len(st.session_state.mensajes)}-{len(st.session_state.mensajes[-1].get('texto', ''))}"
-                    st.iframe(
-                        f"""
-                        <script>
-                        const doc = window.parent.document;
-                        const el = doc.querySelector('.st-key-chat_scroll');
-                        if (el) {{
-                          const irAlFinal = () => {{ el.scrollTop = el.scrollHeight; }};
-                          irAlFinal();
-                          requestAnimationFrame(irAlFinal);
-                          setTimeout(irAlFinal, 80);
-                        }}
-                        /* {firma} */
-                        </script>
-                        """,
-                        height=1,
+                    estado = (
+                        "Procesando imagen…"
+                        if st.session_state.get("imagen_actual")
+                        else "Analizando la consulta…"
                     )
+                    componentes.pensando(estado)
 
-        entrada = st.chat_input("Hazme una consulta", accept_file=False)
-        st.caption("Adjuntos de imágenes deshabilitados: integración OCR pendiente.")
-        if entrada and entrada.strip():
-            iniciar(entrada.strip())
+        entrada = st.chat_input(
+            "Hazme una consulta",
+            accept_file=True,
+            file_type=TIPOS_IMAGEN,
+            max_upload_size=MAX_IMAGE_BYTES // (1024 * 1024),
+        )
+        if entrada:
+            if isinstance(entrada, str):
+                texto = entrada.strip()
+                archivos = []
+            else:
+                texto = (entrada.text or "").strip()
+                archivos = list(entrada.files or [])
+
+            if archivos:
+                guardado = _guardar_imagen_chat(archivos[0])
+                if guardado:
+                    ruta, nombre = guardado
+                    iniciar(
+                        texto or "Analiza la imagen adjunta",
+                        imagen_path=ruta,
+                        imagen_nombre=nombre,
+                    )
+            elif texto:
+                iniciar(texto)
 
 if abierta:
     with derecha:
@@ -256,11 +312,45 @@ if abierta:
             with st.container(key="consola_scroll"):
                 panel_consola(st.session_state.artefacto, st.session_state.pensando)
 
+# Autoscroll fuera del contenedor del chat. Si el iframe vive dentro de
+# chat_scroll altera su scrollHeight y puede colapsar el layout durante el
+# rerun. El bucle reintenta mientras Streamlit termina de montar los mensajes.
+if st.session_state.mensajes:
+    firma = f"{len(st.session_state.mensajes)}-{len(st.session_state.mensajes[-1].get('texto', ''))}"
+    st.iframe(
+        f"""
+        <script>
+        const doc = window.parent.document;
+        const inicio = performance.now();
+        const alFinal = () => {{
+          const contenedores = [...doc.querySelectorAll('.st-key-chat_scroll')];
+          const el = contenedores.find((n) => n.offsetParent !== null && n.clientHeight > 0)
+            || contenedores[contenedores.length - 1];
+          if (el) el.scrollTop = el.scrollHeight;
+        }};
+        const bucle = () => {{
+          alFinal();
+          if (performance.now() - inicio < 2500) requestAnimationFrame(bucle);
+        }};
+        bucle();
+        /* {firma} */
+        </script>
+        """,
+        height=1,
+    )
+
 if st.session_state.pensando:
     try:
-        artefacto = preguntar_orquestador(
-            st.session_state.consulta_actual or ""
-        )
+        if st.session_state.get("imagen_actual"):
+            artefacto = procesar_imagen_auto(
+                st.session_state.imagen_actual,
+                st.session_state.consulta_actual or "",
+                st.session_state.get("imagen_nombre_actual"),
+            )
+        else:
+            artefacto = preguntar_orquestador(
+                st.session_state.consulta_actual or ""
+            )
     except Exception as exc:  # noqa: BLE001
         mensaje = (
             "No pude completar la consulta. Verifica que el orquestador y los "
@@ -296,4 +386,6 @@ if st.session_state.pensando:
         )
     finally:
         st.session_state.pensando = False
+        st.session_state.imagen_actual = None
+        st.session_state.imagen_nombre_actual = None
     st.rerun()

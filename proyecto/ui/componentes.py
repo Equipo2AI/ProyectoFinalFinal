@@ -89,7 +89,7 @@ def hero() -> None:
         '<div class="hero-kicker">Consulta</div>'
         '<div class="t">¿En qué te puedo ayudar?</div>'
         '<div class="s">Hola soy un agente de análisis de datos bancarios. Pregúntame saldos, calidad de datos, '
-        'normativa o calidad de datos.</div>'
+        'normativa o adjunta una factura para leerla.</div>'
         "</div>",
         unsafe_allow_html=True,
     )
@@ -280,7 +280,7 @@ def vacio_consola(pensando: bool = False) -> None:
             f'<span class="vacio-ico girando">{_ICONOS["loader"]}</span>'
             '<div class="t">Analizando la consulta…</div>'
             '<div class="s">El orquestador está decidiendo qué herramientas '
-            "deben intervenir.</div></div>",
+            "MCP intervenir.</div></div>",
             unsafe_allow_html=True,
         )
         return

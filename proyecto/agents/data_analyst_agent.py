@@ -1,23 +1,8 @@
 """Data Analyst SQL: agente LangChain y cliente del servidor MCP independiente."""
 
-from langchain.agents import create_agent
 from langchain_core.tools import tool
-from langchain_ollama import ChatOllama
 
-from proyecto.mcp_servers.data_analyst_backend import (
-    DataAnalystSQLBackend,
-    SYSTEM_PROMPT,
-    MAX_FILAS,
-    TABLAS_EXCLUIDAS,
-    COLUMNAS_SENSIBLES,
-    _normalizar,
-    _validar_consulta,
-    _sqlite_solo_lectura,
-    _json,
-    _SOLO_LECTURA,
-    _PALABRAS_PROHIBIDAS,
-    _TABLAS_EXCLUIDAS,
-)
+from proyecto.mcp_servers.data_analyst_backend import DataAnalystSQLBackend
 from proyecto.mcp_servers.mcp_client import llamar_herramienta, llamar_herramienta_mcp
 
 
@@ -71,23 +56,6 @@ class DataAnalystAgent(DataAnalystSQLBackend):
         for herramienta in herramientas:
             herramienta.coroutine = crear_corutina(herramienta.name)
         return herramientas
-
-    def _get_agente(self):
-        if self._agente is None:
-            llm = ChatOllama(model=self.modelo, temperature=0)
-            self._agente = create_agent(
-                model=llm,
-                tools=self._tools,
-                system_prompt=SYSTEM_PROMPT,
-            )
-        return self._agente
-
-    def procesar(self, consulta: str) -> str:
-        result = self._get_agente().invoke(
-            {"messages": [{"role": "user", "content": consulta}]},
-            config={"recursion_limit": 25},
-        )
-        return result["messages"][-1].content
 
     def __repr__(self) -> str:
         return f"<Agente {self.nombre} | modelo: {self.modelo}>"

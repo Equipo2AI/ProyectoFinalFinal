@@ -1,19 +1,41 @@
-"""Contrato de respuesta entre la UI y el orquestador."""
+"""Contrato de respuesta entre la UI y el orquestador.
+
+La forma de ``Respuesta`` conserva la estructura que usaba la demo (pasos,
+alertas, SQL, datos, gráfica y fuentes) como guía para las tools MCP que
+devuelvan resultados estructurados. El flujo real ya no usa datos sintéticos.
+"""
 
 from __future__ import annotations
 
-import io
+import asyncio
+import re
+import sys
 import time
+import unicodedata
+from pathlib import Path
 from typing import TypedDict
 
-import matplotlib
+_RAIZ = Path(__file__).resolve().parents[1]
+if str(_RAIZ) not in sys.path:
+    sys.path.insert(0, str(_RAIZ))
 
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-from matplotlib.ticker import FuncFormatter
+from proyecto.agents.document_intelligence_agent import (
+    MODELO_VISION_POR_DEFECTO,
+    describe_an_image,
+    ocr_image,
+)
 
-TIEMPO_DEMO = 1.1
-NOTA_DEMO = "Datos sintéticos"
+_ORQUESTADOR = None
+
+# Nombres de las tools MCP que expone el orquestador.
+_TOOL_A_AGENTE = {
+    "mcp_inspeccionar_dataset": "data_steward",
+    "mcp_validar_calidad_datos": "data_steward",
+    "mcp_buscar_normatividad": "normatividad_rag",
+    "mcp_analizar_datos": "data_analyst",
+    "mcp_extraer_texto_imagen": "document_intelligence",
+    "mcp_describir_imagen": "document_intelligence",
+}
 
 
 class Paso(TypedDict, total=False):
@@ -28,219 +50,526 @@ class Respuesta(TypedDict, total=False):
     respuesta: str
     pasos: list[Paso]
     agentes: list[str]
+    herramientas: list[str]
     alertas: list[str]
     sql: str | None
     datos: list[dict] | None
     grafica: bytes | None
     fuentes: list[str]
+    resultados: list[dict]
     duracion: float | None
     modelo: str | None
     nota: str | None
     error: str | None
+    formato: str | None
 
 
-def _grafica_demo(datos: list[dict], tema: str = "oscuro") -> bytes:
-    plt.rcParams.update(
-        {
-            "font.family": ["Helvetica Neue", "Arial", "DejaVu Sans"],
-            "font.size": 8,
+def _llamar_mcp_document_intelligence(nombre_tool: str, ruta: str) -> str:
+    """Llama una tool del servidor MCP por stdio."""
+    from fastmcp import Client
+    from fastmcp.client.transports import StdioTransport
+
+    transporte = StdioTransport(
+        command=sys.executable,
+        args=["-m", "proyecto.mcp_servers.document_intelligence_server"],
+        cwd=str(_RAIZ),
+    )
+
+    async def ejecutar() -> str:
+        async with Client(transporte) as cliente:
+            resultado = await cliente.call_tool(nombre_tool, {"image_path": ruta})
+            if resultado.is_error:
+                raise RuntimeError(f"El servidor MCP falló al ejecutar {nombre_tool}.")
+            return "\n".join(
+                bloque.text
+                for bloque in resultado.content
+                if bloque.type == "text"
+            ).strip()
+
+    return asyncio.run(ejecutar())
+
+
+def procesar_imagen(ruta: str, operacion: str = "ocr") -> Respuesta:
+    """Procesa una imagen local mediante el servidor MCP, con respaldo local."""
+    inicio = time.perf_counter()
+    ruta_path = Path(ruta).expanduser().resolve()
+    es_descripcion = operacion == "descripcion"
+    etiqueta = "Descripción" if es_descripcion else "OCR"
+    nombre_tool = "describir_imagen" if es_descripcion else "extraer_texto_imagen"
+    herramienta_local = describe_an_image if es_descripcion else ocr_image
+
+    if not ruta_path.is_file():
+        mensaje = f"No existe la imagen: {ruta}"
+        return {
+            "respuesta": mensaje,
+            "pasos": [
+                {
+                    "agente": "document_intelligence",
+                    "accion": f"{etiqueta} de imagen",
+                    "detalle": mensaje,
+                    "estado": "error",
+                }
+            ],
+            "agentes": ["document_intelligence"],
+            "herramientas": [],
+            "error": mensaje,
+            "formato": "markdown",
         }
-    )
-    productos = [str(fila.get("producto", "")) for fila in datos]
-    saldos = [float(fila.get("saldo_promedio", 0)) for fila in datos]
-    claro = tema == "claro"
-    colores = (
-        ["#C8102E", "#C98B4B", "#2F7F73", "#4C5B8A"]
-        if claro
-        else ["#C25256", "#B58A50", "#5B9A8F", "#7886A8"]
-    )
-    tinta = "#2A2622" if claro else "#E9DFD2"
-    tenue = "#6A645C" if claro else "#B9AC9E"
-    linea = "#171923" if claro else "#F4EDE3"
-    fondo = "#FBF8F2" if claro else "#171A1D"
 
-    figura, eje = plt.subplots(figsize=(7.0, 3.4), dpi=190)
-    figura.patch.set_facecolor(fondo)
-    eje.set_facecolor(fondo)
-    barras = eje.bar(productos, saldos, color=colores, width=0.54, zorder=3)
+    via = "MCP"
+    error: str | None = None
+    try:
+        texto = _llamar_mcp_document_intelligence(nombre_tool, str(ruta_path))
+    except Exception as exc:  # noqa: BLE001 - se intenta el respaldo local
+        try:
+            texto = herramienta_local.invoke({"image_path": str(ruta_path)})
+            via = f"Fallback local ({type(exc).__name__})"
+        except Exception as exc_local:  # noqa: BLE001
+            texto = (
+                "No se pudo procesar la imagen: "
+                f"{type(exc_local).__name__}: {exc_local}"
+            )
+            via = "Error"
+            error = texto
 
-    for barra, valor in zip(barras, saldos):
-        eje.text(
-            barra.get_x() + barra.get_width() / 2,
-            valor + max(saldos) * 0.02,
-            f"${valor:,.0f}",
-            ha="center",
-            va="bottom",
-            color=tinta,
-            fontsize=8,
+    if texto.startswith("No se pudo procesar la imagen:"):
+        error = texto
+
+    duracion = round(time.perf_counter() - inicio, 2)
+    return {
+        "respuesta": texto,
+        "pasos": [
+            {
+                "agente": "document_intelligence",
+                "accion": f"{etiqueta} de imagen",
+                "detalle": f"{ruta_path.name} · vía {via}",
+                "duracion": duracion,
+                "estado": "error" if error else "ok",
+            }
+        ],
+        "agentes": ["document_intelligence"],
+        "herramientas": [nombre_tool],
+        "fuentes": [ruta_path.name],
+        "duracion": duracion,
+        "modelo": MODELO_VISION_POR_DEFECTO,
+        "nota": f"Vía {via}",
+        "error": error,
+        "formato": "texto" if not es_descripcion and not error else "markdown",
+    }
+
+
+def _get_orquestador():
+    global _ORQUESTADOR
+    if _ORQUESTADOR is None:
+        from proyecto.orchestration.orquestador import Orquestador
+
+        _ORQUESTADOR = Orquestador()
+    return _ORQUESTADOR
+
+
+def reiniciar_orquestador() -> None:
+    """Limpia el historial del orquestador compartido por la UI."""
+    if _ORQUESTADOR is not None:
+        _ORQUESTADOR.reiniciar()
+
+
+def _normalizar(texto: str) -> str:
+    normalizado = unicodedata.normalize("NFKD", texto.casefold())
+    return "".join(c for c in normalizado if not unicodedata.combining(c))
+
+
+def _operacion_explicita(consulta: str) -> str | None:
+    """Devuelve ocr/descripcion solo cuando la instrucción es inequívoca."""
+    texto = _normalizar(consulta)
+    pide_ocr = any(
+        palabra in texto
+        for palabra in (
+            "ocr",
+            "texto",
+            "transcribe",
+            "transcripcion",
+            "extrae",
+            "extraer",
+            "leer",
+            "lectura",
+            "literal",
+        )
+    )
+    pide_descripcion = any(
+        palabra in texto
+        for palabra in (
+            "describe",
+            "descripcion",
+            "que ves",
+            "resume",
+            "resumen",
+            "interpreta",
+        )
+    )
+    if pide_ocr and not pide_descripcion:
+        return "ocr"
+    if pide_descripcion and not pide_ocr:
+        return "descripcion"
+    return None
+
+
+def _resumen_args(args: dict) -> str:
+    partes = []
+    for clave, valor in (args or {}).items():
+        if clave in {"image_path", "ruta", "path"}:
+            valor = Path(str(valor)).name
+        texto = str(valor).replace("\n", " ").strip()
+        if len(texto) > 100:
+            texto = texto[:100].rstrip() + "…"
+        partes.append(f"{clave}={texto}")
+    return ", ".join(partes)
+
+
+def _fuentes_de_salida(salida: str) -> list[str]:
+    fuentes = re.findall(r"(?im)^\s*FUENTE:\s*(.+?)\s*$", salida or "")
+    fuentes.extend(re.findall(r"(?im)^\s*Fuente:\s*(.+?)\s*$", salida or ""))
+    bloque = re.search(r"(?is)Fuentes consultadas:\s*(.+)$", salida or "")
+    if bloque:
+        fuentes.extend(
+            re.findall(r"(?m)^\s*-\s*(.+?)\s*$", bloque.group(1))
+        )
+    fuentes.extend(re.findall(r'"archivo"\s*:\s*"([^"]+)"', salida or ""))
+    return list(dict.fromkeys(fuente.strip() for fuente in fuentes if fuente.strip()))
+
+
+def _sql_de_salida(salida: str) -> str | None:
+    bloques = re.findall(r"```sql\s*(.*?)```", salida or "", flags=re.IGNORECASE | re.DOTALL)
+    if bloques:
+        return bloques[-1].strip()
+    consulta = re.search(r"(?is)\b(select|with)\b.+(?:;|$)", salida or "")
+    return consulta.group(0).strip() if consulta else None
+
+
+def _pasos_de_herramientas(herramientas: list[dict]) -> tuple[list[Paso], list[str], list[str], list[str]]:
+    pasos: list[Paso] = []
+    agentes: list[str] = []
+    nombres: list[str] = []
+    alertas: list[str] = []
+
+    for herramienta in herramientas:
+        nombre = str(herramienta.get("name") or "desconocida")
+        agente = _TOOL_A_AGENTE.get(nombre, "orquestador")
+        estado = str(herramienta.get("estado") or "ok")
+        salida = str(herramienta.get("salida") or "")
+        detalle = nombre
+        argumentos = _resumen_args(herramienta.get("args") or {})
+        if argumentos:
+            detalle += f" · {argumentos}"
+        if estado == "error":
+            detalle += " · error"
+            alertas.append(f"{nombre} falló: {salida[:240]}")
+
+        if agente not in agentes:
+            agentes.append(agente)
+        nombres.append(nombre)
+        pasos.append(
+            {
+                "agente": agente,
+                "accion": "Herramienta MCP invocada",
+                "detalle": detalle,
+                "estado": estado,
+            }
         )
 
-    eje.set_ylim(0, max(saldos) * 1.18)
-    eje.yaxis.set_major_formatter(FuncFormatter(lambda valor, _: f"{valor:,.0f}"))
-    eje.set_ylabel("Saldo promedio (MXN)", color=tenue, fontsize=8.5)
-    eje.tick_params(colors=tenue, labelsize=8, length=0)
-    eje.yaxis.grid(True, color=linea, alpha=0.08, linewidth=0.7)
-    eje.set_axisbelow(True)
-    for lado in ("top", "right", "left"):
-        eje.spines[lado].set_visible(False)
-    eje.spines["bottom"].set_color(linea)
-    eje.spines["bottom"].set_alpha(0.14)
-    eje.set_title(
-        "Saldo promedio por producto · febrero 2026",
-        color=tinta,
-        fontsize=9.5,
-        loc="left",
-        pad=10,
+    return pasos, agentes, nombres, alertas
+
+
+def _registrar_documento_en_orquestador(
+    orquestador,
+    ruta: str,
+    operacion: str,
+    texto: str,
+    nombre: str | None = None,
+) -> None:
+    try:
+        orquestador.registrar_documento(ruta, operacion, texto, nombre)
+    except Exception:  # noqa: BLE001 - la traza no debe romper la respuesta
+        pass
+
+
+def preguntar_orquestador(consulta: str) -> Respuesta:
+    """Atiende una consulta de texto con el orquestador y sus tools MCP."""
+    inicio = time.perf_counter()
+    try:
+        orquestador = _get_orquestador()
+
+        # Si la imagen se adjuntó antes y el usuario responde con una
+        # instrucción clara, procesarla directo evita que el LLM resuma el OCR
+        # o desvíe la pregunta a data_analyst.
+        pendiente = getattr(orquestador, "imagen_pendiente", None)
+        operacion = _operacion_explicita(consulta)
+        if pendiente and operacion:
+            resultado = procesar_imagen(pendiente, operacion)
+            _registrar_documento_en_orquestador(
+                orquestador,
+                pendiente,
+                operacion,
+                str(resultado.get("respuesta") or ""),
+            )
+            resultado["nota"] = "Imagen pendiente · MCP directo"
+            return resultado
+
+        texto = orquestador.procesar(consulta)
+    except Exception as exc:  # noqa: BLE001 - se informa en la UI
+        duracion = round(time.perf_counter() - inicio, 2)
+        mensaje = (
+            "No pude completar la consulta con el orquestador: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        return {
+            "respuesta": mensaje,
+            "pasos": [
+                {
+                    "agente": "orquestador",
+                    "accion": "Falló la consulta",
+                    "detalle": type(exc).__name__,
+                    "duracion": duracion,
+                    "estado": "error",
+                }
+            ],
+            "agentes": ["orquestador"],
+            "herramientas": [],
+            "duracion": duracion,
+            "error": mensaje,
+            "formato": "markdown",
+        }
+
+    duracion = round(time.perf_counter() - inicio, 2)
+    herramientas = list(getattr(orquestador, "ultimas_herramientas", []) or [])
+    invocadas = list(getattr(orquestador, "agentes_invocados", []) or [])
+    pasos, agentes, nombres, alertas = _pasos_de_herramientas(herramientas)
+
+    if not pasos:
+        pasos = [
+            {
+                "agente": "orquestador",
+                "accion": "Respondió directamente",
+                "detalle": "Sin herramientas MCP",
+                "duracion": duracion,
+            }
+        ]
+        agentes = ["orquestador"]
+
+    fuentes: list[str] = []
+    sql: str | None = None
+    for herramienta in herramientas:
+        salida = str(herramienta.get("salida") or "")
+        for fuente in _fuentes_de_salida(salida):
+            if fuente not in fuentes:
+                fuentes.append(fuente)
+        if herramienta.get("name") == "mcp_analizar_datos":
+            sql = _sql_de_salida(salida) or sql
+        argumentos = herramienta.get("args") or {}
+        ruta = argumentos.get("image_path") if isinstance(argumentos, dict) else None
+        if ruta:
+            nombre = Path(str(ruta)).name
+            if nombre not in fuentes:
+                fuentes.append(nombre)
+
+    texto = (texto or "").strip()
+    if not texto:
+        texto = "El orquestador no devolvió una respuesta."
+
+    modo = getattr(orquestador, "modo_efectivo", None)
+    nota = (
+        f"Orquestador {modo} · LangSmith"
+        if modo
+        else "Orquestador MCP · LangSmith"
+    )
+    return {
+        "respuesta": texto,
+        "pasos": pasos,
+        "agentes": agentes,
+        "herramientas": nombres or invocadas,
+        "fuentes": fuentes,
+        "alertas": alertas,
+        "sql": sql,
+        "resultados": herramientas,
+        "duracion": duracion,
+        "modelo": getattr(orquestador, "modelo", None),
+        "nota": nota,
+        "formato": "markdown",
+    }
+
+
+_CONSULTAS_IMAGEN_GENERICAS = {
+    "",
+    "analiza la imagen",
+    "analiza la imagen adjunta",
+    "procesa la imagen",
+    "procesa la imagen adjunta",
+}
+
+
+def _preguntar_operacion_imagen(ruta_path: Path, nombre: str) -> Respuesta:
+    """Pregunta en el chat si se quiere OCR o descripción, sin llamar a Qwen."""
+    inicio = time.perf_counter()
+    pregunta = "¿Quieres que extraiga el texto (OCR) o que describa la imagen?"
+    try:
+        orquestador = _get_orquestador()
+        orquestador.registrar_imagen(str(ruta_path), pregunta)
+    except Exception as exc:  # noqa: BLE001 - se informa en la UI
+        duracion = round(time.perf_counter() - inicio, 2)
+        mensaje = (
+            "Recibí la imagen, pero no pude preparar el contexto del "
+            f"orquestador: {type(exc).__name__}: {exc}"
+        )
+        return {
+            "respuesta": mensaje,
+            "pasos": [
+                {
+                    "agente": "orquestador",
+                    "accion": "No pudo registrar la imagen",
+                    "detalle": type(exc).__name__,
+                    "duracion": duracion,
+                    "estado": "error",
+                }
+            ],
+            "agentes": ["orquestador"],
+            "herramientas": [],
+            "duracion": duracion,
+            "error": mensaje,
+            "formato": "markdown",
+        }
+
+    duracion = round(time.perf_counter() - inicio, 2)
+    return {
+        "respuesta": pregunta,
+        "pasos": [
+            {
+                "agente": "document_intelligence",
+                "accion": "Imagen recibida",
+                "detalle": nombre,
+                "duracion": duracion,
+                "estado": "ok",
+            }
+        ],
+        "agentes": ["document_intelligence"],
+        "herramientas": [],
+        "fuentes": [nombre],
+        "duracion": duracion,
+        "modelo": getattr(orquestador, "modelo", None),
+        "nota": "Imagen lista · esperando instrucción",
+        "formato": "markdown",
+    }
+
+
+def procesar_imagen_auto(
+    ruta: str,
+    consulta: str = "",
+    nombre: str | None = None,
+) -> Respuesta:
+    """Pregunta OCR/descripción o deja que el orquestador decida."""
+    ruta_path = Path(ruta).expanduser().resolve()
+    if not ruta_path.is_file():
+        return procesar_imagen(str(ruta_path), "ocr")
+
+    etiqueta = (nombre or ruta_path.name).strip() or ruta_path.name
+    indicacion = (consulta or "").strip().rstrip(" .!?")
+    if indicacion.casefold() in _CONSULTAS_IMAGEN_GENERICAS:
+        return _preguntar_operacion_imagen(ruta_path, etiqueta)
+
+    # Instrucciones inequívocas ("extrae el texto", "descríbela") se resuelven
+    # directo por MCP. Así el chat recibe el OCR completo y no un resumen del
+    # LLM, y el texto queda disponible para la siguiente consulta.
+    operacion = _operacion_explicita(indicacion)
+    if operacion:
+        resultado = procesar_imagen(str(ruta_path), operacion)
+        if not resultado.get("error"):
+            try:
+                _registrar_documento_en_orquestador(
+                    _get_orquestador(),
+                    str(ruta_path),
+                    operacion,
+                    str(resultado.get("respuesta") or ""),
+                    etiqueta,
+                )
+            except Exception:  # noqa: BLE001 - el OCR ya se obtuvo
+                pass
+        resultado["fuentes"] = [etiqueta]
+        resultado["nota"] = "Imagen · MCP directo"
+        return resultado
+
+    # Si la intención es ambigua, el orquestador decide. Dejamos la imagen
+    # marcada como pendiente para que una respuesta posterior ("descríbela",
+    # "extrae el texto") también pueda resolverse sin volver a adivinar.
+    try:
+        _get_orquestador().marcar_imagen_pendiente(str(ruta_path))
+    except Exception:  # noqa: BLE001
+        pass
+
+    prompt = (
+        f"{indicacion}\n\n"
+        f"Adjunté una imagen en {ruta_path}. Decide si necesitas extraer el "
+        "texto (OCR) o describir la imagen. Si parece una factura, recibo o "
+        "comprobante, prefiere OCR; si es una foto general, descríbela. Usa la "
+        "herramienta MCP adecuada. Si la intención no es clara, pregúntame qué "
+        "quiero hacer."
     )
 
-    figura.tight_layout(pad=0.4)
-    bufer = io.BytesIO()
-    figura.savefig(
-        bufer,
-        format="png",
-        facecolor=fondo,
-        bbox_inches="tight",
-        pad_inches=0.08,
+    resultado = preguntar_orquestador(prompt)
+    if resultado.get("error"):
+        alterno = procesar_imagen(str(ruta_path), "ocr")
+        if not alterno.get("error"):
+            try:
+                _registrar_documento_en_orquestador(
+                    _get_orquestador(),
+                    str(ruta_path),
+                    "ocr",
+                    str(alterno.get("respuesta") or ""),
+                    etiqueta,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        alterno["pasos"] = [
+            {
+                "agente": "orquestador",
+                "accion": "Falló el orquestador",
+                "detalle": "Se usó el servidor MCP directo para OCR",
+                "estado": "alerta",
+            },
+            *alterno.get("pasos", []),
+        ]
+        alterno["fuentes"] = [etiqueta]
+        alterno["nota"] = "MCP directo (fallback)"
+        return alterno
+
+    # Guarda el resultado documental que haya usado el orquestador para que
+    # las consultas de seguimiento no dependan de que el LLM recuerde el path.
+    for herramienta in resultado.get("resultados") or []:
+        nombre_tool = str(herramienta.get("name") or "")
+        salida = str(herramienta.get("salida") or "")
+        if herramienta.get("estado") == "error" or not salida:
+            continue
+        if nombre_tool == "mcp_extraer_texto_imagen":
+            _registrar_documento_en_orquestador(
+                _get_orquestador(),
+                str(ruta_path),
+                "ocr",
+                salida,
+                etiqueta,
+            )
+        elif nombre_tool == "mcp_describir_imagen":
+            _registrar_documento_en_orquestador(
+                _get_orquestador(),
+                str(ruta_path),
+                "descripcion",
+                salida,
+                etiqueta,
+            )
+
+    resultado["formato"] = "markdown"
+    modelo_orquestador = resultado.get("modelo")
+    resultado["modelo"] = (
+        f"{modelo_orquestador} + {MODELO_VISION_POR_DEFECTO}"
+        if modelo_orquestador
+        else MODELO_VISION_POR_DEFECTO
     )
-    plt.close(figura)
-    return bufer.getvalue()
-
-def _analitica(tema: str = "oscuro") -> Respuesta:
-    datos = [
-        {"producto": "C_PERSONAL", "saldo_promedio": 45210.75},
-        {"producto": "TDC", "saldo_promedio": 18760.40},
-        {"producto": "AHORRO", "saldo_promedio": 12340.55},
-        {"producto": "CHEQUES", "saldo_promedio": 8910.20},
-    ]
-    return {
-        "respuesta": (
-            "En febrero el saldo promedio más alto está en **C_PERSONAL** con "
-            "$45,210.75, seguido de TDC con $18,760.40. AHORRO y CHEQUES se "
-            "mantienen por debajo de $13,000."
-        ),
-        "pasos": [
-            {
-                "agente": "orquestador",
-                "accion": "Clasificó la intención",
-                "detalle": "Consulta analítica sobre saldos",
-                "duracion": 0.2,
-            },
-            {
-                "agente": "data_steward",
-                "accion": "Validó metadatos y calidad",
-                "detalle": "1 alerta de calidad",
-                "duracion": 0.5,
-                "estado": "alerta",
-            },
-            {
-                "agente": "data_analyst",
-                "accion": "Generó y ejecutó la consulta",
-                "detalle": "4 productos · febrero 2026",
-                "duracion": 1.4,
-            },
-        ],
-        "alertas": ["25 saldos negativos detectados en raw_saldos."],
-        "sql": (
-            "SELECT p.descripcion AS producto,\n"
-            "       ROUND(AVG(s.saldo_mes), 2) AS saldo_promedio\n"
-            "FROM fact_saldos_captacoloca_m s\n"
-            "JOIN dim_producto p USING (cve_producto)\n"
-            "WHERE s.cve_fecha_informacion BETWEEN 20260201 AND 20260228\n"
-            "GROUP BY p.descripcion\n"
-            "ORDER BY saldo_promedio DESC;"
-        ),
-        "datos": datos,
-        "grafica": _grafica_demo(datos, tema),
-        "_grafica_demo": True,
-        "fuentes": ["fact_saldos_captacoloca_m", "dim_producto"],
-        "duracion": 2.1,
-        "modelo": "llama3.1:latest",
-        "nota": NOTA_DEMO,
-    }
-
-
-def _calidad() -> Respuesta:
-    return {
-        "respuesta": (
-            "La tabla de saldos tiene **25 registros con saldo negativo** y "
-            "**3 fechas fuera del rango** de información. No encontré nulos en "
-            "las llaves, pero sí una diferencia entre el total de `raw_saldos` "
-            "y `fact_saldos_captacoloca_m` que conviene revisar antes de "
-            "publicar el cubo."
-        ),
-        "pasos": [
-            {
-                "agente": "orquestador",
-                "accion": "Clasificó la intención",
-                "detalle": "Gobierno y calidad de datos",
-                "duracion": 0.2,
-            },
-            {
-                "agente": "data_steward",
-                "accion": "Inspeccionó la tabla de saldos",
-                "detalle": "2 hallazgos · 25 registros afectados",
-                "duracion": 0.9,
-                "estado": "alerta",
-            },
-        ],
-        "alertas": [
-            "25 saldos negativos en raw_saldos: revisar si son sobregiros válidos o errores de captura.",
-            "3 fechas de información fuera del periodo de febrero 2026.",
-        ],
-        "fuentes": ["raw_saldos", "fact_saldos_captacoloca_m", "catálogo de calidad"],
-        "duracion": 1.1,
-        "modelo": "llama3.1:latest",
-        "nota": NOTA_DEMO,
-    }
-
-
-def _normativa() -> Respuesta:
-    return {
-        "respuesta": (
-            "El glosario define **cliente activo** como la persona con al menos "
-            "una cuenta o producto vigente y con actividad transaccional en los "
-            "últimos 90 días. Un cliente con productos vigentes pero sin "
-            "movimientos entra en la categoría de **cliente inactivo**."
-        ),
-        "pasos": [
-            {
-                "agente": "orquestador",
-                "accion": "Clasificó la intención",
-                "detalle": "Consulta normativa / glosario",
-                "duracion": 0.2,
-            },
-            {
-                "agente": "normatividad_rag",
-                "accion": "Buscó en la memoria semántica",
-                "detalle": "3 fragmentos recuperados",
-                "duracion": 0.7,
-            },
-        ],
-        "fuentes": [
-            "Glosario de negocio · Cliente activo",
-            "Términos y condiciones Citibanamex",
-        ],
-        "duracion": 0.9,
-        "modelo": "gemma4:e4b",
-        "nota": NOTA_DEMO,
-    }
-
-
-def preguntar(consulta: str, tema: str = "oscuro") -> Respuesta:
-    time.sleep(TIEMPO_DEMO)
-    texto = consulta.casefold()
-
-    if any(clave in texto for clave in ("calidad", "nulo", "duplicado", "negativo")):
-        return _calidad()
-    if any(clave in texto for clave in ("glosario", "define", "definición", "cliente activo")):
-        return _normativa()
-    return _analitica(tema)
-
-
-def regraficar(artefacto: dict, tema: str) -> dict:
-    if not artefacto.get("_grafica_demo"):
-        return artefacto
-    datos = artefacto.get("datos") or []
-    if datos and all("producto" in fila and "saldo_promedio" in fila for fila in datos):
-        artefacto["grafica"] = _grafica_demo(datos, tema)
-    return artefacto
+    resultado["fuentes"] = [etiqueta]
+    resultado["nota"] = "Orquestador MCP · imagen"
+    return resultado
