@@ -34,6 +34,7 @@ from proyecto.agents.document_intelligence_agent import (
     PALABRAS_DESCRIPCION,
     PATRON_RUTA_IMAGEN,
 )
+from proyecto.config.models import modelo_de
 from proyecto.orchestration.orquestador import (
     _es_consulta_normativa,
     _llamar_mcp,
@@ -673,7 +674,7 @@ def _respuesta_directa(estado: EstadoGrafo) -> str:
     mensajes = [{"role": "system", "content": system}, *historial]
     try:
         respuesta = ChatOllama(
-            model=estado.get("modelo") or "qwen2.5:7b-instruct",
+            model=estado.get("modelo") or modelo_de("orchestrator"),
             temperature=0,
         ).invoke(mensajes)
         texto = _texto(getattr(respuesta, "content", respuesta)).strip()
@@ -788,7 +789,7 @@ def ejecutar_grafo(
     historial: list | None = None,
     contexto_documentos: str = "",
     contexto_analista: str = "",
-    modelo: str = "qwen2.5:7b-instruct",
+    modelo: str | None = None,
     imagen_pendiente: str | None = None,
     ultimo_agente: str | None = None,
 ) -> EstadoGrafo:
@@ -798,7 +799,7 @@ def ejecutar_grafo(
         "historial": list(historial or []),
         "contexto_documentos": contexto_documentos,
         "contexto_analista": contexto_analista,
-        "modelo": modelo,
+        "modelo": modelo or modelo_de("orchestrator"),
         "imagen_pendiente": (
             str(Path(imagen_pendiente).expanduser().resolve())
             if imagen_pendiente

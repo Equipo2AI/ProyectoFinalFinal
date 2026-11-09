@@ -9,6 +9,8 @@ from dotenv import load_dotenv
 from langchain_core.tools import tool
 from sqlalchemy import create_engine, event, inspect
 
+from proyecto.config.models import modelo_de
+
 load_dotenv()
 
 MAX_FILAS = 50
@@ -108,7 +110,7 @@ class DataAnalystSQLBackend:
             "base de datos bancaria: conteos, sumas, promedios, rankings y "
             "comparaciones entre tablas."
         )
-        self.modelo = "qwen2.5:7b-instruct"
+        self.modelo = modelo_de("data_analyst")
         self.url_db = url_db or os.environ.get("DATABASE_URL")
         if not self.url_db:
             # Sin DATABASE_URL se usa la misma fuente que el Data Steward:

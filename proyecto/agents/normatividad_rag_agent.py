@@ -9,6 +9,8 @@ from langchain_core.tools import tool
 from langchain_ollama import ChatOllama
 from langchain_pinecone import PineconeEmbeddings, PineconeVectorStore
 
+from proyecto.config.models import modelo_de
+
 load_dotenv()
 
 SYSTEM_PROMPT = """
@@ -31,7 +33,7 @@ class NormatividadRAGAgent:
     def __init__(self, k: int = 3):
         self.nombre = "normatividad_rag"
         self.descripcion = "Búsqueda semántica sobre documentación normativa (RAG)."
-        self.modelo = "llama3.1:latest"
+        self.modelo = modelo_de("normatividad_rag")
         self.modelo_embeddings = "llama-text-embed-v2"  # debe coincidir con el usado al indexar
         self.k = k
 

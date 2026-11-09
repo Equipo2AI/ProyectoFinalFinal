@@ -19,9 +19,13 @@ from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 from langchain_ollama import ChatOllama
 
+from proyecto.config.models import modelo_de
+
 load_dotenv()
 
-MODELO_VISION_POR_DEFECTO = os.getenv("DOCUMENT_INTELLIGENCE_MODEL", "qwen2.5vl:7b")
+MODELO_VISION_POR_DEFECTO = os.getenv(
+    "DOCUMENT_INTELLIGENCE_MODEL"
+) or modelo_de("document_intelligence")
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 EXTENSIONES_IMAGEN = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
 PATRON_RUTA_IMAGEN = re.compile(

@@ -312,9 +312,10 @@ La conexión a datos se toma de `config/data_connection.yaml`, que apunta a
 La memoria de largo plazo se configura en `config/memory.yaml` y está desactivada
 por defecto.
 
-`config/models.yaml` documenta el modelo de cada agente, pero todavía no se carga
-en tiempo de ejecución: los valores están definidos en el código. Modificarlo no
-tiene efecto hasta que la carga se centralice.
+El modelo de cada agente se toma de `config/models.yaml` al inicializar el agente.
+Si el archivo o la entrada faltan, se usa el valor por defecto de
+`proyecto/config/models.py`. `DOCUMENT_INTELLIGENCE_MODEL` sobrescribe el modelo
+de visión.
 
 ## Límites conocidos
 

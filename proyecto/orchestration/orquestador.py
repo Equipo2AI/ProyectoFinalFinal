@@ -28,6 +28,7 @@ from proyecto.agents import (
     compliance_agent,
 )
 from proyecto.agents.document_intelligence_agent import PATRON_RUTA_IMAGEN
+from proyecto.config.models import modelo_de
 from proyecto.memory.long_term import LongTermMemory
 
 _RAIZ = Path(__file__).resolve().parents[2]
@@ -294,11 +295,11 @@ def obtener_agente(nombre: str):
 class Orquestador:
     def __init__(
         self,
-        modelo: str = "qwen2.5:7b-instruct",
+        modelo: str | None = None,
         memory: LongTermMemory | None = None,
     ):
         self.nombre = "orquestador"
-        self.modelo = modelo
+        self.modelo = modelo or modelo_de("orchestrator")
         self.herramientas = list(HERRAMIENTAS_MCP)
         self.agentes_invocados: list[str] = []  # trazas de la última consulta
         self.ultimas_herramientas: list[dict] = []  # nombre, args, salida, estado
