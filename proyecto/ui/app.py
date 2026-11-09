@@ -1,6 +1,6 @@
 """Interfaz Streamlit del agente.
 
-    uv run --with streamlit streamlit run proyecto/ui/app.py
+    python -m streamlit run proyecto/ui/app.py
 """
 
 from __future__ import annotations
@@ -8,17 +8,30 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import streamlit as st
 
-from servicio import preguntar, regraficar
+from ui.adaptador import preguntar_orquestador, reiniciar_orquestador
 from ui import componentes, estilos
 
 SUGERENCIAS = [
-    ("sug_0", "¿Cuál es el saldo promedio en febrero?"),
-    ("sug_1", "¿Qué problemas de calidad tiene la tabla de saldos?"),
-    ("sug_2", "¿Cómo se define un cliente activo en el glosario?"),
+    (
+        "sug_0",
+        "¿Qué medidas de seguridad exige la Ley Federal de Protección de "
+        "Datos Personales en Posesión de los Particulares?",
+    ),
+    (
+        "sug_1",
+        "¿Cuántos clientes hay en la base sintética y cómo se distribuyen por "
+        "tipo de persona?",
+    ),
+    (
+        "sug_2",
+        "¿Qué dice el aviso de privacidad de Banamex sobre el tratamiento de "
+        "datos personales?",
+    ),
 ]
 
 st.set_page_config(
@@ -51,6 +64,7 @@ def iniciar(texto: str) -> None:
 
 
 def limpiar() -> None:
+    reiniciar_orquestador()
     st.session_state.mensajes = []
     st.session_state.artefacto = None
     st.session_state.consulta_actual = None
@@ -70,10 +84,6 @@ def boton_panel(abierta: bool) -> None:
 def boton_tema() -> None:
     if st.button("Cambiar tema", key="btn_tema", help="Cambiar entre claro y oscuro"):
         st.session_state.tema = "claro" if st.session_state.tema == "oscuro" else "oscuro"
-        if st.session_state.artefacto:
-            st.session_state.artefacto = regraficar(
-                st.session_state.artefacto, st.session_state.tema
-            )
         st.rerun()
 
 
@@ -161,7 +171,7 @@ with st.container(key="topbar"):
     with columna_marca:
         componentes.cabecera(
             "Asistente de Datos",
-            "Data Steward & Analyst",
+            "Data Steward · Analytics · Documentos",
         )
     with columna_tema:
         boton_tema()
@@ -194,7 +204,10 @@ with izquierda:
             else:
                 for mensaje in st.session_state.mensajes:
                     with st.chat_message(mensaje["rol"]):
-                        st.markdown(componentes.texto(mensaje["texto"]))
+                        if mensaje.get("formato") == "texto":
+                            st.code(mensaje["texto"], language="text")
+                        else:
+                            st.markdown(componentes.texto(mensaje["texto"]))
                         if mensaje["rol"] == "assistant":
                             st.markdown(
                                 componentes.meta_mensaje(
@@ -204,11 +217,34 @@ with izquierda:
                                 unsafe_allow_html=True,
                             )
                 if st.session_state.pensando:
-                    componentes.pensando()
+                    componentes.pensando("Analizando la consulta…")
 
-        consulta = st.chat_input("Pregunta sobre los datos…")
-        if consulta:
-            iniciar(consulta)
+                # Streamlit no desplaza solo el contenedor de mensajes. Sin
+                # esto, a partir de la cuarta consulta la respuesta nueva queda
+                # debajo del área visible y parece que la conversación se congeló.
+                if st.session_state.mensajes:
+                    firma = f"{len(st.session_state.mensajes)}-{len(st.session_state.mensajes[-1].get('texto', ''))}"
+                    st.iframe(
+                        f"""
+                        <script>
+                        const doc = window.parent.document;
+                        const el = doc.querySelector('.st-key-chat_scroll');
+                        if (el) {{
+                          const irAlFinal = () => {{ el.scrollTop = el.scrollHeight; }};
+                          irAlFinal();
+                          requestAnimationFrame(irAlFinal);
+                          setTimeout(irAlFinal, 80);
+                        }}
+                        /* {firma} */
+                        </script>
+                        """,
+                        height=1,
+                    )
+
+        entrada = st.chat_input("Hazme una consulta", accept_file=False)
+        st.caption("Adjuntos de imágenes deshabilitados: integración OCR pendiente.")
+        if entrada and entrada.strip():
+            iniciar(entrada.strip())
 
 if abierta:
     with derecha:
@@ -222,8 +258,8 @@ if abierta:
 
 if st.session_state.pensando:
     try:
-        artefacto = preguntar(
-            st.session_state.consulta_actual or "", st.session_state.tema
+        artefacto = preguntar_orquestador(
+            st.session_state.consulta_actual or ""
         )
     except Exception as exc:  # noqa: BLE001
         mensaje = (
@@ -255,6 +291,7 @@ if st.session_state.pensando:
                 "texto": artefacto.get("respuesta", ""),
                 "pasos": pasos,
                 "duracion": artefacto.get("duracion"),
+                "formato": artefacto.get("formato"),
             }
         )
     finally:
