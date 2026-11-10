@@ -26,5 +26,14 @@ proyecto/data/memory/
 
 AGENTS.md
 
+# DeepEval: caché y resultados locales
+.deepeval/
+deepeval/resultados/
+
+# Datos locales de prueba (no se suben)
+files/Base Cards para TEC - Diccionario de Variables.csv
+proyecto/data/clientes.csv
+proyecto/data/bank_metadata_simple.json
+
 # Herramientas
 .ruff_cache/

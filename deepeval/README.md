@@ -27,11 +27,12 @@ deepeval/
 uv add --dev deepeval
 ```
 
-Agrega a `.env` (y `.deepeval/` a `.gitignore`):
+Agrega a `.env`:
 
 ```bash
 DEEPEVAL_TELEMETRY_OPT_OUT=1              # no enviar telemetría de uso
 DEEPEVAL_JUEZ=ollama:qwen2.5:7b-instruct  # modelo que califica (opcional)
+DEEPEVAL_RESULTS_FOLDER=deepeval/resultados
 ```
 
 ## Ejecución
@@ -64,6 +65,7 @@ conversación y Ollama atiende una petición a la vez.
 |---|---|---|
 | `DEEPEVAL_JUEZ` | Modelo juez, `proveedor:modelo` (`ollama`, `openai`, `gemini`) | `ollama:qwen2.5:7b-instruct` |
 | `DEEPEVAL_SOLO_REGLAS` | `1` omite las métricas con LLM | desactivado |
+| `DEEPEVAL_RESULTS_FOLDER` | Carpeta de resultados de DeepEval | `.deepeval` (el repo usa `deepeval/resultados`) |
 | `DEEPEVAL_CASOS_DIR` | Otra carpeta de casos | `deepeval/casos` |
 | `ORCHESTRATION_MODE` | `graph` o `hub` (del proyecto) | `graph` |
 
@@ -80,6 +82,7 @@ casos:
   - id: da-clientes-por-tipo            # único en toda la suite
     pregunta: ¿Cuántos clientes hay por tipo de persona?
     turnos_previos: [...]               # mensajes anteriores de la conversación
+    perfil: {rol: usuario, cliente_id: 1}  # sesión para casos de permisos
     # --- verificaciones deterministas (métrica "reglas", sin LLM) ---
     agente_esperado: data_analyst       # data_steward | data_analyst | normatividad_rag | document_intelligence | orquestador
     herramientas_esperadas: [mcp_analizar_datos]

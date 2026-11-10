@@ -118,6 +118,7 @@ Reglas:
 
 _MARCADOR_CONTEXTO = "[CONTEXTO_DOCUMENTOS]"
 _CONTEXTO_ANALISTA: ContextVar[str] = ContextVar("contexto_analista", default="")
+_PERFIL_ANALISTA: ContextVar[dict] = ContextVar("perfil_analista", default={})
 
 
 def _normalizar(texto: str) -> str:
@@ -242,6 +243,7 @@ def mcp_analizar_datos(consulta: str) -> str:
         {
             "consulta": consulta,
             "contexto": _CONTEXTO_ANALISTA.get(),
+            "perfil": _PERFIL_ANALISTA.get() or None,
         },
     )
 
@@ -542,25 +544,29 @@ class Orquestador:
         self.memory.update(self._mensajes)
         return salida
 
-    def procesar(self, consulta: str) -> str:
+    def procesar(self, consulta: str, perfil: dict | None = None) -> str:
         """Atiende una consulta con el modo de orquestación configurado.
 
         ``ORCHESTRATION_MODE=graph`` usa el grafo explícito de LangGraph.
         ``ORCHESTRATION_MODE=hub`` conserva el orquestador anterior como
         respaldo. Si el grafo falla, se intenta el hub para no dejar la UI sin
         respuesta.
+
+        ``perfil`` es el contexto de sesión autenticada (rol y cliente_id).
         """
         if self.modo == "hub":
-            return self._procesar_hub(consulta)
+            return self._procesar_hub(consulta, perfil=perfil)
 
         try:
-            return self._procesar_grafo(consulta)
+            return self._procesar_grafo(consulta, perfil=perfil)
         except Exception as error:  # noqa: BLE001 - fallback deliberado
             logger.exception("Falló el grafo; se usa el orquestador hub: %s", error)
             self.modo_efectivo = "hub (fallback)"
-            return self._procesar_hub(consulta)
+            return self._procesar_hub(consulta, perfil=perfil)
 
-    def _procesar_grafo(self, consulta: str) -> str:
+    def _procesar_grafo(
+        self, consulta: str, perfil: dict | None = None
+    ) -> str:
         from proyecto.orchestration.grafo import ejecutar_grafo
 
         historial = self.memory.prepare(self._mensajes, consulta)
@@ -572,6 +578,7 @@ class Orquestador:
             modelo=self.modelo,
             imagen_pendiente=self._imagen_pendiente,
             ultimo_agente=self._ultimo_agente,
+            perfil=perfil,
         )
 
         respuesta = str(estado.get("respuesta") or "").strip()
@@ -623,7 +630,9 @@ class Orquestador:
         self.modo_efectivo = "grafo"
         return respuesta
 
-    def _procesar_hub(self, consulta: str) -> str:
+    def _procesar_hub(
+        self, consulta: str, perfil: dict | None = None
+    ) -> str:
         self.modo_efectivo = "hub"
         if _es_consulta_normativa(consulta):
             return self._responder_normatividad(consulta)
@@ -634,6 +643,7 @@ class Orquestador:
             entrada = [{"role": "system", "content": contexto}, *entrada]
 
         token_contexto = _CONTEXTO_ANALISTA.set(self._contexto_analista())
+        token_perfil = _PERFIL_ANALISTA.set(dict(perfil or {}))
         try:
             resultado = self._get_agente().invoke(
                 {"messages": entrada},
@@ -648,6 +658,7 @@ class Orquestador:
             )
         finally:
             _CONTEXTO_ANALISTA.reset(token_contexto)
+            _PERFIL_ANALISTA.reset(token_perfil)
         mensajes = resultado["messages"]
 
         # Qué herramientas MCP llamó el orquestador en este turno.

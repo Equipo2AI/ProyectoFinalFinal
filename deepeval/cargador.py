@@ -7,7 +7,7 @@ requiera tocar código. El formato se documenta en ``deepeval/README.md``.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from functools import lru_cache
 from pathlib import Path
 
@@ -25,6 +25,8 @@ class Caso:
     id: str
     pregunta: str
     archivo: str = ""
+    # Contexto de sesión: {"rol": "usuario"|"superusuario", "cliente_id": 1}
+    perfil: dict = field(default_factory=dict)
     # Turnos que se envían antes de la pregunta, en la misma conversación.
     turnos_previos: tuple[str, ...] = ()
     # Verificaciones deterministas (no usan LLM).
@@ -77,6 +79,12 @@ def _construir(crudo: dict, predeterminados: dict, archivo: str) -> Caso:
             f"{archivo}: campos desconocidos {sorted(desconocidos)} en el caso "
             f"{datos.get('id', '?')!r}. Válidos: {sorted(_CAMPOS)}"
         )
+    perfil = datos.get("perfil") or {}
+    if not isinstance(perfil, dict):
+        raise ValueError(
+            f"{archivo}: 'perfil' debe ser un mapa en {datos.get('id', '?')!r}"
+        )
+    datos["perfil"] = dict(perfil)
     for obligatorio in ("id", "pregunta"):
         if not str(datos.get(obligatorio) or "").strip():
             raise ValueError(f"{archivo}: falta '{obligatorio}' en {crudo!r}")

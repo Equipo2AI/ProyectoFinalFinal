@@ -11,13 +11,17 @@ _herramientas = {herramienta.name: herramienta for herramienta in _backend._tool
 
 
 @mcp.tool()
-def analizar_datos(consulta: str, contexto: str = "") -> str:
+def analizar_datos(
+    consulta: str, contexto: str = "", perfil: dict | None = None
+) -> str:
     """Responde una pregunta cuantitativa en lenguaje natural usando el backend SQL local.
 
-    `contexto` es opcional y conserva el hilo de una pregunta anterior. El agente
-    usa las cuatro herramientas SQL del backend, sin volver a llamar por MCP.
+    `contexto` es opcional y conserva el hilo de una pregunta anterior. `perfil`
+    describe la sesión autenticada (rol y cliente_id) para limitar o ampliar el
+    alcance de los datos. El agente usa las cuatro herramientas SQL del backend,
+    sin volver a llamar por MCP.
     """
-    return _backend.procesar(consulta, contexto)
+    return _backend.procesar(consulta, contexto, perfil=perfil)
 
 
 @mcp.tool()

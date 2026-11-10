@@ -31,10 +31,10 @@ class ResultadoAgente:
     duracion: float | None = None
 
 
-def _preguntar(consulta: str) -> dict:
+def _preguntar(consulta: str, perfil: dict | None = None) -> dict:
     from proyecto.servicio import preguntar_orquestador
 
-    return preguntar_orquestador(consulta)
+    return preguntar_orquestador(consulta, perfil=perfil)
 
 
 def _reiniciar() -> None:
@@ -69,8 +69,8 @@ def ejecutar(caso: Caso) -> ResultadoAgente:
     """Ejecuta un caso en una conversación limpia y normaliza el resultado."""
     _reiniciar()
     for turno in caso.turnos_previos:
-        _preguntar(turno)
-    crudo = _preguntar(caso.pregunta)
+        _preguntar(turno, caso.perfil)
+    crudo = _preguntar(caso.pregunta, caso.perfil)
 
     trazas = list(crudo.get("resultados") or [])
     errores = [str(crudo["error"])] if crudo.get("error") else []
