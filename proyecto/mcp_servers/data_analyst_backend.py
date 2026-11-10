@@ -10,6 +10,7 @@ from langchain_core.tools import tool
 from sqlalchemy import create_engine, event, inspect
 
 from proyecto.config.models import modelo_de
+from proyecto.security.local_auth import principal, audit
 
 load_dotenv()
 
@@ -63,8 +64,11 @@ Proceso:
 
 Reglas:
 - No inventes cifras: todo número de tu respuesta debe venir de un resultado.
-- No muestres datos personales de clientes (nombres, correos, teléfonos,
-  CURP, RFC); trabaja con resultados agregados.
+- No reveles campos personales salvo permiso explicito de auditoria y solo
+  si las herramientas los entregan dentro del alcance autorizado. El usuario
+  normal solo consulta sus propias cuentas; el chat no concede permisos.
+- Los conteos del esquema corresponden a una proyeccion de alcance, no al
+  universo global de la base. No confundas una tabla filtrada con un catalogo.
 - No modifiques datos ni afirmes haberlo hecho.
 - Si la pregunta es ambigua (no dice qué métrica, periodo o tabla), pide
   aclaración o explica el supuesto que usaste.
@@ -77,7 +81,7 @@ def _normalizar(texto: str) -> str:
     return "".join(c for c in normalizado if not unicodedata.combining(c))
 
 
-def _validar_consulta(sql: str) -> str | None:
+def _validar_consulta(sql: str, tablas_excluidas=None) -> str | None:
     """Return an error message when the SQL is not a single read-only query."""
     consulta = sql.strip().rstrip(";").strip()
     if not consulta:
@@ -88,7 +92,10 @@ def _validar_consulta(sql: str) -> str | None:
         return "Solo se permiten consultas SELECT o WITH ... SELECT."
     if _PALABRAS_PROHIBIDAS.search(consulta):
         return "La consulta contiene una operación de escritura o administración."
-    excluida = _TABLAS_EXCLUIDAS.search(consulta)
+    patron = _TABLAS_EXCLUIDAS if tablas_excluidas is None else re.compile(
+        r"\b(?:" + "|".join(re.escape(t) for t in tablas_excluidas) + r")\b", re.I
+    )
+    excluida = patron.search(consulta)
     if excluida:
         return f"La tabla '{excluida.group()}' no está disponible para análisis."
     return None
@@ -141,44 +148,81 @@ class DataAnalystSQLBackend:
             from langchain.agents import create_agent
             from langchain_ollama import ChatOllama
 
-            llm = ChatOllama(model=self.modelo, temperature=0)
+            llm = ChatOllama(model=self.modelo, temperature=0, reasoning=False, timeout=45)
             self._agente = create_agent(
                 model=llm,
                 tools=self._tools,
-                system_prompt=SYSTEM_PROMPT,
+                system_prompt=SYSTEM_PROMPT + (
+                    "\nLa base ya esta limitada al alcance autenticado; 'mi' se refiere "
+                    "a ese alcance, no a un ID escrito en el chat. No pidas mas identidad. "
+                    "Solo un auditor con permiso explicito de un campo personal puede "
+                    "usarlo si la herramienta se lo entrega para su auditoria."
+                ),
             )
         return self._agente
 
     def procesar(self, consulta: str, contexto: str = "") -> str:
+        from proyecto.security.local_auth import authorize_request
+        try:
+            user = authorize_request(consulta)
+        except PermissionError as error:
+            return str(error)
+        if user['role'] == 'auditor' and 'audit' not in user['permissions']:
+            principal('aggregate')
+        audit('analizar_datos', True, user['subject'])
+        from proyecto.agents.banking_queries import plan_query, format_result, normalize
+        plan = plan_query(consulta)
+        if plan:
+            title, sql = plan
+            result = json.loads(self._tools[3].invoke({'sql': sql}))
+            answer = format_result(title, result, sql)
+            if 'estado de cuenta' in normalize(consulta):
+                balance = plan_query(normalize(consulta).replace('estado de cuenta', 'saldo'))
+                if balance:
+                    title2, sql2 = balance
+                    answer = format_result(title2, json.loads(self._tools[3].invoke({'sql': sql2})), sql2) + '\n\n' + answer
+            return answer
         contenido = consulta
         if contexto.strip():
             contenido = (
                 f"Contexto de la conversación:\n{contexto}\n\nPregunta: {consulta}"
             )
-        resultado = self._get_agente().invoke(
-            {"messages": [{"role": "user", "content": contenido}]},
-            config={"recursion_limit": 25},
-        )
+        from langsmith import tracing_context
+        with tracing_context(enabled=False):
+            resultado = self._get_agente().invoke(
+                {"messages": [{"role": "user", "content": contenido}]},
+                config={"recursion_limit": 25},
+            )
         return resultado["messages"][-1].content
 
     def _get_engine(self):
+        user = principal()
+        identity = (user['subject'], tuple(user['customers']), tuple(user['permissions']))
+        if self._engine is not None and getattr(self, '_identity', None) != identity:
+            self._engine.dispose()
+            self._engine = None
+            self._agente = None
         if self._engine is None:
+            from sqlalchemy.engine import make_url
+            from proyecto.security.scoped_sqlite import connect_scoped
             if not self.url_db:
-                raise RuntimeError(
-                    "No hay base configurada: define DATABASE_URL o usa conectar()."
-                )
-            connect_args = {}
-            if self.url_db.startswith("postgresql"):
-                connect_args["options"] = "-c default_transaction_read_only=on"
-            self._engine = create_engine(self.url_db, connect_args=connect_args)
-            if self._engine.dialect.name == "sqlite":
-                event.listen(self._engine, "connect", _sqlite_solo_lectura)
+                raise PermissionError('No hay base autorizada.')
+            url = make_url(self.url_db)
+            if url.drivername != 'sqlite':
+                raise PermissionError('El control local de alcance solo admite SQLite.')
+            self._engine = create_engine('sqlite://', creator=lambda: connect_scoped(url.database))
+            self._identity = identity
         return self._engine
+
+    def _excluidas(self):
+        user = principal()
+        pii = 'audit' in user['permissions'] and any(p.startswith('pii:') for p in user['permissions'])
+        return TABLAS_EXCLUIDAS - ({'dim_cliente_persona'} if pii else set())
 
     def _objetos_disponibles(self, inspector) -> tuple[list[str], list[str]]:
         """Return the tables and views the analyst may use."""
-        tablas = [t for t in inspector.get_table_names() if t not in TABLAS_EXCLUIDAS]
-        vistas = [v for v in inspector.get_view_names() if v not in TABLAS_EXCLUIDAS]
+        tablas = [t for t in inspector.get_table_names() if t not in self._excluidas()]
+        vistas = [v for v in inspector.get_view_names() if v not in self._excluidas()]
         return tablas, vistas
 
     def _crear_herramientas(self):
@@ -267,8 +311,10 @@ class DataAnalystSQLBackend:
         @tool
         def ejecutar_consulta(sql: str) -> str:
             """Ejecuta UNA consulta SELECT de solo lectura y devuelve hasta 50 filas en JSON."""
-            problema = _validar_consulta(sql)
+            user = principal()
+            problema = _validar_consulta(sql, self._excluidas())
             if problema:
+                audit("sql_validation", False, user["subject"], sql)
                 return _json({"error": problema})
 
             try:
@@ -277,10 +323,11 @@ class DataAnalystSQLBackend:
                     columnas = list(resultado.keys())
                     filas = resultado.fetchmany(MAX_FILAS + 1)
             except Exception as error:
+                audit("sql_execute", False, user["subject"], sql)
                 # El mensaje del motor le sirve al LLM para corregir su SQL.
                 return _json({"error": f"{type(error).__name__}: {str(error).splitlines()[0]}"})
 
-            sensibles = [c for c in columnas if _normalizar(c) in COLUMNAS_SENSIBLES]
+            sensibles = [c for c in columnas if _normalizar(c) in COLUMNAS_SENSIBLES and "pii:" + _normalizar(c) not in user["permissions"]]
             if sensibles:
                 return _json({
                     "error": (
@@ -289,6 +336,7 @@ class DataAnalystSQLBackend:
                     )
                 })
 
+            audit("sql_execute", True, user["subject"], sql)
             return _json({
                 "columnas": columnas,
                 "filas": [list(fila) for fila in filas[:MAX_FILAS]],

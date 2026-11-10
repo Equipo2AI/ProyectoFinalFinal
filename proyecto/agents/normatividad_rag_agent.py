@@ -95,33 +95,32 @@ class NormatividadRAGAgent:
 
     def procesar(self, consulta: str) -> str:
         """Recupera evidencia y responde con una síntesis basada en ella."""
-        evidencia = self._tools[0].invoke({"query": consulta})
-        if not evidencia or evidencia == "No se encontró evidencia normativa relevante.":
-            return "No se encontró evidencia normativa relevante para la consulta."
-
-        prompt = (
-            f"{SYSTEM_PROMPT}\n\n"
-            "EVIDENCIA RECUPERADA (única fuente válida):\n"
-            f"{evidencia}\n\n"
-            f"PREGUNTA: {consulta}\n\n"
-            "Responde citando textualmente los artículos o fragmentos relevantes. "
-            "No agregues artículos que no estén en la evidencia."
-        )
-        respuesta = self._get_llm().invoke(
-            [("system", prompt), ("human", consulta)]
-        )
-        texto = str(respuesta.content).strip()
-
-        fuentes = []
-        for fuente in re.findall(r"(?im)^FUENTE:\s*(.+?)\s*$", evidencia):
-            if fuente not in fuentes:
-                fuentes.append(fuente)
-        if fuentes:
-            texto += (
-                "\n\nFuentes consultadas:\n"
-                + "\n".join(f"- {fuente}" for fuente in fuentes)
-            )
-        return texto
+        from queue import Queue, Empty
+        from threading import Thread
+        import socket
+        from proyecto.agents.local_documents import retrieve
+        result = Queue()
+        def remote():
+            try:
+                with socket.create_connection(('api.pinecone.io',443),timeout=3):
+                    pass
+                result.put(('pinecone', self._tools[0].invoke({'query': consulta})))
+            except Exception as error:
+                result.put(('error', type(error).__name__))
+        Thread(target=remote,daemon=True).start()
+        try:
+            mode, evidence = result.get(timeout=12)
+        except Empty:
+            mode, evidence = 'error', 'Tiempo de recuperacion remota agotado'
+        if mode == 'pinecone' and evidence and not evidence.startswith('No se encontr'):
+            return 'Evidencia documental recuperada mediante Pinecone:\n\n' + evidence
+        docs = retrieve(consulta,self.k)
+        if not docs:
+            return 'No se encontro evidencia documental suficiente. Recuperacion remota no disponible; no se inventa una respuesta.'
+        answer = 'Respuesta basada en fragmentos literales del corpus local (Pinecone no disponible).\n\n'
+        for doc in docs:
+            answer += f"FUENTE: {doc['source']}, pagina {doc['page']}\n\n> {doc['text']}\n\n"
+        return answer.strip()
 
     def __repr__(self) -> str:
         return f"<Agente {self.nombre} | modelo: {self.modelo}>"

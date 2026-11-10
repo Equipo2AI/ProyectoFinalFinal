@@ -60,6 +60,8 @@ _ENGINE = None
 
 
 def _get_engine():
+    from proyecto.security.local_auth import principal
+    principal("governance")
     global _ENGINE
     if _ENGINE is None:
         url_db = get_database_url()
@@ -71,6 +73,15 @@ def _get_engine():
         _ENGINE = create_readonly_engine(url_db)
     return _ENGINE
 
+
+
+_PII_SCHEMA = {
+    'nombre': 'identificacion directa', 'correo': 'contacto', 'email': 'contacto',
+    'telefono': 'contacto', 'celular': 'contacto', 'rfc': 'identificador fiscal',
+    'curp': 'identificador personal', 'domicilio': 'ubicacion personal',
+    'fec_nac': 'fecha de nacimiento', 'num_cte': 'identificador vinculable de cliente',
+    'num_cta': 'identificador vinculable de cuenta',
+}
 
 def _normalizar(texto: str) -> str:
     normalizado = unicodedata.normalize("NFKD", texto.casefold())
@@ -220,6 +231,7 @@ def inspeccionar_dataset(tabla: str = "") -> str:
                 "filas": int(filas or 0),
                 "columnas": columnas,
                 "relaciones": _relaciones_tabla(inspector, nombre),
+                "columnas_pii": {c["name"]: _PII_SCHEMA[c["name"]] for c in inspector.get_columns(nombre) if c["name"] in _PII_SCHEMA},
                 "catalogo_tablas": disponibles,
                 "nota_catalogo": (
                     "catalogo_tablas es solo el inventario de tablas y vistas "
@@ -310,6 +322,12 @@ def validar_calidad_datos(tabla: str = "") -> str:
             else:
                 filas_con_faltante = 0
 
+            negativos = {
+                columna: int(conexion.exec_driver_sql(
+                    f'SELECT COUNT(*) FROM {q(nombre)} WHERE {q(columna)} < 0'
+                ).scalar() or 0)
+                for columna in columnas if 'saldo' in columna.casefold() or 'importe' in columna.casefold()
+            }
             distintas = int(
                 conexion.exec_driver_sql(
                     f"SELECT COUNT(*) FROM (SELECT DISTINCT * FROM {q(nombre)})"
@@ -331,6 +349,7 @@ def validar_calidad_datos(tabla: str = "") -> str:
                     if cantidad > 0
                 },
                 "filas_duplicadas_exactas": max(0, total - distintas),
+                "valores_negativos_por_columna": negativos,
                 "filas_sobrantes_por_clave": _columnas_duplicadas(
                     engine, nombre, columnas
                 ),
@@ -454,6 +473,10 @@ def _formatear_inspeccion(datos: dict) -> str:
             + ", ".join(f"`{tabla}`" for tabla in catalogo)
         )
 
+    pii = datos.get('columnas_pii') or {}
+    if pii:
+        lineas += ['', '**Columnas con informacion personal (clasificacion del esquema):**']
+        lineas += [f'- `{name}`: {kind}' for name, kind in pii.items()]
     return "\n".join(lineas)
 
 
@@ -495,6 +518,10 @@ def _formatear_calidad(datos: dict) -> str:
     else:
         lineas.append(f"- Filas sobrantes por clave: {int(sobrantes):,}")
 
+    negativos = datos.get('valores_negativos_por_columna') or {}
+    if negativos:
+        lineas += ['', '**Valores negativos:**']
+        lineas += [f'- `{name}`: {count}' for name, count in negativos.items()]
     nota = datos.get("nota")
     if nota:
         lineas.append(f"- Nota: {nota}")

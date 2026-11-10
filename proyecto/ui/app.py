@@ -50,6 +50,36 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+# Desarrollo local: solo el operador aprovisiona identidades y permisos.
+from proyecto.security.local_auth import login, logout, authenticated, principal
+
+if not st.session_state.get('auth_token'):
+    st.title('Acceso local de desarrollo')
+    with st.form('login_local'):
+        usuario = st.text_input('Usuario', key='login_usuario')
+        clave = st.text_input('Clave', type='password', key='login_clave')
+        entrar = st.form_submit_button('Entrar')
+    if entrar:
+        try:
+            st.session_state.auth_token = login(usuario, clave)
+            st.rerun()
+        except PermissionError:
+            st.error('Credenciales invalidas.')
+    st.stop()
+
+try:
+    with authenticated(st.session_state.auth_token):
+        identidad = principal()
+    st.caption(f"Sesion local: {identidad['subject']} ({identidad['role']})")
+except PermissionError:
+    st.session_state.clear()
+    st.rerun()
+
+if st.button('Cerrar sesion', key='logout_local'):
+    logout(st.session_state.auth_token)
+    st.session_state.clear()
+    st.rerun()
+
 for clave, valor in {
     "mensajes": [],
     "artefacto": None,

@@ -361,3 +361,80 @@ Estos límites corresponden a la arquitectura y a las pruebas con agentes:
    repetibles por agente, con criterios de aceptación.
 5. **Comparación de modelos**: medir 14B y 32B con la misma suite para evaluar el
    efecto en planificación e inferencia.
+
+
+## Autenticacion local de desarrollo
+
+La interfaz exige iniciar sesion; no hay selector de rol. Un operador local
+aprovisiona las identidades y su alcance usando IDs de clientes existentes:
+
+```powershell
+.\.venv\Scripts\python.exe -m proyecto.security.local_auth --usuario usuario_prueba --rol normal --clientes 1
+.\.venv\Scripts\python.exe -m proyecto.security.local_auth --usuario auditor_prueba --rol auditor --clientes 1,2,25 --permisos audit,aggregate,governance,pii:nombre,pii:rfc
+```
+
+Estos son ejemplos de asignacion del operador, no identidades precargadas:
+confirma primero que la fuente es de prueba y que existe autorizacion para
+esos clientes. La clave se pide por consola (minimo 16 caracteres), se deriva
+con PBKDF2-SHA256 y no se versiona. Para consultas globales el operador debe
+otorgar explicitamente todo el alcance necesario; `aggregate` no amplia el
+conjunto de clientes. `audit` habilita auditorias dentro de ese conjunto y los
+campos personales necesitan permisos adicionales. El chat nunca modifica roles.
+
+La sesion opaca dura una hora y puede revocarse al cerrar sesion. Esta ligada
+al archivo y SHA-256 de SQLite: si cambia la base hay que reprovisionar una
+identidad autorizada; no se reutiliza automaticamente contra otra fuente.
+`.local_auth/` contiene registros privados y auditoria y esta excluido de Git.
+No compartas ese directorio, claves, tokens ni capturas con datos personales.
+
+Ejecuta el servicio solo en localhost para desarrollo:
+
+```powershell
+.\.venv\Scripts\python.exe -m streamlit run proyecto/ui/app.py --server.address 127.0.0.1
+```
+
+Las consultas de Data Analyst usan una proyeccion SQLite efimera en memoria,
+limitada por `dim_cuenta.num_cte -> dim_cliente.num_cte` y por `num_cta` en
+saldos y movimientos. El SQL no puede acceder al archivo fuente ni usar ATTACH
+ni escrituras. La fuente se abre en mode=ro; no se modifica ni regenera.
+Data Steward exige `governance` para sus agregados de calidad. Los historiales
+son por sesion. Las consultas sensibles registran sujeto, rol, alcance resumido
+y hash SQL, sin nombres, cuentas, consultas literales ni resultados personales.
+Se desactiva el trazado externo durante consultas autenticadas sensibles.
+
+Este mecanismo confia en el operador y en el acceso al sistema de archivos del
+usuario de Windows. No es un proveedor de identidad de produccion: quien puede
+editar el registro o leer la base fuera de la aplicacion pertenece a esa frontera
+de confianza. Aprovisiona fuera de sesiones activas; para despliegues compartidos
+se necesita un IdP, gestion de secretos, almacenamiento transaccional de sesiones
+y controles de acceso del sistema operativo. No se ampliaron los permisos de
+Compliance ni sus capacidades de demostracion.
+
+
+### Respuestas verificadas de las preguntas bancarias
+
+Data Analyst reconoce intenciones acotadas de productos, saldos, movimientos,
+gastos, crecimiento, agregados y auditoria. Construye SELECT de solo lectura
+con periodos e identificadores tipados y ejecuta la herramienta SQL existente
+sobre el alcance autenticado. La tabla visible y el SQL proceden de esa ejecucion,
+sin una segunda reformulacion que cambie filas o cifras. No hay cuentas bloqueadas
+globalmente. Las consultas no reconocidas conservan el agente general con el
+modelo oficial; sus llamadas tienen limite de espera.
+
+Normatividad intenta Pinecone con espera acotada. Si no esta disponible,
+recupera fragmentos literales de los PDF/TXT reales de `data_governance_files`,
+indicando archivo, pagina y modo local. El lector PDF usa `pypdf`, ya presente
+en el entorno; si falta, debe prepararse esa dependencia antes de leer PDF.
+Esto no certifica conectividad Pinecone ni vigencia legal externa del corpus.
+Las respuestas locales no usan conocimiento inventado del modelo.
+
+Las pruebas de gobierno de datos son adaptaciones explicitas a `raw_clientes`
+y `raw_saldos` de SQLite, no recreaciones de `clientes.csv`. Las herramientas
+reportan conteos de negativos y clasificacion PII por nombres del esquema,
+sin mostrar valores individuales.
+
+Pruebas focalizadas de autorizacion (fixture aislada, sin Ollama ni datos reales):
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p test_local_authorization.py -v
+```

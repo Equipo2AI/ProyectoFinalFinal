@@ -168,14 +168,16 @@ def _es_consulta_normativa(consulta: str) -> bool:
 
 def _llamar_mcp(servidor: str, herramienta: str, argumentos: dict) -> str:
     """Ejecuta una tool MCP por stdio y devuelve su texto."""
+    from proyecto.security.local_auth import subprocess_env
     transporte = StdioTransport(
         command=sys.executable,
         args=["-m", f"proyecto.mcp_servers.{servidor}"],
         cwd=str(_RAIZ),
+        env=subprocess_env(),
     )
 
     async def ejecutar() -> str:
-        async with Client(transporte) as cliente:
+        async with Client(transporte, timeout=60) as cliente:
             resultado = await cliente.call_tool(herramienta, argumentos)
             if resultado.is_error:
                 raise RuntimeError(
