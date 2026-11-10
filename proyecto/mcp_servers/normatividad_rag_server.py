@@ -1,8 +1,8 @@
 """Servidor MCP de normatividad.
 
-La herramienta devuelve una respuesta ya sintetizada por el agente RAG, con las
-fuentes recuperadas. Así el orquestador recibe una respuesta verificable en vez
-de tener que resumir por su cuenta un bloque largo de evidencia.
+`buscar_normatividad` conserva el contrato anterior: devuelve una respuesta ya
+sintetizada. `buscar_evidencia` expone la recuperación cruda y `verificar_cita`
+comprueba una cita textual contra esa evidencia.
 """
 
 from fastmcp import FastMCP
@@ -20,6 +20,26 @@ def buscar_normatividad(query: str) -> str:
         query: Pregunta o tema normativo que se desea consultar.
     """
     return normatividad_rag_agent.procesar(query)
+
+
+@mcp.tool()
+def buscar_evidencia(query: str) -> str:
+    """Recupera fragmentos crudos con fuente, página/fila y cita_id, sin sintetizar."""
+    herramienta = next(
+        t for t in normatividad_rag_agent._tools if t.name == "buscar_evidencia"
+    )
+    return herramienta.invoke({"query": query})
+
+
+@mcp.tool()
+def verificar_cita(cita: str, query: str = "", cita_id: str = "") -> str:
+    """Verifica que una cita textual aparezca en la evidencia recuperada."""
+    herramienta = next(
+        t for t in normatividad_rag_agent._tools if t.name == "verificar_cita"
+    )
+    return herramienta.invoke(
+        {"cita": cita, "query": query, "cita_id": cita_id}
+    )
 
 
 if __name__ == "__main__":

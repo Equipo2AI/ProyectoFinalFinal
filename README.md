@@ -54,30 +54,32 @@ utiliza para rechazar ese tipo de consultas; las reglas reales quedan para fase 
   memoria el que queda inactivo.
 - Claves de Pinecone para el corpus normativo (`PINECONE_API_KEY`, `INDEX_NAME`).
 
-Preparar el entorno Python si aún no existe:
+Preparar el entorno Python si aún no existe, desde la raíz del repositorio:
 
-```powershell
+```bash
 uv sync
 ```
 
-Abre Ollama o ejecuta `ollama serve`. Desde PowerShell, en la raíz del
-repositorio y con el entorno virtual ya preparado:
+Abre Ollama o ejecuta `ollama serve`. Después comprueba los modelos:
 
-```powershell
-.\.venv\Scripts\python.exe -m proyecto.config.preparar_modelos
-.\.venv\Scripts\python.exe -m proyecto.config.preparar_modelos --instalar
+```bash
+uv run python -m proyecto.config.preparar_modelos
+uv run python -m proyecto.config.preparar_modelos --instalar
 ```
 
-El primer comando comprueba el servicio y los modelos; termina con codigo 1
-si faltan modelos y 2 si hay un error de conexion o configuracion. El segundo
+El primer comando comprueba el servicio y los modelos; termina con código 1
+si faltan modelos y 2 si hay un error de conexión o configuración. El segundo
 instala solo los faltantes con sus nombres oficiales y verifica el resultado.
 Las descargas ocupan varios GB. Abre Ollama (o ejecuta `ollama serve`) antes.
-Se respeta `OLLAMA_HOST` si esta definido. Pega solo el comando, sin el prompt
-ni la salida de PowerShell. No requiere nuevas dependencias Python.
+Se respeta `OLLAMA_HOST` si está definido. Los mismos comandos funcionan en
+macOS, Linux y PowerShell con `uv` instalado.
 
 `.env.example` sirve como plantilla de `.env`. `DATABASE_URL` es opcional: si no
 se define, se usa la ruta de `proyecto/config/data_connection.yaml` y, en su
-defecto, `proyecto/bd/banamex.db`.
+defecto, `proyecto/bd/banamex.db`. `MCP_TIMEOUT` (segundos, 180 por defecto)
+limita cada llamada MCP `stdio` para que una tool colgada no bloquee la UI. El
+valor por defecto cubre el arranque en frío de Ollama; si tu equipo es más lento,
+súbelo en `.env`.
 
 ## Base sintética
 
@@ -94,17 +96,22 @@ nuevo, el cargador debe ejecutarse antes de consultar datos.
 Las herramientas del Data Steward calculan conteos de estructura y calidad. No
 envían al modelo filas ni valores personales: reportan nombres de columnas, tipos
 detectados y cantidades agregadas. Un identificador repetido se reporta para
-revisión, no como instrucción para borrar datos.
+revisión, no como instrucción para borrar datos. La clave de duplicados sale de
+la PK/restricción única o de `calidad_hallazgos_esperados`, no de una heurística
+por nombre. `evaluar_calidad` compara lo encontrado contra esos hallazgos
+esperados y marca coincidencias y diferencias.
 
 ## Interfaz Streamlit
 
+Streamlit se instala al vuelo para no cargar el entorno base. Desde la raíz:
+
 ```bash
-.\.venv\Scripts\python.exe -m streamlit run proyecto/ui/app.py
+uv run --with streamlit streamlit run proyecto/ui/app.py
 ```
 
 El panel de traza muestra, por turno, la herramienta MCP invocada, sus
-argumentos, el estado, la consulta SQL y las fuentes. La interfaz también admite
-imágenes para OCR o descripción.
+argumentos, el estado, la consulta SQL, la gráfica y las fuentes. La interfaz
+también admite imágenes para OCR o descripción.
 
 Ejemplo de una consulta de normatividad con evidencia y fuentes:
 
@@ -115,17 +122,42 @@ Ejemplo de una consulta de normatividad con evidencia y fuentes:
 | Agente | Descripción | Modelo | Herramientas MCP |
 |---|---|---|---|
 | `orchestrator` | Enruta la consulta y compone la respuesta | `mimo-v2.6` | — |
-| `data_steward` | Gobierno y calidad de datos bancarios | `qwen2.5:7b-instruct` | `inspeccionar_dataset`, `validar_calidad_datos` |
-| `data_analyst` | Análisis cuantitativo sobre datos bancarios | `mimo-v2.6` | `analizar_datos`, `listar_tablas`, `describir_tabla`, `valores_columna`, `ejecutar_consulta` |
-| `normatividad_rag` | Búsqueda semántica sobre documentación | `llama3.1:latest` | `buscar_normatividad` |
+| `data_steward` | Gobierno y calidad de datos bancarios | `qwen2.5:7b-instruct` | `inspeccionar_dataset`, `validar_calidad_datos`, `evaluar_calidad` |
+| `data_analyst` | Análisis cuantitativo sobre datos bancarios | `mimo-v2.6` | `analizar_datos`, `listar_tablas`, `describir_tabla`, `valores_columna`, `validar_sql`, `ejecutar_consulta`, `graficar_consulta`, `catalogo_metricas`, `consultar_metrica`, `resolver_periodo`, `resolver_valor`, `verificar_cifras` |
+| `normatividad_rag` | Búsqueda semántica sobre documentación | `llama3.1:latest` | `buscar_normatividad`, `buscar_evidencia`, `verificar_cita` |
 | `document_intelligence` | Lectura de imágenes y documentos | `qwen2.5vl:7b` | `extraer_texto_imagen`, `describir_imagen` |
 | `compliance` | Reglas regulatorias: KYC, AML | `qwen2.5:7b-instruct` | `revisar_compliance_demo` (demostración, fase 2) |
 
 En el Data Analyst, `analizar_datos` recibe la pregunta en lenguaje natural y la
-resuelve con las cuatro herramientas SQL (`listar_tablas`, `describir_tabla`,
-`valores_columna` y `ejecutar_consulta`). El agente usa `mimo-v2.6`: en las
-pruebas, `qwen2.5-coder:7b` describió las tablas pero no ejecutó las
-herramientas SQL.
+resuelve con las herramientas SQL (`listar_tablas`, `describir_tabla`,
+`valores_columna`, `validar_sql` y `ejecutar_consulta`). `validar_sql` revisa el
+AST con `sqlglot`: una sola sentencia, catálogo real, solo lectura, PII y
+row-level security (`num_cte` del cliente o una `num_cta` que le pertenezca).
+Las tools auxiliares también aplican el alcance del perfil. El agente usa
+`mimo-v2.6`: en las pruebas, `qwen2.5-coder:7b` describió las tablas pero no
+ejecutó las herramientas SQL.
+
+`graficar_consulta` no ejecuta código generado por el modelo: valida y ejecuta
+una consulta agregada y dibuja el PNG con matplotlib en el backend. Rechaza
+identificadores, datos personales, resultados truncados, ejes no numéricos y
+categorías repetidas. El grafo y el hub pueden generarla cuando el usuario pide
+una gráfica; la UI la muestra y permite descargarla desde `Respuesta.grafica`.
+
+Para evitar SQL libre en preguntas frecuentes, `catalogo_metricas` declara
+métricas cerradas (clientes, saldo, transacciones, importes) con sus dimensiones
+y `consultar_metrica` las ejecuta con allowlist. `resolver_periodo` convierte
+expresiones como `2026-02`, `1T 2026` o `mes pasado` a claves de `dim_fecha`;
+`resolver_valor` normaliza una categoría antes del `WHERE`. `verificar_cifras`
+contrasta cifras y PII de la redacción contra la evidencia de la última consulta.
+
+El hub nuevo de Data Analyst vive en `proyecto/orchestration/hubs.py` y usa esas
+tools de bajo nivel, sin `analizar_datos`. Para compararlo con el flujo MCP
+anterior en el grafo:
+
+```bash
+DATA_ANALYST_HUB=1 uv run python -c \
+  "from proyecto.orchestration.grafo import ejecutar_grafo; print(ejecutar_grafo('¿Cuántos clientes hay?')['respuesta'])"
+```
 
 El orquestador usa `mimo-v2.6` para las respuestas directas; en modo `hub`
 también enruta cuando las reglas deterministas no alcanzan.
@@ -163,6 +195,10 @@ El agente `normatividad_rag` responde únicamente con evidencia recuperada:
 - **Enrutamiento**: las preguntas normativas de alta confianza (leyes, privacidad,
   avisos, políticas) se envían directo al servidor de normatividad con el texto
   original, para que el modelo no reformule la pregunta y pierda artículos.
+- **Evidencia cruda**: `buscar_evidencia` devuelve fragmentos con `fuente`,
+  `pagina`/`fila` y `cita_id` sin sintetizar. `verificar_cita` comprueba que una
+  cita textual exista en la evidencia recuperada; `buscar_normatividad` se
+  conserva por compatibilidad.
 
 Para reindexar el corpus:
 
@@ -232,6 +268,11 @@ En general, una consulta con una sola idea, la tabla nombrada y el agente o la
 herramienta explícitos produce mejores resultados.
 
 ## Orquestación en grafo
+
+El contrato de tareas, resultados y hubs de dominio está documentado en
+[`docs/arquitectura-tareas.md`](docs/arquitectura-tareas.md). Es el diseño que
+se está implementando para que el orquestador delegue objetivos de alto nivel y
+cada hub decida qué herramientas usar.
 
 `proyecto/orchestration/grafo.py` implementa un `StateGraph` de LangGraph con
 estado compartido:

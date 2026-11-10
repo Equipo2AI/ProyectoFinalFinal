@@ -29,7 +29,8 @@ async def llamar_herramienta_mcp(
 ) -> str:
     """Ejecuta una herramienta real y cierra la sesion y el subproceso al terminar."""
     transporte = crear_transporte(modulo, env=env) if env is not None else crear_transporte(modulo)
-    async with Client(transporte, timeout=60) as cliente:
+    timeout = float(os.getenv("MCP_TIMEOUT", "180"))
+    async with Client(transporte, timeout=timeout) as cliente:
         resultado = await cliente.call_tool(nombre, argumentos or {})
         if resultado.is_error:
             raise RuntimeError(f"Error al ejecutar la herramienta MCP: {nombre}")

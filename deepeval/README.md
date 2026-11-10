@@ -123,7 +123,13 @@ indica el archivo.
 
 El consolidado de la última corrida de 30 casos está en
 [`resultados/consolidado_20261110.md`](resultados/consolidado_20261110.md).
-Los JSON completos quedan locales e ignorados.
+
+También se publican las corridas completas de 18 y 12 casos:
+
+- [`resultados/test_run_20261109_215032.json`](resultados/test_run_20261109_215032.json) — 18 casos.
+- [`resultados/test_run_20261110_122956.json`](resultados/test_run_20261110_122956.json) — 12 casos.
+
+El resto de los JSON de ejecución queda local e ignorado.
 
 ## Límites
 
@@ -135,3 +141,14 @@ Los JSON completos quedan locales e ignorados.
 - Un juez de 7B es ruidoso y a veces no devuelve el JSON que DeepEval espera.
   Las `reglas` son la señal confiable; para calificaciones estables conviene un
   juez más grande en `DEEPEVAL_JUEZ`.
+
+# Para ver los resultados en una web local
+uv run python deepeval/reporte.py --abrir
+
+#Metricas usadas:
+
+reglas: checks fixed conditions without any LLM: the expected agent answered, the expected tools were called, required text appears, forbidden text is absent, and the agent reported no errors. It always runs, and every condition must hold to pass.
+relevancia: the judge model checks whether the answer actually addresses the question asked, rather than drifting to something else. It does not check whether the answer is true.
+fidelidad: the judge checks whether the answer’s claims are supported by what the tools returned, which catches invented columns or figures. Today it only runs for Data Steward questions, because the other agents don’t expose their evidence.
+correccion: the judge compares the answer with the respuesta_esperada you wrote, penalizing different figures or missing key facts but not different wording. It runs only on questions that have a respuesta_esperada.
+criterio: the judge scores the answer against a rule you write in plain language for that one question, for example “se niega y no muestra ningún saldo”. It runs only on questions that have a criterio line.

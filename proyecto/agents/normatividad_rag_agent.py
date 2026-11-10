@@ -1,8 +1,11 @@
 # Normatividad / RAG Agent — Semantic search in documents.
 # Domain: policies, manuals, business rules, semantic memory.
 
+import hashlib
+import json
 import os
 import re
+import unicodedata
 
 from dotenv import load_dotenv
 from langchain_core.tools import tool
@@ -41,7 +44,8 @@ class NormatividadRAGAgent:
         # este módulo dentro de la arquitectura mayor no requiera Pinecone/Ollama.
         self._retriever = None
         self._llm = None
-        self._tools = [self._crear_herramienta_busqueda()]
+        self._cache_evidencia: dict[str, dict] = {}
+        self._tools = list(self._crear_herramientas_busqueda())
         self.herramientas = [herramienta.name for herramienta in self._tools]
 
     def _get_retriever(self):
@@ -56,35 +60,126 @@ class NormatividadRAGAgent:
             )
         return self._retriever
 
-    def _crear_herramienta_busqueda(self):
+    def _fragmento(self, doc, indice: int) -> dict:
+        fuente = doc.metadata.get("source", "desconocida")
+        pagina = doc.metadata.get("page")
+        fila = doc.metadata.get("row")
+        if isinstance(pagina, float) and pagina.is_integer():
+            pagina = int(pagina)
+        texto = str(doc.page_content or "")
+        semilla = f"{fuente}|{pagina}|{fila}|{indice}|{texto[:200]}"
+        cita_id = hashlib.sha256(semilla.encode("utf-8")).hexdigest()[:16]
+        fragmento = {
+            "cita_id": cita_id,
+            "fuente": fuente,
+            "pagina": pagina,
+            "fila": fila,
+            "texto": texto,
+        }
+        self._cache_evidencia[cita_id] = fragmento
+        return fragmento
+
+    def _recuperar(self, query: str) -> list[dict]:
+        docs = self._get_retriever().invoke(query)
+        return [
+            self._fragmento(doc, indice)
+            for indice, doc in enumerate(docs or [])
+        ]
+
+    @staticmethod
+    def _ubicacion(fragmento: dict) -> str:
+        ubicacion = str(fragmento.get("fuente") or "desconocida")
+        pagina = fragmento.get("pagina")
+        fila = fragmento.get("fila")
+        if pagina is not None:
+            ubicacion += f", página {pagina}"
+        if fila is not None:
+            ubicacion += f", fila {fila}"
+        return ubicacion
+
+    @staticmethod
+    def _normalizar_cita(texto: str) -> str:
+        normalizado = unicodedata.normalize("NFKC", texto or "").casefold()
+        return re.sub(r"\s+", " ", normalizado).strip()
+
+    def _crear_herramientas_busqueda(self):
         @tool
         def buscar_normatividad(query: str) -> str:
-            """Busca en la documentación normativa: políticas, manuales, reglas de negocio y lineamientos."""
-
-            docs = self._get_retriever().invoke(query)
-
-            if not docs:
+            """Busca y sintetiza evidencia normativa; conserva compatibilidad."""
+            fragmentos = self._recuperar(query)
+            if not fragmentos:
                 return "No se encontró evidencia normativa relevante."
+            return "\n\n---\n\n".join(
+                f"FUENTE: {self._ubicacion(fragmento)}\n{fragmento['texto']}"
+                for fragmento in fragmentos
+            )
 
-            evidencia = []
-            for doc in docs:
-                fuente = doc.metadata.get("source", "desconocida")
-                pagina = doc.metadata.get("page")
-                fila = doc.metadata.get("row")
-                if isinstance(pagina, float) and pagina.is_integer():
-                    pagina = int(pagina)
+        @tool
+        def buscar_evidencia(query: str) -> str:
+            """Recupera fragmentos crudos con fuente, página/fila y cita_id, sin sintetizar."""
+            fragmentos = self._recuperar(query)
+            return json.dumps(
+                {
+                    "consulta": query,
+                    "total": len(fragmentos),
+                    "fragmentos": fragmentos,
+                    "nota": (
+                        "La evidencia es la única fuente válida; usa cita_id y "
+                        "verificar_cita antes de afirmar una cita textual."
+                    ),
+                },
+                ensure_ascii=False,
+                default=str,
+            )
 
-                ubicacion = fuente
-                if pagina is not None:
-                    ubicacion += f", página {pagina}"
-                if fila is not None:
-                    ubicacion += f", fila {fila}"
+        @tool
+        def verificar_cita(cita: str, query: str = "", cita_id: str = "") -> str:
+            """Verifica que una cita textual aparezca en la evidencia recuperada.
 
-                evidencia.append(f"FUENTE: {ubicacion}\n{doc.page_content}")
+            Args:
+                cita: Texto que se quiere verificar.
+                query: Consulta original para recuperar la misma evidencia.
+                cita_id: Identificador devuelto por buscar_evidencia.
+            """
+            if cita_id and cita_id in self._cache_evidencia:
+                fragmentos = [self._cache_evidencia[cita_id]]
+                consulta_usada = query or "(cache)"
+            else:
+                consulta_usada = query or cita
+                fragmentos = self._recuperar(consulta_usada)
 
-            return "\n\n---\n\n".join(evidencia)
+            buscada = self._normalizar_cita(cita)
+            for fragmento in fragmentos:
+                if buscada and buscada in self._normalizar_cita(fragmento["texto"]):
+                    return json.dumps(
+                        {
+                            "existe": True,
+                            "coincide": True,
+                            "consulta_usada": consulta_usada,
+                            **fragmento,
+                        },
+                        ensure_ascii=False,
+                        default=str,
+                    )
 
-        return buscar_normatividad
+            return json.dumps(
+                {
+                    "existe": False,
+                    "coincide": False,
+                    "consulta_usada": consulta_usada,
+                    "cita": cita,
+                    "fragmentos_revisados": len(fragmentos),
+                    "nota": (
+                        "La cita no aparece literalmente en la evidencia "
+                        "recuperada. Reformula la búsqueda o no la presentes "
+                        "como cita textual."
+                    ),
+                },
+                ensure_ascii=False,
+                default=str,
+            )
+
+        return buscar_normatividad, buscar_evidencia, verificar_cita
 
     def _get_llm(self):
         if self._llm is None:

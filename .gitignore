@@ -30,6 +30,9 @@ AGENTS.md
 .deepeval/
 deepeval/resultados/*
 !deepeval/resultados/consolidado_20261110.md
+# Corridas publicadas de 18 y 12 casos
+!deepeval/resultados/test_run_20261109_215032.json
+!deepeval/resultados/test_run_20261110_122956.json
 
 # Datos locales de prueba (no se suben)
 files/Base Cards para TEC - Diccionario de Variables.csv

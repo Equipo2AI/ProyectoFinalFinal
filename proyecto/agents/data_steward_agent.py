@@ -10,11 +10,12 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
+from datetime import date
 
 from langchain.agents import create_agent
 from langchain_core.tools import tool
 from langchain_ollama import ChatOllama
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 
 from proyecto.config.models import modelo_de
 
@@ -44,7 +45,10 @@ vistas disponibles: no son relaciones. Las relaciones reales son las que
 aparecen en `relaciones` (foreign keys declaradas). Si `relaciones` está vacío,
 di que no hay foreign keys declaradas; no deduzcas relaciones por la lista de
 tablas. Si la consulta menciona faltantes, nulos, duplicados, calidad o
-problemas, llama a `validar_calidad_datos` además de inspeccionar la tabla.
+problemas, llama a `validar_calidad_datos` además de inspeccionar la tabla. Si
+la tabla es una de las capas crudas (`raw_*`) y existe un hallazgo esperado,
+usa `evaluar_calidad` para comparar lo encontrado contra
+`calidad_hallazgos_esperados`; no inventes el número esperado.
 
 Nunca muestres nombres, correos, teléfonos, CURP, RFC, direcciones ni valores
 de registros individuales. Trabaja con agregados y metadatos. No modifiques la
@@ -237,30 +241,186 @@ def inspeccionar_dataset(tabla: str = "") -> str:
         )
 
 
-def _columnas_duplicadas(engine, tabla: str, columnas: list[str]) -> int | None:
-    """Cuenta filas sobrantes de una clave; None si no hay clave razonable."""
-    nombres = {columna.casefold() for columna in columnas}
-    clave: list[str] = []
-    if "num_cte" in nombres:
-        clave = ["num_cte"]
-    elif "num_cta" in nombres:
-        clave = ["num_cta"]
-    elif len(columnas) == 1:
-        clave = [columnas[0]]
+FECHA_CORTE_CALIDAD = date(2026, 12, 31)
 
-    if not clave:
-        return None
 
+def _esperados_calidad(engine, tabla: str) -> list[dict]:
+    """Lee los hallazgos esperados declarados para una tabla."""
+    sql = text(
+        "SELECT id, tabla, columna, tipo_defecto, filas_afectadas, descripcion "
+        "FROM calidad_hallazgos_esperados WHERE tabla = :tabla ORDER BY id"
+    )
+    try:
+        with engine.connect() as conexion:
+            return [
+                dict(fila)
+                for fila in conexion.execute(sql, {"tabla": tabla}).mappings()
+            ]
+    except Exception:  # noqa: BLE001 - la tabla de expectativas es opcional
+        return []
+
+
+def _clave_tabla(
+    inspector, tabla: str, esperados: list[dict] | None = None
+) -> tuple[list[str], str]:
+    """Devuelve la clave declarada, no una heurística por nombre de columna."""
+    columnas = {columna["name"] for columna in inspector.get_columns(tabla)}
+    pk = inspector.get_pk_constraint(tabla).get("constrained_columns") or []
+    if pk and all(columna in columnas for columna in pk):
+        return list(pk), "primary_key"
+
+    for restriccion in inspector.get_unique_constraints(tabla):
+        clave = restriccion.get("column_names") or []
+        if clave and all(columna in columnas for columna in clave):
+            return list(clave), "unique_constraint"
+
+    for esperado in esperados or []:
+        if esperado.get("tipo_defecto") != "fila_duplicada":
+            continue
+        columnas_esperadas = str(esperado.get("columna") or "")
+        if not columnas_esperadas or columnas_esperadas == "*":
+            continue
+        clave = [
+            columna.strip()
+            for columna in columnas_esperadas.split(",")
+            if columna.strip()
+        ]
+        if clave and all(columna in columnas for columna in clave):
+            return clave, "calidad_hallazgos_esperados"
+
+    return [], "sin_clave"
+
+
+def _sobrantes_por_clave(engine, tabla: str, clave: list[str]) -> int:
+    """Cuenta filas sobrantes por una clave declarada."""
     q = engine.dialect.identifier_preparer.quote
     grupo = ", ".join(q(columna) for columna in clave)
     sql = (
         "SELECT COALESCE(SUM(n - 1), 0) FROM ("
         f"SELECT {grupo}, COUNT(*) AS n FROM {q(tabla)} "
         f"GROUP BY {grupo} HAVING COUNT(*) > 1"
-        ")"
+        ") AS sobrantes"
     )
     with engine.connect() as conexion:
         return int(conexion.exec_driver_sql(sql).scalar() or 0)
+
+
+def _evaluar_hallazgo(
+    engine, tabla: str, hallazgo: dict, columnas: list[str]
+) -> dict:
+    """Calcula de forma determinista un hallazgo esperado."""
+    q = engine.dialect.identifier_preparer.quote
+    tipo = str(hallazgo.get("tipo_defecto") or "")
+    columna = str(hallazgo.get("columna") or "")
+    encontradas: int | None = None
+    detalle = ""
+
+    if tipo == "valor_nulo":
+        if columna not in columnas:
+            return {**hallazgo, "encontradas": None, "coincide": False,
+                    "detalle": f"La columna '{columna}' no existe."}
+        sql = (
+            f"SELECT COUNT(*) FROM {q(tabla)} "
+            f"WHERE {q(columna)} IS NULL"
+        )
+    elif tipo == "fila_duplicada":
+        if columna == "*":
+            sql = (
+                f"SELECT COUNT(*) - (SELECT COUNT(*) FROM "
+                f"(SELECT DISTINCT * FROM {q(tabla)}) AS distintas) "
+                f"FROM {q(tabla)}"
+            )
+            detalle = "filas exactas duplicadas"
+        else:
+            clave = [
+                parte.strip()
+                for parte in columna.split(",")
+                if parte.strip()
+            ]
+            if not clave or not all(parte in columnas for parte in clave):
+                return {**hallazgo, "encontradas": None, "coincide": False,
+                        "detalle": f"La clave '{columna}' no existe en la tabla."}
+            encontradas = _sobrantes_por_clave(engine, tabla, clave)
+            detalle = "filas sobrantes por clave"
+    elif tipo == "fecha_futura":
+        if columna not in columnas:
+            return {**hallazgo, "encontradas": None, "coincide": False,
+                    "detalle": f"La columna '{columna}' no existe."}
+        sql = (
+            f"SELECT COUNT(*) FROM {q(tabla)} "
+            f"WHERE {q(columna)} > :fecha_corte"
+        )
+        encontradas = _contar(
+            engine, sql, {"fecha_corte": FECHA_CORTE_CALIDAD.isoformat()}
+        )
+        detalle = f"fechas posteriores a {FECHA_CORTE_CALIDAD.isoformat()}"
+    elif tipo == "formato_invalido":
+        if columna not in columnas:
+            return {**hallazgo, "encontradas": None, "coincide": False,
+                    "detalle": f"La columna '{columna}' no existe."}
+        if columna.casefold() == "correo":
+            if engine.dialect.name.startswith("postgres"):
+                condicion = f"POSITION('@' IN {q(columna)}) = 0"
+            else:
+                condicion = f"INSTR({q(columna)}, '@') = 0"
+            sql = (
+                f"SELECT COUNT(*) FROM {q(tabla)} "
+                f"WHERE {q(columna)} IS NOT NULL AND {condicion}"
+            )
+            detalle = "correos sin arroba"
+        elif columna.casefold() == "curp":
+            sql = (
+                f"SELECT COUNT(*) FROM {q(tabla)} "
+                f"WHERE {q(columna)} IS NOT NULL "
+                f"AND LENGTH({q(columna)}) <> 18"
+            )
+            detalle = "CURP con longitud distinta de 18"
+        else:
+            return {**hallazgo, "encontradas": None, "coincide": False,
+                    "detalle": "Formato no implementado para esta columna."}
+    elif tipo == "valor_negativo":
+        if columna not in columnas:
+            return {**hallazgo, "encontradas": None, "coincide": False,
+                    "detalle": f"La columna '{columna}' no existe."}
+        sql = f"SELECT COUNT(*) FROM {q(tabla)} WHERE {q(columna)} < 0"
+    elif tipo == "valor_no_positivo":
+        if columna not in columnas:
+            return {**hallazgo, "encontradas": None, "coincide": False,
+                    "detalle": f"La columna '{columna}' no existe."}
+        sql = f"SELECT COUNT(*) FROM {q(tabla)} WHERE {q(columna)} <= 0"
+    elif tipo == "valor_no_catalogo":
+        catalogo = {
+            "cve_producto": ("dim_producto", "cve_producto"),
+            "cve_txn": ("dim_txn", "cve_txn"),
+        }.get(columna.casefold())
+        if not catalogo or columna not in columnas:
+            return {**hallazgo, "encontradas": None, "coincide": False,
+                    "detalle": "No hay catálogo declarado para esta columna."}
+        tabla_catalogo, columna_catalogo = catalogo
+        sql = (
+            f"SELECT COUNT(*) FROM {q(tabla)} t "
+            f"WHERE NOT EXISTS (SELECT 1 FROM {q(tabla_catalogo)} c "
+            f"WHERE c.{q(columna_catalogo)} = t.{q(columna)})"
+        )
+        detalle = f"valores fuera de {tabla_catalogo}"
+    else:
+        return {**hallazgo, "encontradas": None, "coincide": False,
+                "detalle": f"Tipo de defecto no soportado: {tipo}"}
+
+    if encontradas is None:
+        encontradas = _contar(engine, sql)
+    esperadas = int(hallazgo.get("filas_afectadas") or 0)
+    return {
+        **hallazgo,
+        "encontradas": encontradas,
+        "coincide": encontradas == esperadas,
+        "detalle": detalle,
+    }
+
+
+def _contar(engine, sql: str, parametros: dict | None = None) -> int:
+    with engine.connect() as conexion:
+        return int(conexion.execute(text(sql), parametros or {}).scalar() or 0)
 
 
 @tool
@@ -280,6 +440,8 @@ def validar_calidad_datos(tabla: str = "") -> str:
 
         q = engine.dialect.identifier_preparer.quote
         columnas = [columna["name"] for columna in inspector.get_columns(nombre)]
+        esperados = _esperados_calidad(engine, nombre)
+        clave, origen_clave = _clave_tabla(inspector, nombre, esperados)
         faltantes: dict[str, int] = {}
         total = 0
 
@@ -312,7 +474,8 @@ def validar_calidad_datos(tabla: str = "") -> str:
 
             distintas = int(
                 conexion.exec_driver_sql(
-                    f"SELECT COUNT(*) FROM (SELECT DISTINCT * FROM {q(nombre)})"
+                    f"SELECT COUNT(*) FROM "
+                    f"(SELECT DISTINCT * FROM {q(nombre)}) AS distintas"
                 ).scalar()
                 or 0
             )
@@ -331,13 +494,18 @@ def validar_calidad_datos(tabla: str = "") -> str:
                     if cantidad > 0
                 },
                 "filas_duplicadas_exactas": max(0, total - distintas),
-                "filas_sobrantes_por_clave": _columnas_duplicadas(
-                    engine, nombre, columnas
+                "clave_usada": clave,
+                "origen_clave": origen_clave,
+                "filas_sobrantes_por_clave": (
+                    _sobrantes_por_clave(engine, nombre, clave)
+                    if clave
+                    else None
                 ),
                 "nota": (
                     "Un duplicado o una clave repetida es un hallazgo para "
                     "revisar; no confirma por sí solo que deban eliminarse "
-                    "registros."
+                    "registros. La clave usada es la declarada (PK, restricción "
+                    "única o hallazgo esperado), no una heurística por nombre."
                 ),
             },
             ensure_ascii=False,
@@ -350,7 +518,61 @@ def validar_calidad_datos(tabla: str = "") -> str:
         )
 
 
-_HERRAMIENTAS_METADATA = {"inspeccionar_dataset", "validar_calidad_datos"}
+@tool
+def evaluar_calidad(tabla: str = "") -> str:
+    """Compara una tabla contra los hallazgos esperados declarados.
+
+    Args:
+        tabla: Tabla o vista a evaluar. Vacío usa raw_clientes.
+    """
+    try:
+        engine, inspector, nombre, tablas, vistas, disponibles, error = _resolver_tabla(tabla)
+        if error:
+            return json.dumps(
+                {"error": error, "catalogo_tablas": disponibles},
+                ensure_ascii=False,
+            )
+
+        columnas = [columna["name"] for columna in inspector.get_columns(nombre)]
+        esperados = _esperados_calidad(engine, nombre)
+        evaluaciones = [
+            _evaluar_hallazgo(engine, nombre, hallazgo, columnas)
+            for hallazgo in esperados
+        ]
+        coinciden = sum(1 for evaluacion in evaluaciones if evaluacion["coincide"])
+        return json.dumps(
+            {
+                "base": DEFAULT_DB_NAME,
+                "motor": engine.dialect.name,
+                "tabla": nombre,
+                "es_vista": nombre in vistas,
+                "evaluaciones": evaluaciones,
+                "resumen": {
+                    "esperados": len(evaluaciones),
+                    "coinciden": coinciden,
+                    "diferencias": len(evaluaciones) - coinciden,
+                },
+                "nota": (
+                    "La comparación es determinista contra "
+                    "calidad_hallazgos_esperados. Una diferencia es un hallazgo "
+                    "para revisar, no una autorización para modificar datos."
+                ),
+            },
+            ensure_ascii=False,
+            default=str,
+        )
+    except Exception as error:  # noqa: BLE001
+        return json.dumps(
+            {"error": f"{type(error).__name__}: {error}"},
+            ensure_ascii=False,
+        )
+
+
+_HERRAMIENTAS_METADATA = {
+    "inspeccionar_dataset",
+    "validar_calidad_datos",
+    "evaluar_calidad",
+}
 
 
 def _resultados_herramientas(mensajes) -> list[dict]:
@@ -487,10 +709,20 @@ def _formatear_calidad(datos: dict) -> str:
     else:
         lineas.append("- Valores faltantes por columna: ninguno.")
 
+    clave = datos.get("clave_usada") or []
+    origen = datos.get("origen_clave") or ""
+    if clave:
+        lineas.append(
+            f"- Clave usada: {', '.join(f'`{columna}`' for columna in clave)} "
+            f"({origen})."
+        )
+    else:
+        lineas.append("- Clave usada: no hay PK, restricción única ni hallazgo esperado.")
+
     lineas.append(f"- Filas duplicadas exactas: {duplicadas:,}")
     if sobrantes is None:
         lineas.append(
-            "- Filas sobrantes por clave: no aplica (sin clave detectable)."
+            "- Filas sobrantes por clave: no aplica (sin clave declarada)."
         )
     else:
         lineas.append(f"- Filas sobrantes por clave: {int(sobrantes):,}")
@@ -499,6 +731,43 @@ def _formatear_calidad(datos: dict) -> str:
     if nota:
         lineas.append(f"- Nota: {nota}")
 
+    return "\n".join(lineas)
+
+
+def _formatear_evaluacion_calidad(datos: dict) -> str:
+    if "error" in datos:
+        return _formatear_error("evaluar_calidad", datos)
+
+    tabla = datos.get("tabla", "?")
+    evaluaciones = datos.get("evaluaciones") or []
+    resumen = datos.get("resumen") or {}
+    lineas = [
+        f"**Evaluación de calidad de `{tabla}` contra hallazgos esperados:**",
+        f"- Esperados: {int(resumen.get('esperados') or 0):,}",
+        f"- Coinciden: {int(resumen.get('coinciden') or 0):,}",
+        f"- Diferencias: {int(resumen.get('diferencias') or 0):,}",
+    ]
+    if evaluaciones:
+        lineas.extend([
+            "",
+            "| ID | Defecto | Columna | Esperadas | Encontradas | Estado |",
+            "|---:|---|---|---:|---:|---|",
+        ])
+        for evaluacion in evaluaciones:
+            estado = "coincide" if evaluacion.get("coincide") else "diferencia"
+            encontradas = evaluacion.get("encontradas")
+            lineas.append(
+                "| {} | {} | `{}` | {:,} | {} | {} |".format(
+                    evaluacion.get("id", "?"),
+                    evaluacion.get("tipo_defecto", "?"),
+                    evaluacion.get("columna", "?"),
+                    int(evaluacion.get("filas_afectadas") or 0),
+                    "?" if encontradas is None else f"{int(encontradas):,}",
+                    estado,
+                )
+            )
+    else:
+        lineas.append("- No hay hallazgos esperados declarados para esta tabla.")
     return "\n".join(lineas)
 
 
@@ -515,6 +784,8 @@ def formatear_resultados_verificados(resultados: list[dict]) -> str:
             partes.append(_formatear_inspeccion(datos))
         elif nombre == "validar_calidad_datos":
             partes.append(_formatear_calidad(datos))
+        elif nombre == "evaluar_calidad":
+            partes.append(_formatear_evaluacion_calidad(datos))
         else:
             partes.append(f"Resultado de `{nombre}`: {json.dumps(datos, ensure_ascii=False)}")
 
@@ -530,7 +801,11 @@ class DataStewardAgent:
             "faltantes, duplicados y claves repetidas, sin revelar registros."
         )
         self.modelo = modelo_de("data_steward")
-        self._tools = [inspeccionar_dataset, validar_calidad_datos]
+        self._tools = [
+            inspeccionar_dataset,
+            validar_calidad_datos,
+            evaluar_calidad,
+        ]
         self.herramientas = [herramienta.name for herramienta in self._tools]
         self._agent = None
 
@@ -562,11 +837,7 @@ class DataStewardAgent:
         mensajes = resultado["messages"]
         verificados = _resultados_herramientas(mensajes)
         if verificados:
-            hay_calidad = any(
-                item["herramienta"] == "validar_calidad_datos"
-                for item in verificados
-            )
-            if _SOLICITA_CALIDAD.search(consulta) and not hay_calidad:
+            if _SOLICITA_CALIDAD.search(consulta):
                 tablas = [
                     item["datos"].get("tabla")
                     for item in verificados
@@ -574,17 +845,41 @@ class DataStewardAgent:
                     and "error" not in item["datos"]
                     and item["datos"].get("tabla")
                 ]
+                con_validacion = {
+                    item["datos"].get("tabla")
+                    for item in verificados
+                    if item["herramienta"] == "validar_calidad_datos"
+                }
+                con_evaluacion = {
+                    item["datos"].get("tabla")
+                    for item in verificados
+                    if item["herramienta"] == "evaluar_calidad"
+                }
                 for tabla in dict.fromkeys(tablas):
-                    try:
-                        calidad = json.loads(
-                            validar_calidad_datos.invoke({"tabla": tabla})
-                        )
-                    except Exception:  # noqa: BLE001 - se conserva la inspección
-                        continue
-                    verificados.append({
-                        "herramienta": "validar_calidad_datos",
-                        "datos": calidad,
-                    })
+                    if tabla not in con_validacion:
+                        try:
+                            calidad = json.loads(
+                                validar_calidad_datos.invoke({"tabla": tabla})
+                            )
+                        except Exception:  # noqa: BLE001 - se conserva la inspección
+                            calidad = None
+                        if calidad is not None:
+                            verificados.append({
+                                "herramienta": "validar_calidad_datos",
+                                "datos": calidad,
+                            })
+                    if tabla not in con_evaluacion:
+                        try:
+                            evaluacion = json.loads(
+                                evaluar_calidad.invoke({"tabla": tabla})
+                            )
+                        except Exception:  # noqa: BLE001 - se conserva la inspección
+                            evaluacion = None
+                        if evaluacion and evaluacion.get("evaluaciones"):
+                            verificados.append({
+                                "herramienta": "evaluar_calidad",
+                                "datos": evaluacion,
+                            })
             return formatear_resultados_verificados(verificados)
 
         mensaje = mensajes[-1]

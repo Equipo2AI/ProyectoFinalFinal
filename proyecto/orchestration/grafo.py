@@ -20,8 +20,10 @@ El modo se controla con ``ORCHESTRATION_MODE``:
 
 from __future__ import annotations
 
+import base64
 import json
 import operator
+import os
 import re
 from pathlib import Path
 from typing import Annotated, Any, TypedDict
@@ -30,15 +32,24 @@ from langchain_ollama import ChatOllama
 from langgraph.graph import END, START, StateGraph
 
 from proyecto.agents import data_steward_agent
+from proyecto.guardrails import limpiar_base64
 from proyecto.agents.document_intelligence_agent import (
     PALABRAS_DESCRIPCION,
     PATRON_RUTA_IMAGEN,
 )
 from proyecto.config.models import modelo_de
+from proyecto.orchestration.hubs import HubDataAnalyst
 from proyecto.orchestration.orquestador import (
     _es_consulta_normativa,
     _llamar_mcp,
     _normalizar,
+)
+from proyecto.orchestration.tareas import (
+    ContextoHub,
+    DominioTarea,
+    EstadoResultado,
+    ResultadoTarea,
+    Tarea,
 )
 
 _ESPECIALISTAS = {
@@ -300,6 +311,44 @@ def _json_dict(salida: str) -> dict | None:
     return datos if isinstance(datos, dict) else None
 
 
+def _solicita_grafica(consulta: str) -> bool:
+    texto = _normalizar(consulta or "")
+    return bool(
+        re.search(
+            r"\b(grafic\w*|chart\w*|plot\w*|visualiz\w*|diagram\w*|"
+            r"barras|pastel|tendencia)\b",
+            texto,
+        )
+    )
+
+
+def _sql_de_texto(texto: str) -> str | None:
+    """Extrae el último bloque SQL de la respuesta verificada del analista."""
+    bloques = re.findall(
+        r"```sql\s*(.*?)```",
+        texto or "",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    for bloque in reversed(bloques):
+        candidato = bloque.strip().rstrip(";").strip()
+        if re.match(r"(?is)^(select|with)\b", candidato):
+            return candidato
+    return None
+
+
+def _grafica_de_datos(datos: dict | None) -> tuple[bytes | None, dict, dict | None]:
+    if not isinstance(datos, dict) or datos.get("error"):
+        return None, {}, datos
+    try:
+        png = base64.b64decode(str(datos.get("png_base64") or ""))
+    except Exception:  # noqa: BLE001 - salida externa mal formada
+        return None, {}, datos
+    if not png:
+        return None, {}, datos
+    especificacion = datos.get("especificacion")
+    return png, dict(especificacion or {}), datos
+
+
 def _validar_salida_steward(herramienta: str, datos: dict) -> str | None:
     """Contrasta el contrato de las tools antes de formatear la respuesta.
 
@@ -349,6 +398,25 @@ def _validar_salida_steward(herramienta: str, datos: dict) -> str | None:
                 return "valores_faltantes_por_columna tiene una columna sin nombre"
             if type(valor) is not int or not 0 <= valor <= filas:
                 return f"faltantes inválidos en {nombre!r}"
+        return None
+
+    if herramienta == "evaluar_calidad":
+        evaluaciones = datos.get("evaluaciones")
+        if not isinstance(evaluaciones, list):
+            return "evaluaciones debe ser una lista"
+        for evaluacion in evaluaciones:
+            if not isinstance(evaluacion, dict):
+                return "evaluación inválida"
+            if type(evaluacion.get("filas_afectadas")) is not int:
+                return "filas_afectadas debe ser un entero"
+            encontradas = evaluacion.get("encontradas")
+            if encontradas is not None and type(encontradas) is not int:
+                return "encontradas debe ser nulo o un entero"
+            if not isinstance(evaluacion.get("coincide"), bool):
+                return "coincide debe ser booleano"
+        resumen = datos.get("resumen")
+        if not isinstance(resumen, dict):
+            return "resumen debe ser un objeto"
         return None
 
     return None
@@ -409,6 +477,13 @@ def _nodo_data_steward(estado: EstadoGrafo) -> dict:
             (
                 "validar_calidad_datos",
                 "mcp_validar_calidad_datos",
+                {"tabla": tabla},
+            )
+        )
+        llamadas.append(
+            (
+                "evaluar_calidad",
+                "mcp_evaluar_calidad",
                 {"tabla": tabla},
             )
         )
@@ -492,7 +567,73 @@ def _contexto_previo(estado: EstadoGrafo) -> str:
     return "\n\n".join(partes)
 
 
+_HUB_DATA_ANALYST = None
+
+
+def _get_hub_data_analyst() -> HubDataAnalyst:
+    global _HUB_DATA_ANALYST
+    if _HUB_DATA_ANALYST is None:
+        _HUB_DATA_ANALYST = HubDataAnalyst()
+    return _HUB_DATA_ANALYST
+
+
+def _nodo_data_analyst_con_hub(estado: EstadoGrafo) -> dict:
+    """Ruta alternativa para comparar el hub con el flujo MCP anterior.
+
+    Se activa con ``DATA_ANALYST_HUB=1``. El hub usa las tools SQL de bajo
+    nivel y contrasta el SQL/datos declarados con la ejecución real.
+    """
+    consulta = estado.get("consulta") or ""
+    tarea = Tarea(
+        id="data_analyst",
+        dominio=DominioTarea.DATA_ANALYST,
+        instruccion=consulta,
+        objetivo="Responder la consulta cuantitativa con evidencia SQL.",
+        resultado_esperado=(
+            "Respuesta con cifras verificables, SQL ejecutado y datos tabulares."
+        ),
+        contexto=estado.get("contexto_analista") or "",
+        restricciones=[
+            "No inventes cifras, tablas ni columnas.",
+            "Aplica el alcance del perfil autenticado.",
+        ],
+        evidencia_requerida=["consulta SQL ejecutada", "resultado de la consulta"],
+    )
+    contexto = ContextoHub(
+        session_id="grafo",
+        perfil=estado.get("perfil") or {},
+        slots={"consulta": consulta},
+        ultima_intencion=estado.get("ultimo_agente"),
+    )
+    resultado: ResultadoTarea = _get_hub_data_analyst().ejecutar(tarea, contexto)
+
+    ok = resultado.estado is EstadoResultado.OK
+    detalle = resultado.respuesta if ok else (
+        resultado.error or resultado.respuesta or "El hub no pudo completar la tarea."
+    )
+    return {
+        "resultados": {
+            "data_analyst": {
+                "agente": "data_analyst",
+                "respuesta": detalle,
+                "estado": "ok" if ok else "error",
+                "sql": resultado.sql,
+                "datos": resultado.datos,
+                "grafica": resultado.grafica,
+                "grafica_especificacion": resultado.grafica_especificacion,
+                "evidencia": resultado.evidencia,
+                "duracion": resultado.duracion,
+            }
+        },
+        "trazas": resultado.trazas,
+        "errores": [] if ok else [f"data_analyst: {detalle}"],
+    }
+
+
 def _nodo_data_analyst(estado: EstadoGrafo) -> dict:
+    if os.environ.get("DATA_ANALYST_HUB") == "1":
+        return _nodo_data_analyst_con_hub(estado)
+
     if _es_inventario_sql(_normalizar(estado.get("consulta") or "")):
         salida, traza, estado_llamada = _ejecutar_mcp(
             "data_analyst_server", "listar_tablas", {}, "mcp_listar_tablas"
@@ -548,15 +689,52 @@ def _nodo_data_analyst(estado: EstadoGrafo) -> dict:
         argumentos,
         "mcp_analizar_datos",
     )
+    salida = limpiar_base64(salida)
+    trazas = [traza]
+    resultado_analista = {
+        "agente": "data_analyst",
+        "respuesta": salida,
+        "estado": estado_llamada,
+    }
+
+    # La gráfica es una tool determinista y opcional. Si el usuario la pidió,
+    # reutilizamos el SQL verificado de la respuesta; nunca inventamos otro.
+    sql = _sql_de_texto(salida) if estado_llamada == "ok" else None
+    if sql and _solicita_grafica(estado.get("consulta") or ""):
+        argumentos_grafica = {
+            "sql": sql,
+            "tipo": "auto",
+            "perfil": estado.get("perfil") or {},
+        }
+        salida_grafica, traza_grafica, estado_grafica = _ejecutar_mcp(
+            "data_analyst_server",
+            "graficar_consulta",
+            argumentos_grafica,
+            "mcp_graficar_consulta",
+        )
+        datos_grafica = _json_dict(salida_grafica)
+        png, especificacion, datos_validos = _grafica_de_datos(datos_grafica)
+        if png is not None and datos_validos is not None:
+            resultado_analista.update({
+                "sql": sql,
+                "datos": {
+                    "columnas": datos_validos.get("columnas") or [],
+                    "filas": datos_validos.get("filas") or [],
+                    "truncado": False,
+                },
+                "grafica": png,
+                "grafica_especificacion": especificacion,
+            })
+        else:
+            traza_grafica["estado"] = "error"
+            resultado_analista["grafica_error"] = (
+                str((datos_grafica or {}).get("error") or salida_grafica)
+            )
+        trazas.append(traza_grafica)
+
     return {
-        "resultados": {
-            "data_analyst": {
-                "agente": "data_analyst",
-                "respuesta": salida,
-                "estado": estado_llamada,
-            }
-        },
-        "trazas": [traza],
+        "resultados": {"data_analyst": resultado_analista},
+        "trazas": trazas,
         "errores": [f"data_analyst: {salida}"] if estado_llamada == "error" else [],
     }
 

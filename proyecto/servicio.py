@@ -8,6 +8,9 @@ devuelvan resultados estructurados. El flujo real ya no usa datos sintéticos.
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
+import os
 import re
 import sys
 import time
@@ -24,6 +27,7 @@ from proyecto.agents.document_intelligence_agent import (
     describe_an_image,
     ocr_image,
 )
+from proyecto.guardrails import limpiar_base64, redactar_pii
 
 _ORQUESTADOR = None
 
@@ -31,11 +35,33 @@ _ORQUESTADOR = None
 _TOOL_A_AGENTE = {
     "mcp_inspeccionar_dataset": "data_steward",
     "mcp_validar_calidad_datos": "data_steward",
+    "mcp_evaluar_calidad": "data_steward",
     "mcp_buscar_normatividad": "normatividad_rag",
     "mcp_analizar_datos": "data_analyst",
     "mcp_listar_tablas": "data_analyst",
+    "mcp_graficar_consulta": "data_analyst",
     "mcp_extraer_texto_imagen": "document_intelligence",
     "mcp_describir_imagen": "document_intelligence",
+    # Tools de bajo nivel usadas por el hub y por el grafo.
+    "listar_tablas": "data_analyst",
+    "describir_tabla": "data_analyst",
+    "valores_columna": "data_analyst",
+    "validar_sql": "data_analyst",
+    "ejecutar_consulta": "data_analyst",
+    "graficar_consulta": "data_analyst",
+    "catalogo_metricas": "data_analyst",
+    "consultar_metrica": "data_analyst",
+    "resolver_periodo": "data_analyst",
+    "resolver_valor": "data_analyst",
+    "verificar_cifras": "data_analyst",
+    "inspeccionar_dataset": "data_steward",
+    "validar_calidad_datos": "data_steward",
+    "evaluar_calidad": "data_steward",
+    "buscar_evidencia": "normatividad_rag",
+    "verificar_cita": "normatividad_rag",
+    "buscar_normatividad": "normatividad_rag",
+    "ocr_image": "document_intelligence",
+    "describe_an_image": "document_intelligence",
 }
 
 
@@ -77,7 +103,8 @@ def _llamar_mcp_document_intelligence(nombre_tool: str, ruta: str) -> str:
     )
 
     async def ejecutar() -> str:
-        async with Client(transporte) as cliente:
+        timeout = float(os.getenv("MCP_TIMEOUT", "180"))
+        async with Client(transporte, timeout=timeout) as cliente:
             resultado = await cliente.call_tool(nombre_tool, {"image_path": ruta})
             if resultado.is_error:
                 raise RuntimeError(f"El servidor MCP falló al ejecutar {nombre_tool}.")
@@ -246,6 +273,46 @@ def _sql_de_salida(salida: str) -> str | None:
     return consulta.group(0).strip() if consulta else None
 
 
+def _datos_para_ui(datos) -> list[dict] | None:
+    """Convierte el contrato columnas/filas en la tabla que espera Streamlit."""
+    if isinstance(datos, list):
+        filas = [fila for fila in datos if isinstance(fila, dict)]
+        return filas[:50] or None
+    if not isinstance(datos, dict):
+        return None
+    columnas = datos.get("columnas")
+    filas = datos.get("filas")
+    if not isinstance(columnas, list) or not isinstance(filas, list):
+        return None
+    tabla: list[dict] = []
+    for fila in filas[:50]:
+        if not isinstance(fila, (list, tuple)):
+            continue
+        tabla.append(dict(zip([str(columna) for columna in columnas], fila)))
+    return tabla or None
+
+
+def _grafica_de_salida(salida: str) -> tuple[bytes | None, dict, list[dict] | None]:
+    """Decodifica la salida JSON de una tool de gráfica, sin confiar en su forma."""
+    try:
+        datos = json.loads(salida or "{}")
+    except (TypeError, ValueError):
+        return None, {}, None
+    if not isinstance(datos, dict) or datos.get("error"):
+        return None, {}, None
+    try:
+        png = base64.b64decode(str(datos.get("png_base64") or ""))
+    except Exception:  # noqa: BLE001 - salida externa mal formada
+        return None, {}, None
+    if not png:
+        return None, {}, None
+    tabla = _datos_para_ui({
+        "columnas": datos.get("columnas") or [],
+        "filas": datos.get("filas") or [],
+    })
+    return png, dict(datos.get("especificacion") or {}), tabla
+
+
 def _pasos_de_herramientas(herramientas: list[dict]) -> tuple[list[Paso], list[str], list[str], list[str]]:
     pasos: list[Paso] = []
     agentes: list[str] = []
@@ -364,13 +431,25 @@ def preguntar_orquestador(
 
     fuentes: list[str] = []
     sql: str | None = None
+    grafica: bytes | None = None
+    datos: list[dict] | None = None
     for herramienta in herramientas:
         salida = str(herramienta.get("salida") or "")
         for fuente in _fuentes_de_salida(salida):
             if fuente not in fuentes:
                 fuentes.append(fuente)
-        if herramienta.get("name") == "mcp_analizar_datos":
+        nombre_tool = herramienta.get("name")
+        if nombre_tool == "mcp_analizar_datos":
             sql = _sql_de_salida(salida) or sql
+        elif nombre_tool == "mcp_graficar_consulta":
+            argumentos_sql = herramienta.get("args") or {}
+            if isinstance(argumentos_sql, dict):
+                sql = str(argumentos_sql.get("sql") or sql or "") or None
+        if nombre_tool in {"mcp_graficar_consulta", "graficar_consulta"}:
+            png, _especificacion, tabla = _grafica_de_salida(salida)
+            if png is not None:
+                grafica = png
+                datos = tabla or datos
         argumentos = herramienta.get("args") or {}
         ruta = argumentos.get("image_path") if isinstance(argumentos, dict) else None
         if ruta:
@@ -378,9 +457,48 @@ def preguntar_orquestador(
             if nombre not in fuentes:
                 fuentes.append(nombre)
 
-    texto = (texto or "").strip()
+    # El grafo deja el resultado estructurado del analista en el estado. Es la
+    # fuente más fiable para SQL, tabla y PNG, sobre todo con el hub.
+    estado_grafo = getattr(orquestador, "ultimo_estado_grafo", {}) or {}
+    resultado_analista = (estado_grafo.get("resultados") or {}).get(
+        "data_analyst", {}
+    )
+    if isinstance(resultado_analista, dict):
+        sql = resultado_analista.get("sql") or sql
+        if isinstance(resultado_analista.get("grafica"), bytes):
+            grafica = resultado_analista["grafica"]
+        datos = _datos_para_ui(resultado_analista.get("datos")) or datos
+        if resultado_analista.get("grafica_error") and not any(
+            "mcp_graficar_consulta" in alerta
+            for alerta in alertas
+        ):
+            alertas.append(
+                "No se pudo generar la gráfica: "
+                f"{resultado_analista['grafica_error']}"
+            )
+
+    texto = limpiar_base64((texto or "").strip())
     if not texto:
         texto = "El orquestador no devolvió una respuesta."
+
+    if isinstance(resultado_analista, dict) and resultado_analista:
+        texto, pii = redactar_pii(texto)
+        if pii:
+            alertas.append(
+                "Se ocultaron datos personales en la respuesta: "
+                + ", ".join(sorted(set(pii)))
+            )
+        no_verificadas = (
+            (resultado_analista.get("evidencia") or {}).get(
+                "cifras_no_verificadas"
+            )
+            or []
+        )
+        if no_verificadas:
+            alertas.append(
+                "Cifras no encontradas en la evidencia: "
+                + ", ".join(str(valor) for valor in no_verificadas[:5])
+            )
 
     modo = getattr(orquestador, "modo_efectivo", None)
     nota = (
@@ -396,6 +514,8 @@ def preguntar_orquestador(
         "fuentes": fuentes,
         "alertas": alertas,
         "sql": sql,
+        "datos": datos,
+        "grafica": grafica,
         "resultados": herramientas,
         "duracion": duracion,
         "modelo": getattr(orquestador, "modelo", None),

@@ -34,6 +34,7 @@ from proyecto.memory.long_term import LongTermMemory
 _RAIZ = Path(__file__).resolve().parents[2]
 
 logger = logging.getLogger(__name__)
+MCP_TIMEOUT = float(os.getenv("MCP_TIMEOUT", "180"))
 
 AGENTES = {
     "data_steward": data_steward_agent,
@@ -58,6 +59,8 @@ Las herramientas disponibles son:
   consulta incluya una ruta de imagen existente.
 
 Reglas:
+_ A cualquier tema ajeno a temas bancarios o financieros, no contestar e indicarle al usuario que
+ese no es tu propósito.
 - Si la consulta requiere un especialista, llama a la herramienta adecuada.
   Puedes llamar a más de una si la consulta lo necesita.
 - Para preguntas sobre leyes, protección de datos, privacidad, avisos de
@@ -75,9 +78,13 @@ Reglas:
   para preguntas de metadatos ni data_steward para calcular métricas.
 - En la salida de data_steward, `catalogo_tablas` es solo el inventario de
   tablas disponibles; no son relaciones. Las relaciones reales están en
-  `relaciones` y son foreign keys declaradas.
+  `relaciones` y son foreign keys declaradas. Para tablas `raw_*` con hallazgos
+  esperados, usa `mcp_evaluar_calidad` y compara esperado contra encontrado.
 - mcp_analizar_datos recibe la pregunta en lenguaje natural, no una consulta
   SQL. Pásale el texto del usuario y deja que el Data Analyst escriba el SQL.
+- Si el usuario pide una gráfica o visualización, después de mcp_analizar_datos
+  llama a mcp_graficar_consulta con el SQL exacto que devolvió el analista.
+  No inventes el SQL ni grafiques identificadores o datos personales.
 - Si el usuario responde con una aclaración o confirmación (por ejemplo "sí",
   "por género" o "solo 2026") a una pregunta anterior de Data Analyst, vuelve
   a llamar mcp_analizar_datos con una consulta autocontenida que incluya la
@@ -176,7 +183,7 @@ def _llamar_mcp(servidor: str, herramienta: str, argumentos: dict) -> str:
     )
 
     async def ejecutar() -> str:
-        async with Client(transporte) as cliente:
+        async with Client(transporte, timeout=MCP_TIMEOUT) as cliente:
             resultado = await cliente.call_tool(herramienta, argumentos)
             if resultado.is_error:
                 raise RuntimeError(
@@ -226,6 +233,20 @@ def mcp_validar_calidad_datos(tabla: str = "") -> str:
 
 
 @tool
+def mcp_evaluar_calidad(tabla: str = "") -> str:
+    """Compara una tabla contra los hallazgos esperados de calidad.
+
+    Args:
+        tabla: Tabla o vista a evaluar. Vacío usa raw_clientes.
+    """
+    return _llamar_mcp(
+        "data_steward_server",
+        "evaluar_calidad",
+        {"tabla": tabla},
+    )
+
+
+@tool
 def mcp_buscar_normatividad(query: str) -> str:
     """Busca políticas, manuales, glosario y normativa en Pinecone."""
     return _llamar_mcp(
@@ -244,6 +265,35 @@ def mcp_analizar_datos(consulta: str) -> str:
         {
             "consulta": consulta,
             "contexto": _CONTEXTO_ANALISTA.get(),
+            "perfil": _PERFIL_ANALISTA.get() or None,
+        },
+    )
+
+
+@tool
+def mcp_graficar_consulta(
+    sql: str,
+    tipo: str = "auto",
+    eje_x: str = "",
+    eje_y: str = "",
+    titulo: str = "",
+    orden: str = "ninguno",
+) -> str:
+    """Genera una gráfica PNG a partir de una consulta SQL agregada.
+
+    Úsala solo cuando el usuario pida una gráfica o visualización. Reutiliza el
+    SQL que ya devolvió mcp_analizar_datos y respeta el perfil de la sesión.
+    """
+    return _llamar_mcp(
+        "data_analyst_server",
+        "graficar_consulta",
+        {
+            "sql": sql,
+            "tipo": tipo,
+            "eje_x": eje_x,
+            "eje_y": eje_y,
+            "titulo": titulo,
+            "orden": orden,
             "perfil": _PERFIL_ANALISTA.get() or None,
         },
     )
@@ -272,8 +322,10 @@ def mcp_describir_imagen(image_path: str) -> str:
 HERRAMIENTAS_MCP = [
     mcp_inspeccionar_dataset,
     mcp_validar_calidad_datos,
+    mcp_evaluar_calidad,
     mcp_buscar_normatividad,
     mcp_analizar_datos,
+    mcp_graficar_consulta,
     mcp_extraer_texto_imagen,
     mcp_describir_imagen,
 ]
@@ -305,6 +357,7 @@ class Orquestador:
         self.herramientas = list(HERRAMIENTAS_MCP)
         self.agentes_invocados: list[str] = []  # trazas de la última consulta
         self.ultimas_herramientas: list[dict] = []  # nombre, args, salida, estado
+        self.ultimo_estado_grafo: dict = {}  # resultados estructurados del turno
         self._agente = None
         self._mensajes: list = []  # historial de la conversación
         self._documentos: list[dict] = []  # OCR/descripción usados como contexto
@@ -555,6 +608,7 @@ class Orquestador:
 
         ``perfil`` es el contexto de sesión autenticada (rol y cliente_id).
         """
+        self.ultimo_estado_grafo = {}
         if self.modo == "hub":
             return self._procesar_hub(consulta, perfil=perfil)
 
@@ -586,6 +640,7 @@ class Orquestador:
         if not respuesta:
             raise RuntimeError("El grafo terminó sin respuesta.")
 
+        self.ultimo_estado_grafo = estado
         trazas = list(estado.get("trazas") or [])
         self.ultimas_herramientas = trazas
         self.agentes_invocados = [
@@ -702,6 +757,7 @@ class Orquestador:
         self._mensajes = []
         self.agentes_invocados = []
         self.ultimas_herramientas = []
+        self.ultimo_estado_grafo = {}
         self._documentos = []
         self._imagen_pendiente = None
         self._ultimo_agente = None
