@@ -28,7 +28,8 @@ AGENTS.md
 
 # DeepEval: caché y resultados locales
 .deepeval/
-deepeval/resultados/
+deepeval/resultados/*
+!deepeval/resultados/consolidado_20261110.md
 
 # Datos locales de prueba (no se suben)
 files/Base Cards para TEC - Diccionario de Variables.csv

@@ -119,6 +119,12 @@ indica el archivo.
   ajusta solo `agente.py`.
 - **Nuevo especialista o herramienta:** crea `casos/<nombre>.yaml`.
 
+## Resultados
+
+El consolidado de la última corrida de 30 casos está en
+[`resultados/consolidado_20261110.md`](resultados/consolidado_20261110.md).
+Los JSON completos quedan locales e ignorados.
+
 ## Límites
 
 - `fidelidad` solo es útil con Data Steward. Normatividad y Data Analyst
