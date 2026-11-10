@@ -8,6 +8,8 @@ from typing import Any
 
 import yaml
 
+from proyecto.config.models import modelo_de
+
 logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -66,10 +68,10 @@ def config_from_file(path: Path | None = None) -> MemoryConfig:
 class LongTermMemory:
     def __init__(
         self,
-        model: str = "llama3.1:latest",
+        model: str | None = None,
         config: MemoryConfig | None = None,
     ) -> None:
-        self.model = model
+        self.model = model or modelo_de("orchestrator")
         self.config = config or config_from_file()
         self._turns = 0
         self._llm = None

@@ -4,6 +4,7 @@
 
 from langchain_core.tools import tool
 
+from proyecto.config.models import modelo_de
 from proyecto.mcp_servers.mcp_client import llamar_herramienta, llamar_herramienta_mcp
 
 
@@ -29,7 +30,7 @@ class ComplianceAgent:
     def __init__(self):
         self.nombre = "compliance"
         self.descripcion = "Reglas regulatorias: KYC, AML, reportes al regulador."
-        self.modelo = "llama3.1:latest"
+        self.modelo = modelo_de("compliance")
         self.herramientas = [revisar_compliance_demo_mcp.name]
 
     def procesar(self, consulta: str) -> str:

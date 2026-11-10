@@ -34,6 +34,7 @@ from proyecto.agents.document_intelligence_agent import (
     PALABRAS_DESCRIPCION,
     PATRON_RUTA_IMAGEN,
 )
+from proyecto.config.models import modelo_de
 from proyecto.orchestration.orquestador import (
     _es_consulta_normativa,
     _llamar_mcp,
@@ -199,6 +200,18 @@ def _es_seguimiento(consulta: str) -> bool:
     return len(palabras) <= 8 and bool(_RE_SEGUIMIENTO.search(texto))
 
 
+def _es_inventario_sql(texto: str) -> bool:
+    return bool(
+        re.search(r"\b(?:tablas|vistas)\b", texto)
+        and re.search(
+            r"\b(?:disponibles|existen|hay|listar|lista|listado|catalogo|inventario)\b",
+            texto,
+        )
+        and not _RE_CALIDAD.search(texto)
+        and not re.search(r"\b(?:csv|datasets?|archivos?)\b", texto)
+    )
+
+
 def planear_rutas(
     consulta: str,
     ultimo_agente: str | None = None,
@@ -232,17 +245,18 @@ def planear_rutas(
     analitica = bool(_RE_ANALITICA.search(texto))
     normativa = _es_consulta_normativa(consulta)
     compliance = bool(_RE_COMPLIANCE.search(texto))
+    inventario_sql = _es_inventario_sql(texto)
 
     rutas: list[str] = []
     if normativa:
         rutas.append("normatividad_rag")
-    if metadata:
+    if metadata and not inventario_sql:
         rutas.append("data_steward")
 
     # Si la consulta menciona una tabla concreta y pide metadatos (por ejemplo
     # "cuántas filas tiene raw_clientes"), Data Steward es el especialista
     # correcto; no hace falta mandarla también al Data Analyst.
-    if analitica and not (metadata and tabla):
+    if inventario_sql or (analitica and not (metadata and tabla)):
         rutas.append("data_analyst")
 
     if compliance and not rutas:
@@ -479,6 +493,44 @@ def _contexto_previo(estado: EstadoGrafo) -> str:
 
 
 def _nodo_data_analyst(estado: EstadoGrafo) -> dict:
+    if _es_inventario_sql(_normalizar(estado.get("consulta") or "")):
+        salida, traza, estado_llamada = _ejecutar_mcp(
+            "data_analyst_server", "listar_tablas", {}, "mcp_listar_tablas"
+        )
+        datos = _json_dict(salida)
+        valido = (
+            estado_llamada == "ok"
+            and datos is not None
+            and "error" not in datos
+            and isinstance(datos.get("motor"), str)
+            and all(
+                isinstance(datos.get(tipo), list)
+                and all(isinstance(nombre, str) and nombre for nombre in datos[tipo])
+                and len(set(datos[tipo])) == len(datos[tipo])
+                for tipo in ("tablas", "vistas")
+            )
+        )
+        if valido:
+            # El JSON MCP es la fuente de verdad; no se resume con un modelo.
+            respuesta = (
+                f"Motor: {datos['motor']}. "
+                f"Inventario disponible: {len(datos['tablas'])} tablas y "
+                f"{len(datos['vistas'])} vistas."
+            )
+            for tipo in ("tablas", "vistas"):
+                respuesta += f"\n\n**{tipo.capitalize()} ({len(datos[tipo])})**\n"
+                respuesta += "\n".join(f"- `{nombre}`" for nombre in datos[tipo]) or "(ninguna)"
+        else:
+            estado_llamada = "error"
+            respuesta = "No se pudo verificar el inventario de tablas y vistas devuelto por MCP."
+            traza["estado"] = "error"
+        return {
+            "resultados": {"data_analyst": {
+                "agente": "data_analyst", "respuesta": respuesta, "estado": estado_llamada,
+            }},
+            "trazas": [traza],
+            "errores": [respuesta] if estado_llamada == "error" else [],
+        }
     contexto = estado.get("contexto_analista") or ""
     previo = _contexto_previo(estado)
     if previo:
@@ -675,7 +727,7 @@ def _respuesta_directa(estado: EstadoGrafo) -> str:
     mensajes = [{"role": "system", "content": system}, *historial]
     try:
         respuesta = ChatOllama(
-            model=estado.get("modelo") or "qwen2.5:7b-instruct",
+            model=estado.get("modelo") or modelo_de("orchestrator"),
             temperature=0,
         ).invoke(mensajes)
         texto = _texto(getattr(respuesta, "content", respuesta)).strip()
@@ -790,7 +842,7 @@ def ejecutar_grafo(
     historial: list | None = None,
     contexto_documentos: str = "",
     contexto_analista: str = "",
-    modelo: str = "qwen2.5:7b-instruct",
+    modelo: str | None = None,
     imagen_pendiente: str | None = None,
     ultimo_agente: str | None = None,
     perfil: dict | None = None,
@@ -801,7 +853,7 @@ def ejecutar_grafo(
         "historial": list(historial or []),
         "contexto_documentos": contexto_documentos,
         "contexto_analista": contexto_analista,
-        "modelo": modelo,
+        "modelo": modelo or modelo_de("orchestrator"),
         "perfil": dict(perfil or {}),
         "imagen_pendiente": (
             str(Path(imagen_pendiente).expanduser().resolve())

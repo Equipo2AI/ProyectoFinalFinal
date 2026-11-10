@@ -47,19 +47,33 @@ utiliza para rechazar ese tipo de consultas; las reglas reales quedan para fase 
 ## Requisitos
 
 - Python >= 3.12 y [`uv`](https://docs.astral.sh/uv/).
-- Ollama con los modelos:
-  - `qwen2.5:7b-instruct` (orquestador y Data Analyst)
-  - `llama3.1:latest` (Data Steward y Normatividad)
-  - `qwen2.5vl:7b` (lectura de imágenes; `qwen2.5vl:3b` es una alternativa ligera)
+- Ollama >= 0.40.15 (`mimo-v2.6` requiere esa versión, según los requisitos del equipo).
+- Los modelos oficiales por agente se leen de `proyecto/config/models.yaml`;
+  ese archivo es la fuente de sus nombres y asignaciones.
+- En equipos de 16 GB los modelos compiten por memoria; Ollama descarga de
+  memoria el que queda inactivo.
 - Claves de Pinecone para el corpus normativo (`PINECONE_API_KEY`, `INDEX_NAME`).
 
-```bash
+Preparar el entorno Python si aún no existe:
+
+```powershell
 uv sync
-ollama serve
-ollama pull qwen2.5:7b-instruct
-ollama pull llama3.1:latest
-ollama pull qwen2.5vl:7b
 ```
+
+Abre Ollama o ejecuta `ollama serve`. Desde PowerShell, en la raíz del
+repositorio y con el entorno virtual ya preparado:
+
+```powershell
+.\.venv\Scripts\python.exe -m proyecto.config.preparar_modelos
+.\.venv\Scripts\python.exe -m proyecto.config.preparar_modelos --instalar
+```
+
+El primer comando comprueba el servicio y los modelos; termina con codigo 1
+si faltan modelos y 2 si hay un error de conexion o configuracion. El segundo
+instala solo los faltantes con sus nombres oficiales y verifica el resultado.
+Las descargas ocupan varios GB. Abre Ollama (o ejecuta `ollama serve`) antes.
+Se respeta `OLLAMA_HOST` si esta definido. Pega solo el comando, sin el prompt
+ni la salida de PowerShell. No requiere nuevas dependencias Python.
 
 `.env.example` sirve como plantilla de `.env`. `DATABASE_URL` es opcional: si no
 se define, se usa la ruta de `proyecto/config/data_connection.yaml` y, en su
@@ -85,7 +99,7 @@ revisión, no como instrucción para borrar datos.
 ## Interfaz Streamlit
 
 ```bash
-uv run --with streamlit streamlit run proyecto/ui/app.py
+.\.venv\Scripts\python.exe -m streamlit run proyecto/ui/app.py
 ```
 
 El panel de traza muestra, por turno, la herramienta MCP invocada, sus
@@ -100,18 +114,21 @@ Ejemplo de una consulta de normatividad con evidencia y fuentes:
 
 | Agente | Descripción | Modelo | Herramientas MCP |
 |---|---|---|---|
-| `data_steward` | Gobierno y calidad de datos bancarios | `llama3.1:latest` | `inspeccionar_dataset`, `validar_calidad_datos` |
-| `data_analyst` | Análisis cuantitativo sobre datos bancarios | `qwen2.5:7b-instruct` | `analizar_datos`, `listar_tablas`, `describir_tabla`, `valores_columna`, `ejecutar_consulta` |
+| `orchestrator` | Enruta la consulta y compone la respuesta | `mimo-v2.6` | — |
+| `data_steward` | Gobierno y calidad de datos bancarios | `qwen2.5:7b-instruct` | `inspeccionar_dataset`, `validar_calidad_datos` |
+| `data_analyst` | Análisis cuantitativo sobre datos bancarios | `mimo-v2.6` | `analizar_datos`, `listar_tablas`, `describir_tabla`, `valores_columna`, `ejecutar_consulta` |
 | `normatividad_rag` | Búsqueda semántica sobre documentación | `llama3.1:latest` | `buscar_normatividad` |
 | `document_intelligence` | Lectura de imágenes y documentos | `qwen2.5vl:7b` | `extraer_texto_imagen`, `describir_imagen` |
-| `compliance` | Reglas regulatorias: KYC, AML | `llama3.1:latest` | `revisar_compliance_demo` (demostración, fase 2) |
+| `compliance` | Reglas regulatorias: KYC, AML | `qwen2.5:7b-instruct` | `revisar_compliance_demo` (demostración, fase 2) |
 
 En el Data Analyst, `analizar_datos` recibe la pregunta en lenguaje natural y la
 resuelve con las cuatro herramientas SQL (`listar_tablas`, `describir_tabla`,
-`valores_columna` y `ejecutar_consulta`).
+`valores_columna` y `ejecutar_consulta`). El agente usa `mimo-v2.6`: en las
+pruebas, `qwen2.5-coder:7b` describió las tablas pero no ejecutó las
+herramientas SQL.
 
-El orquestador emplea `qwen2.5:7b-instruct` para enrutar cuando las reglas
-deterministas no alcanzan.
+El orquestador usa `mimo-v2.6` para las respuestas directas; en modo `hub`
+también enruta cuando las reglas deterministas no alcanzan.
 
 ## Integración MCP
 
@@ -179,7 +196,7 @@ indica respuesta correcta y **No**, fallo.
 |---|---|---|---|
 | ¿Cuál es la estructura de las tablas? | Data Steward | No: alucina y agrega columnas que no existen, por ejemplo "puntaje de buró de crédito". | Sin tabla explícita, el verificador no contrasta la salida contra el esquema real y la síntesis rellena el hueco. |
 | ¿Qué relación tiene la ley de protección de datos con los datos almacenados? | Normatividad (solo) | No: no conecta los dos puntos; se queda en la fase de recuperación del RAG. | Falta un plan multiagente que cruce evidencia normativa con metadatos. El plan actual enruta a un solo especialista. |
-| Consultas SQL complejas (varios joins, condiciones o pasos) | Data Analyst | No: el ciclo no termina; se corta antes de verificar y sintetizar. | El orquestador de 7B no sostiene el plan; el verificador reintenta una sola vez y no hay descomposición en pasos. |
+| Consultas SQL complejas (varios joins, condiciones o pasos) | Data Analyst | No: el ciclo no termina; se corta antes de verificar y sintetizar. | El orquestador de 9B no sostiene el plan; el verificador reintenta una sola vez y no hay descomposición en pasos. |
 | Preguntas donde el agente debe pedir una aclaración al usuario | Cualquiera | No: se interrumpe el turno. | No existe un nodo de aclaración: el grafo no puede suspender la ejecución para preguntar y retomar. |
 | Preguntas que exigen inferir entre dos ideas | Cualquiera | No: responde una parte o cambia de tema. | El sintetizador compone bloques, no razona sobre ellos; no hay contraste entre evidencias. |
 
@@ -194,8 +211,8 @@ está en el orquestador, no en los especialistas:
    exista en el esquema; de ahí que aparezcan columnas inventadas.
 3. No hay nodo de aclaración, por lo que una pregunta incompleta interrumpe el
    ciclo en lugar de volver al usuario.
-4. Los modelos de 7B sostienen bien una herramienta aislada, pero pierden el hilo
-   en consultas SQL largas o en inferencias.
+4. Los modelos de 7-9B sostienen bien una herramienta aislada, pero pierden el
+   hilo en consultas SQL largas o en inferencias.
 
 Las conclusiones son preliminares y se basan en los casos observados. La
 siguiente iteración abordará esta parte del orquestador.
@@ -230,8 +247,8 @@ planear -> despachar -> especialista -> despachar -> ... -> verificar
 - `planear` decide rutas con reglas deterministas y auditables.
 - `despachar` ejecuta los especialistas en orden y comparte el estado.
 - `verificar` revisa si todos los especialistas respondieron; si alguno falló,
-  reintenta una vez. El reintento es único: el fallo típico de un modelo de 7B es
-  de planificación, y repetir el mismo plan no lo corrige, solo suma latencia. Si
+  reintenta una vez. El reintento es único: el fallo típico de un modelo pequeño
+  es de planificación, y repetir el mismo plan no lo corrige, solo suma latencia. Si
   el reintento también falla, el sintetizador responde con lo que sí llegó y deja
   el error visible en la traza.
 - `sintetizar` compone la respuesta final. Si hay un solo especialista, conserva
@@ -312,9 +329,10 @@ La conexión a datos se toma de `config/data_connection.yaml`, que apunta a
 La memoria de largo plazo se configura en `config/memory.yaml` y está desactivada
 por defecto.
 
-`config/models.yaml` documenta el modelo de cada agente, pero todavía no se carga
-en tiempo de ejecución: los valores están definidos en el código. Modificarlo no
-tiene efecto hasta que la carga se centralice.
+El modelo de cada agente se toma de `config/models.yaml` al inicializar el agente.
+Si el archivo o la entrada faltan, se usa el valor por defecto de
+`proyecto/config/models.py`. `DOCUMENT_INTELLIGENCE_MODEL` sobrescribe el modelo
+de visión.
 
 ## Límites conocidos
 
@@ -326,7 +344,7 @@ Estos límites corresponden a la arquitectura y a las pruebas con agentes:
   en el esquema; de ahí que puedan aparecer columnas inexistentes.
 - No existe un nodo de aclaración: una pregunta incompleta interrumpe el ciclo en
   lugar de volver al usuario.
-- Los modelos de 7B resuelven bien una herramienta aislada, pero pierden
+- Los modelos de 7-9B resuelven bien una herramienta aislada, pero pierden
   consistencia en SQL largo o en inferencias entre fuentes.
 - La evaluación es manual: las pruebas son scripts y no una suite con pytest ni
   integración continua.

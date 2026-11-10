@@ -1,16 +1,16 @@
-# Agent model configuration.
-# Referencia de los modelos que usa cada agente. Hoy cada agente lee su modelo
-# desde su propio código; este archivo documenta el valor efectivo.
-# Si cambias un modelo, actualiza también el agente correspondiente.
+# Modelos por agente. Es la fuente efectiva: el código lee este archivo al
+# inicializar cada agente. Si falta el archivo o una entrada, se usa el valor
+# por defecto definido en proyecto/config/models.py.
+# DOCUMENT_INTELLIGENCE_MODEL puede sobrescribir el modelo de visión.
 
 agents:
   orchestrator:
     provider: ollama
-    model: "qwen2.5:7b-instruct"
+    model: "mimo-v2.6"
 
   data_steward:
     provider: ollama
-    model: "llama3.1:latest"
+    model: "qwen2.5:7b-instruct"
 
   normatividad_rag:
     provider: ollama
@@ -18,7 +18,7 @@ agents:
 
   data_analyst:
     provider: ollama
-    model: "qwen2.5:7b-instruct"
+    model: "mimo-v2.6"
 
   document_intelligence:
     provider: ollama
@@ -26,4 +26,4 @@ agents:
 
   compliance:
     provider: ollama
-    model: "llama3.1:latest"
+    model: "qwen2.5:7b-instruct"

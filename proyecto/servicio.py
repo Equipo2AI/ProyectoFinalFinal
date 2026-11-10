@@ -33,6 +33,7 @@ _TOOL_A_AGENTE = {
     "mcp_validar_calidad_datos": "data_steward",
     "mcp_buscar_normatividad": "normatividad_rag",
     "mcp_analizar_datos": "data_analyst",
+    "mcp_listar_tablas": "data_analyst",
     "mcp_extraer_texto_imagen": "document_intelligence",
     "mcp_describir_imagen": "document_intelligence",
 }

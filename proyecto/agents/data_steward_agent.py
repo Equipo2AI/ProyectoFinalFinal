@@ -16,6 +16,8 @@ from langchain_core.tools import tool
 from langchain_ollama import ChatOllama
 from sqlalchemy import inspect
 
+from proyecto.config.models import modelo_de
+
 from .database import (
     DEFAULT_DB_NAME,
     create_readonly_engine,
@@ -527,7 +529,7 @@ class DataStewardAgent:
             "Revisa estructura y calidad de la base sintética: tablas, columnas, "
             "faltantes, duplicados y claves repetidas, sin revelar registros."
         )
-        self.modelo = "llama3.1:latest"
+        self.modelo = modelo_de("data_steward")
         self._tools = [inspeccionar_dataset, validar_calidad_datos]
         self.herramientas = [herramienta.name for herramienta in self._tools]
         self._agent = None
