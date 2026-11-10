@@ -10,12 +10,12 @@ import yaml
 RUTA_MODELOS = Path(__file__).with_name("models.yaml")
 
 MODELOS_POR_DEFECTO = {
-    "orchestrator": "qwen2.5:7b-instruct",
-    "data_steward": "llama3.1:latest",
+    "orchestrator": "mimo-v2.6",
+    "data_steward": "qwen2.5:7b-instruct",
     "normatividad_rag": "llama3.1:latest",
-    "data_analyst": "qwen2.5:7b-instruct",
+    "data_analyst": "mimo-v2.6",
     "document_intelligence": "qwen2.5vl:7b",
-    "compliance": "llama3.1:latest",
+    "compliance": "qwen2.5:7b-instruct",
 }
 
 
