@@ -47,23 +47,33 @@ utiliza para rechazar ese tipo de consultas; las reglas reales quedan para fase 
 ## Requisitos
 
 - Python >= 3.12 y [`uv`](https://docs.astral.sh/uv/).
-- Ollama >= 0.40.15 (`mimo-v2.6` requiere esa versión).
-- Modelos (en un equipo de 16 GB, `mimo-v2.6` y `qwen2.5vl:7b` compiten por
-  memoria; Ollama descarga el que queda inactivo):
-  - `mimo-v2.6` (orquestador y Data Analyst)
-  - `qwen2.5:7b-instruct` (Data Steward y Compliance)
-  - `llama3.1:latest` (Normatividad)
-  - `qwen2.5vl:7b` (lectura de imágenes; `qwen2.5vl:3b` es una alternativa ligera)
+- Ollama >= 0.40.15 (`mimo-v2.6` requiere esa versión, según los requisitos del equipo).
+- Los modelos oficiales por agente se leen de `proyecto/config/models.yaml`;
+  ese archivo es la fuente de sus nombres y asignaciones.
+- En equipos de 16 GB los modelos compiten por memoria; Ollama descarga de
+  memoria el que queda inactivo.
 - Claves de Pinecone para el corpus normativo (`PINECONE_API_KEY`, `INDEX_NAME`).
 
-```bash
+Preparar el entorno Python si aún no existe:
+
+```powershell
 uv sync
-ollama serve
-ollama pull mimo-v2.6
-ollama pull qwen2.5:7b-instruct
-ollama pull llama3.1:latest
-ollama pull qwen2.5vl:7b
 ```
+
+Abre Ollama o ejecuta `ollama serve`. Desde PowerShell, en la raíz del
+repositorio y con el entorno virtual ya preparado:
+
+```powershell
+.\.venv\Scripts\python.exe -m proyecto.config.preparar_modelos
+.\.venv\Scripts\python.exe -m proyecto.config.preparar_modelos --instalar
+```
+
+El primer comando comprueba el servicio y los modelos; termina con codigo 1
+si faltan modelos y 2 si hay un error de conexion o configuracion. El segundo
+instala solo los faltantes con sus nombres oficiales y verifica el resultado.
+Las descargas ocupan varios GB. Abre Ollama (o ejecuta `ollama serve`) antes.
+Se respeta `OLLAMA_HOST` si esta definido. Pega solo el comando, sin el prompt
+ni la salida de PowerShell. No requiere nuevas dependencias Python.
 
 `.env.example` sirve como plantilla de `.env`. `DATABASE_URL` es opcional: si no
 se define, se usa la ruta de `proyecto/config/data_connection.yaml` y, en su
@@ -89,7 +99,7 @@ revisión, no como instrucción para borrar datos.
 ## Interfaz Streamlit
 
 ```bash
-uv run --with streamlit streamlit run proyecto/ui/app.py
+.\.venv\Scripts\python.exe -m streamlit run proyecto/ui/app.py
 ```
 
 El panel de traza muestra, por turno, la herramienta MCP invocada, sus
