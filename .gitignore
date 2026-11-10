@@ -28,3 +28,4 @@ AGENTS.md
 
 # Herramientas
 .ruff_cache/
+.local_auth/

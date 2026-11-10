@@ -242,10 +242,16 @@ def planear_rutas(
     tabla = _tabla_mencionada(consulta)
     metadata = bool(_RE_METADATA.search(texto))
     analitica = bool(_RE_ANALITICA.search(texto))
-    normativa = _es_consulta_normativa(consulta)
+    normativa = _es_consulta_normativa(consulta) or bool(re.search(r'\b(?:portal|terminos|historial crediticio)\b', texto))
     compliance = bool(_RE_COMPLIANCE.search(texto))
     inventario_sql = _es_inventario_sql(texto)
 
+    if normativa:
+        return ['normatividad_rag']
+    bancaria = bool(re.search(r'\b(?:cuentas?|movimientos?|saldos?|gaste|gastos|retiros|estado de cuenta|perfil|rfc|promotores|sucursales)\b', texto))
+    dataset = bool(tabla or re.search(r'\b(?:csv|archivo|dataset|pii|calidad|faltantes|nulos|duplicados|columnas)\b', texto))
+    if bancaria and not dataset:
+        return ['data_analyst']
     rutas: list[str] = []
     if normativa:
         rutas.append("normatividad_rag")
