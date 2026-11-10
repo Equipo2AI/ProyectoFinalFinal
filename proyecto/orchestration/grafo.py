@@ -125,6 +125,7 @@ class EstadoGrafo(TypedDict, total=False):
     contexto_documentos: str
     contexto_analista: str
     modelo: str
+    perfil: dict
     imagen_pendiente: str | None
     ultimo_agente: str | None
 
@@ -539,6 +540,7 @@ def _nodo_data_analyst(estado: EstadoGrafo) -> dict:
     argumentos = {
         "consulta": estado.get("consulta") or "",
         "contexto": contexto,
+        "perfil": estado.get("perfil") or {},
     }
     salida, traza, estado_llamada = _ejecutar_mcp(
         "data_analyst_server",
@@ -843,6 +845,7 @@ def ejecutar_grafo(
     modelo: str | None = None,
     imagen_pendiente: str | None = None,
     ultimo_agente: str | None = None,
+    perfil: dict | None = None,
 ) -> EstadoGrafo:
     """Ejecuta el grafo para una consulta y devuelve el estado final."""
     estado_inicial: EstadoGrafo = {
@@ -851,6 +854,7 @@ def ejecutar_grafo(
         "contexto_documentos": contexto_documentos,
         "contexto_analista": contexto_analista,
         "modelo": modelo or modelo_de("orchestrator"),
+        "perfil": dict(perfil or {}),
         "imagen_pendiente": (
             str(Path(imagen_pendiente).expanduser().resolve())
             if imagen_pendiente

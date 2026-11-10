@@ -293,8 +293,14 @@ def _registrar_documento_en_orquestador(
         pass
 
 
-def preguntar_orquestador(consulta: str) -> Respuesta:
-    """Atiende una consulta de texto con el orquestador y sus tools MCP."""
+def preguntar_orquestador(
+    consulta: str, perfil: dict | None = None
+) -> Respuesta:
+    """Atiende una consulta de texto con el orquestador y sus tools MCP.
+
+    ``perfil`` describe la sesión autenticada (rol y cliente_id). Es opcional
+    para no romper la UI ni los llamados existentes.
+    """
     inicio = time.perf_counter()
     try:
         orquestador = _get_orquestador()
@@ -315,7 +321,7 @@ def preguntar_orquestador(consulta: str) -> Respuesta:
             resultado["nota"] = "Imagen pendiente · MCP directo"
             return resultado
 
-        texto = orquestador.procesar(consulta)
+        texto = orquestador.procesar(consulta, perfil=perfil)
     except Exception as exc:  # noqa: BLE001 - se informa en la UI
         duracion = round(time.perf_counter() - inicio, 2)
         mensaje = (

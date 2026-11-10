@@ -42,6 +42,14 @@ _TABLAS_EXCLUIDAS = re.compile(
     r"\b(?:" + "|".join(sorted(TABLAS_EXCLUIDAS)) + r")\b",
     re.IGNORECASE,
 )
+# El superusuario puede usar la tabla limpia de personas para auditoría; las
+# tablas crudas siguen fuera de su alcance.
+_TABLAS_EXCLUIDAS_SUPERUSUARIO = re.compile(
+    r"\b(?:"
+    + "|".join(sorted(TABLAS_EXCLUIDAS - {"dim_cliente_persona"}))
+    + r")\b",
+    re.IGNORECASE,
+)
 
 SYSTEM_PROMPT = """
 Eres un Data Analyst bancario. Respondes preguntas con datos consultando
@@ -71,13 +79,78 @@ Reglas:
 - Si la base no tiene la información pedida, dilo explícitamente.
 """
 
+_REGLAS_PII = (
+    "- No muestres datos personales de clientes (nombres, correos, teléfonos,\n"
+    "  CURP, RFC); trabaja con resultados agregados."
+)
+
+
+def _normalizar_perfil(perfil: dict | None) -> tuple[str, int | None]:
+    perfil = perfil or {}
+    rol = str(perfil.get("rol") or "").strip().lower()
+    cliente_id = perfil.get("cliente_id")
+    try:
+        cliente_id = int(cliente_id) if cliente_id is not None else None
+    except (TypeError, ValueError):
+        cliente_id = None
+    return rol, cliente_id
+
+
+def _contexto_sesion(rol: str, cliente_id: int | None) -> str:
+    if rol == "usuario" and cliente_id is not None:
+        return (
+            f"Sesión autenticada: rol=usuario, cliente_id={cliente_id}. "
+            f"El usuario solo puede consultar sus propios datos; filtra por "
+            f"num_cte = {cliente_id}. No consultes ni muestres cuentas o "
+            "clientes de terceros."
+        )
+    if rol == "superusuario":
+        return (
+            "Sesión autenticada: rol=superusuario. El usuario es personal "
+            "autorizado para auditoría y reportes; puede consultar agregados, "
+            "cuentas de terceros y datos personales cuando la pregunta lo "
+            "requiera. No se niegue por privacidad; indique el propósito de "
+            "auditoría y cite la tabla o vista usada."
+        )
+    return ""
+
+
+def _prompt_sesion(rol: str, cliente_id: int | None) -> str:
+    if rol == "usuario" and cliente_id is not None:
+        return (
+            SYSTEM_PROMPT
+            + "\n\nSesión autenticada de usuario normal:\n"
+            f"- El cliente autenticado es num_cte = {cliente_id}.\n"
+            f"- Toda consulta de detalle debe filtrar por num_cte = {cliente_id}.\n"
+            "- Nunca consultes ni muestres datos de otras cuentas o clientes.\n"
+            "- Si la pregunta pide datos de otro cliente o cuenta, niégate y "
+            "explica que solo puedes ver los datos del cliente autenticado.\n"
+        )
+    if rol == "superusuario":
+        base = SYSTEM_PROMPT.replace(
+            _REGLAS_PII,
+            "- Como superusuario autorizado, puedes mostrar datos personales "
+            "de clientes (nombre, RFC, etc.) cuando la pregunta de auditoría lo "
+            "requiera.",
+        )
+        return (
+            base
+            + "\n\nSesión autorizada de superusuario:\n"
+            "- El usuario es personal autorizado para auditoría y reportes.\n"
+            "- Puede consultar datos de cualquier cliente y mostrar nombre, RFC "
+            "u otros datos personales cuando la pregunta lo requiera.\n"
+            "- No se niegue por privacidad; indique que es una consulta de "
+            "auditoría y cite la tabla o vista usada.\n"
+        )
+    return SYSTEM_PROMPT
+
 
 def _normalizar(texto: str) -> str:
     normalizado = unicodedata.normalize("NFKD", texto.casefold())
     return "".join(c for c in normalizado if not unicodedata.combining(c))
 
 
-def _validar_consulta(sql: str) -> str | None:
+def _validar_consulta(sql: str, permitir_pii: bool = False) -> str | None:
     """Return an error message when the SQL is not a single read-only query."""
     consulta = sql.strip().rstrip(";").strip()
     if not consulta:
@@ -88,7 +161,8 @@ def _validar_consulta(sql: str) -> str | None:
         return "Solo se permiten consultas SELECT o WITH ... SELECT."
     if _PALABRAS_PROHIBIDAS.search(consulta):
         return "La consulta contiene una operación de escritura o administración."
-    excluida = _TABLAS_EXCLUIDAS.search(consulta)
+    patron = _TABLAS_EXCLUIDAS_SUPERUSUARIO if permitir_pii else _TABLAS_EXCLUIDAS
+    excluida = patron.search(consulta)
     if excluida:
         return f"La tabla '{excluida.group()}' no está disponible para análisis."
     return None
@@ -125,7 +199,9 @@ class DataAnalystSQLBackend:
         # El engine y el agente se crean al primer uso, igual que en el RAG,
         # para que importar el módulo no requiera una base configurada.
         self._engine = None
-        self._agente = None
+        self._agentes: dict[str, object] = {}
+        self._rol_actual = "usuario"
+        self._cliente_actual: int | None = None
         self._tools = self._crear_herramientas()
         self.herramientas = [t.name for t in self._tools]
 
@@ -135,27 +211,40 @@ class DataAnalystSQLBackend:
             self._engine.dispose()
         self.url_db = url_db
         self._engine = None
+        self._agentes = {}
 
-    def _get_agente(self):
-        if self._agente is None:
+    def _get_agente(self, rol: str = "", cliente_id: int | None = None):
+        clave = f"{rol}:{cliente_id}" if rol else "normal"
+        if clave not in self._agentes:
             from langchain.agents import create_agent
             from langchain_ollama import ChatOllama
 
             llm = ChatOllama(model=self.modelo, temperature=0)
-            self._agente = create_agent(
+            self._agentes[clave] = create_agent(
                 model=llm,
                 tools=self._tools,
-                system_prompt=SYSTEM_PROMPT,
+                system_prompt=_prompt_sesion(rol, cliente_id),
             )
-        return self._agente
+        return self._agentes[clave]
 
-    def procesar(self, consulta: str, contexto: str = "") -> str:
+    def procesar(
+        self,
+        consulta: str,
+        contexto: str = "",
+        perfil: dict | None = None,
+    ) -> str:
+        rol, cliente_id = _normalizar_perfil(perfil)
+        self._rol_actual = rol
+        self._cliente_actual = cliente_id
+        sesion = _contexto_sesion(rol, cliente_id)
+        if sesion:
+            contexto = f"{contexto}\n\n{sesion}".strip()
         contenido = consulta
         if contexto.strip():
             contenido = (
                 f"Contexto de la conversación:\n{contexto}\n\nPregunta: {consulta}"
             )
-        resultado = self._get_agente().invoke(
+        resultado = self._get_agente(rol, cliente_id).invoke(
             {"messages": [{"role": "user", "content": contenido}]},
             config={"recursion_limit": 25},
         )
@@ -175,10 +264,15 @@ class DataAnalystSQLBackend:
                 event.listen(self._engine, "connect", _sqlite_solo_lectura)
         return self._engine
 
-    def _objetos_disponibles(self, inspector) -> tuple[list[str], list[str]]:
+    def _objetos_disponibles(
+        self, inspector, permitir_pii: bool = False
+    ) -> tuple[list[str], list[str]]:
         """Return the tables and views the analyst may use."""
-        tablas = [t for t in inspector.get_table_names() if t not in TABLAS_EXCLUIDAS]
-        vistas = [v for v in inspector.get_view_names() if v not in TABLAS_EXCLUIDAS]
+        excluidas = TABLAS_EXCLUIDAS - (
+            {"dim_cliente_persona"} if permitir_pii else set()
+        )
+        tablas = [t for t in inspector.get_table_names() if t not in excluidas]
+        vistas = [v for v in inspector.get_view_names() if v not in excluidas]
         return tablas, vistas
 
     def _crear_herramientas(self):
@@ -187,7 +281,9 @@ class DataAnalystSQLBackend:
             """Lista las tablas y vistas de la base de datos y el motor SQL (sqlite, postgresql...)."""
             try:
                 engine = self._get_engine()
-                tablas, vistas = self._objetos_disponibles(inspect(engine))
+                tablas, vistas = self._objetos_disponibles(
+                    inspect(engine), permitir_pii=self._rol_actual == "superusuario"
+                )
                 return _json({
                     "motor": engine.dialect.name,
                     "tablas": tablas,
@@ -202,7 +298,9 @@ class DataAnalystSQLBackend:
             try:
                 engine = self._get_engine()
                 inspector = inspect(engine)
-                tablas, vistas = self._objetos_disponibles(inspector)
+                tablas, vistas = self._objetos_disponibles(
+                    inspector, permitir_pii=self._rol_actual == "superusuario"
+                )
                 if tabla not in tablas + vistas:
                     return _json({
                         "error": f"La tabla '{tabla}' no existe o no está disponible.",
@@ -238,12 +336,17 @@ class DataAnalystSQLBackend:
         @tool
         def valores_columna(tabla: str, columna: str) -> str:
             """Devuelve los valores distintos más frecuentes de una columna categórica. Úsala antes de filtrar con WHERE."""
-            if _normalizar(columna) in COLUMNAS_SENSIBLES:
+            if (
+                _normalizar(columna) in COLUMNAS_SENSIBLES
+                and self._rol_actual != "superusuario"
+            ):
                 return _json({"error": "Columna con datos personales: no se muestran valores."})
             try:
                 engine = self._get_engine()
                 inspector = inspect(engine)
-                tablas, vistas = self._objetos_disponibles(inspector)
+                tablas, vistas = self._objetos_disponibles(
+                    inspector, permitir_pii=self._rol_actual == "superusuario"
+                )
                 if tabla not in tablas + vistas:
                     return _json({"error": f"La tabla '{tabla}' no existe o no está disponible."})
                 if columna not in [c["name"] for c in inspector.get_columns(tabla)]:
@@ -267,7 +370,9 @@ class DataAnalystSQLBackend:
         @tool
         def ejecutar_consulta(sql: str) -> str:
             """Ejecuta UNA consulta SELECT de solo lectura y devuelve hasta 50 filas en JSON."""
-            problema = _validar_consulta(sql)
+            problema = _validar_consulta(
+                sql, permitir_pii=self._rol_actual == "superusuario"
+            )
             if problema:
                 return _json({"error": problema})
 
@@ -281,7 +386,7 @@ class DataAnalystSQLBackend:
                 return _json({"error": f"{type(error).__name__}: {str(error).splitlines()[0]}"})
 
             sensibles = [c for c in columnas if _normalizar(c) in COLUMNAS_SENSIBLES]
-            if sensibles:
+            if sensibles and self._rol_actual != "superusuario":
                 return _json({
                     "error": (
                         f"La consulta devuelve datos personales ({', '.join(sensibles)}). "

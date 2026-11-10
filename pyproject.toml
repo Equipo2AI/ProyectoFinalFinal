@@ -33,4 +33,6 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = []
+dev = [
+    "deepeval>=4.3.3",
+]
