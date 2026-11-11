@@ -41,3 +41,4 @@ proyecto/data/bank_metadata_simple.json
 
 # Herramientas
 .ruff_cache/
+.local_auth/

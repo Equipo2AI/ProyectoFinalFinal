@@ -21,6 +21,7 @@ from proyecto.metrics import Metrica
 from proyecto.metrics import catalogo_metricas as listar_catalogo_metricas
 from proyecto.metrics import obtener_metrica
 from proyecto.periods import resolver_periodo as resolver_periodo_determinista
+from proyecto.security.local_auth import audit, principal
 
 load_dotenv()
 
@@ -72,8 +73,11 @@ Proceso:
 
 Reglas:
 - No inventes cifras: todo número de tu respuesta debe venir de un resultado.
-- No muestres datos personales de clientes (nombres, correos, teléfonos,
-  CURP, RFC); trabaja con resultados agregados.
+- No reveles campos personales salvo permiso explicito de auditoria y solo
+  si las herramientas los entregan dentro del alcance autorizado. El usuario
+  normal solo consulta sus propias cuentas; el chat no concede permisos.
+- Los conteos del esquema corresponden a una proyeccion de alcance, no al
+  universo global de la base. No confundas una tabla filtrada con un catalogo.
 - No modifiques datos ni afirmes haberlo hecho.
 - Si la pregunta es ambigua (no dice qué métrica, periodo o tabla), pide
   aclaración o explica el supuesto que usaste.
@@ -206,27 +210,67 @@ class DataAnalystSQLBackend:
         """
         self._rol_actual, self._cliente_actual = _normalizar_perfil(perfil)
 
-    def validar_sql(self, sql: str) -> ResultadoValidacionSQL:
+    def _perfil_actual(self) -> dict[str, object]:
+        """Combina el perfil explícito con la identidad local autenticada.
+
+        La UI usa ``authenticated`` y no pasa ``perfil``. Las pruebas y el CLI
+        pueden fijar el perfil explícitamente; en ese caso tiene prioridad.
+        """
+        rol = self._rol_actual
+        cliente_id = self._cliente_actual
+        if rol == "usuario" and cliente_id is None:
+            try:
+                user = principal()
+            except Exception:  # noqa: BLE001 - sin sesión se conserva el modo demo
+                user = None
+            if user:
+                if user.get("role") == "auditor":
+                    rol = "superusuario"
+                elif user.get("role") == "normal":
+                    clientes = list(user.get("customers") or [])
+                    if len(clientes) == 1:
+                        cliente_id = int(clientes[0])
+        return {"rol": rol, "cliente_id": cliente_id}
+
+    @staticmethod
+    def _auditar(action: str, allowed: bool, sql: str | None = None) -> None:
+        """Registra el evento sin guardar SQL literal ni resultados."""
+        try:
+            user = principal()
+            audit(action, allowed, user.get("subject"), sql)
+        except Exception:  # noqa: BLE001 - la auditoría no debe romper la tool
+            pass
+
+    def validar_sql(
+        self, sql: str, perfil: dict | None = None
+    ) -> ResultadoValidacionSQL:
         """Valida una consulta candidata contra catálogo y perfil actuales."""
         return validar_sql_guard(
             sql,
             engine=self._get_engine(),
-            perfil={
-                "rol": self._rol_actual,
-                "cliente_id": self._cliente_actual,
-            },
+            perfil=perfil or self._perfil_actual(),
             tablas_excluidas=TABLAS_EXCLUIDAS,
             columnas_sensibles=COLUMNAS_SENSIBLES,
             limite_max=MAX_FILAS + 1,
         )
 
-    def _consultar(self, sql: str) -> dict:
-        """Valida y ejecuta una consulta; devuelve un dict serializable."""
+    def _consultar(self, sql: str, *, confiar_en_alcance: bool = False) -> dict:
+        """Valida y ejecuta una consulta; devuelve un dict serializable.
+
+        ``confiar_en_alcance`` se usa solo con los planes deterministas de
+        ``banking_queries``: su SQL lo escribe el servidor y ya se ejecuta
+        contra la proyección SQLite acotada a la identidad autenticada.
+        """
+        perfil_validacion = (
+            {"rol": "superusuario"} if confiar_en_alcance else self._perfil_actual()
+        )
         try:
-            validacion = self.validar_sql(sql)
+            validacion = self.validar_sql(sql, perfil=perfil_validacion)
         except Exception as error:  # noqa: BLE001 - se devuelve al hub
+            self._auditar("sql_validation", False, sql)
             return {"error": f"{type(error).__name__}: {error}"}
         if not validacion.ok:
+            self._auditar("sql_validation", False, sql)
             return {
                 "error": " ".join(validacion.errores),
                 "errores": validacion.errores,
@@ -242,6 +286,7 @@ class DataAnalystSQLBackend:
                 filas = resultado.fetchmany(MAX_FILAS + 1)
         except Exception as error:
             # El mensaje del motor le sirve al LLM para corregir su SQL.
+            self._auditar("sql_execute", False, sql)
             return {"error": f"{type(error).__name__}: {str(error).splitlines()[0]}"}
 
         sensibles = [
@@ -249,7 +294,12 @@ class DataAnalystSQLBackend:
             for columna in columnas
             if _normalizar(columna) in COLUMNAS_SENSIBLES
         ]
-        if sensibles and self._rol_actual != "superusuario":
+        if (
+            sensibles
+            and not confiar_en_alcance
+            and self._perfil_actual()["rol"] != "superusuario"
+        ):
+            self._auditar("sql_pii", False, sql)
             return {
                 "error": (
                     f"La consulta devuelve datos personales "
@@ -265,6 +315,7 @@ class DataAnalystSQLBackend:
         }
         self._ultimo_resultado = resultado
         self._ultimo_sql = validacion.normalizado or sql.strip().rstrip(";")
+        self._auditar("sql_execute", True, sql)
         return resultado
 
     def _get_agente(self, rol: str = "", cliente_id: int | None = None):
@@ -273,7 +324,12 @@ class DataAnalystSQLBackend:
             from langchain.agents import create_agent
             from langchain_ollama import ChatOllama
 
-            llm = ChatOllama(model=self.modelo, temperature=0)
+            llm = ChatOllama(
+                model=self.modelo,
+                temperature=0,
+                reasoning=False,
+                timeout=45,
+            )
             # La gráfica la genera el orquestador o el hub con una tool
             # determinista. El agente interno no debe recibir el PNG en base64
             # ni incrustarlo en su respuesta.
@@ -282,10 +338,17 @@ class DataAnalystSQLBackend:
                 for herramienta in self._tools
                 if herramienta.name != "graficar_consulta"
             ]
+            prompt = _prompt_sesion(rol, cliente_id) + (
+                "\nLa base ya está limitada al alcance autenticado; 'mi' se "
+                "refiere a ese alcance, no a un ID escrito en el chat. No pidas "
+                "más identidad. Solo un auditor con permiso explícito de un campo "
+                "personal puede usarlo si la herramienta se lo entrega para su "
+                "auditoría."
+            )
             self._agentes[clave] = create_agent(
                 model=llm,
                 tools=herramientas,
-                system_prompt=_prompt_sesion(rol, cliente_id),
+                system_prompt=prompt,
             )
         return self._agentes[clave]
 
@@ -295,43 +358,148 @@ class DataAnalystSQLBackend:
         contexto: str = "",
         perfil: dict | None = None,
     ) -> str:
-        self.configurar_perfil(perfil)
+        from proyecto.security.local_auth import authorize_request
+
+        try:
+            user = authorize_request(consulta)
+        except PermissionError as error:
+            return str(error)
+
+        if user["role"] == "auditor" and "audit" not in user["permissions"]:
+            principal("aggregate")
+        audit("analizar_datos", True, user["subject"])
+
+        if perfil:
+            self.configurar_perfil(perfil)
+        elif user["role"] == "auditor":
+            self.configurar_perfil({"rol": "superusuario"})
+        else:
+            clientes = list(user.get("customers") or [])
+            self.configurar_perfil(
+                {
+                    "rol": "usuario",
+                    "cliente_id": clientes[0] if len(clientes) == 1 else None,
+                }
+            )
+
         rol, cliente_id = self._rol_actual, self._cliente_actual
         sesion = _contexto_sesion(rol, cliente_id)
         if sesion:
             contexto = f"{contexto}\n\n{sesion}".strip()
+
+        from proyecto.agents.banking_queries import (
+            format_result,
+            normalize,
+            plan_query,
+        )
+
+        plan = plan_query(consulta)
+        if plan:
+            title, sql = plan
+            result = self._consultar(sql, confiar_en_alcance=True)
+            answer = format_result(title, result, sql)
+            if "estado de cuenta" in normalize(consulta):
+                balance = plan_query(
+                    normalize(consulta).replace("estado de cuenta", "saldo")
+                )
+                if balance:
+                    title2, sql2 = balance
+                    result2 = self._consultar(sql2, confiar_en_alcance=True)
+                    answer = (
+                        format_result(title2, result2, sql2)
+                        + "\n\n"
+                        + answer
+                    )
+            return answer
+
         contenido = consulta
         if contexto.strip():
             contenido = (
                 f"Contexto de la conversación:\n{contexto}\n\nPregunta: {consulta}"
             )
-        resultado = self._get_agente(rol, cliente_id).invoke(
-            {"messages": [{"role": "user", "content": contenido}]},
-            config={"recursion_limit": 25},
-        )
+        from langsmith import tracing_context
+
+        with tracing_context(enabled=False):
+            resultado = self._get_agente(rol, cliente_id).invoke(
+                {"messages": [{"role": "user", "content": contenido}]},
+                config={"recursion_limit": 25},
+            )
         return resultado["messages"][-1].content
 
     def _get_engine(self):
+        try:
+            user = principal()
+        except Exception:  # noqa: BLE001 - demo, CLI y pruebas sin sesión
+            user = None
+
+        if user is None:
+            if self._engine is not None and getattr(self, "_identity", None) is not None:
+                self._engine.dispose()
+                self._engine = None
+                self._agentes = {}
+            if self._engine is None:
+                if not self.url_db:
+                    raise RuntimeError(
+                        "No hay base configurada: define DATABASE_URL o usa conectar()."
+                    )
+                connect_args = {}
+                if self.url_db.startswith("postgresql"):
+                    connect_args["options"] = "-c default_transaction_read_only=on"
+                self._engine = create_engine(self.url_db, connect_args=connect_args)
+                if self._engine.dialect.name == "sqlite":
+                    event.listen(self._engine, "connect", _sqlite_solo_lectura)
+                self._identity = None
+            return self._engine
+
+        identity = (
+            user["subject"],
+            tuple(user["customers"]),
+            tuple(user["permissions"]),
+        )
+        if self._engine is not None and getattr(self, "_identity", None) != identity:
+            self._engine.dispose()
+            self._engine = None
+            self._agentes = {}
         if self._engine is None:
+            from sqlalchemy.engine import make_url
+            from proyecto.security.scoped_sqlite import connect_scoped
+
             if not self.url_db:
-                raise RuntimeError(
-                    "No hay base configurada: define DATABASE_URL o usa conectar()."
+                raise PermissionError("No hay base autorizada.")
+            url = make_url(self.url_db)
+            if url.drivername != "sqlite":
+                raise PermissionError(
+                    "El control local de alcance solo admite SQLite."
                 )
-            connect_args = {}
-            if self.url_db.startswith("postgresql"):
-                connect_args["options"] = "-c default_transaction_read_only=on"
-            self._engine = create_engine(self.url_db, connect_args=connect_args)
-            if self._engine.dialect.name == "sqlite":
-                event.listen(self._engine, "connect", _sqlite_solo_lectura)
+            self._engine = create_engine(
+                "sqlite://", creator=lambda: connect_scoped(url.database)
+            )
+            self._identity = identity
         return self._engine
 
+    def _excluidas(self) -> set[str]:
+        try:
+            user = principal()
+        except Exception:  # noqa: BLE001 - pruebas y CLI sin sesión
+            user = None
+        if user:
+            pii = "audit" in user["permissions"] and any(
+                p.startswith("pii:") for p in user["permissions"]
+            )
+        else:
+            pii = self._perfil_actual()["rol"] == "superusuario"
+        return TABLAS_EXCLUIDAS - ({"dim_cliente_persona"} if pii else set())
+
     def _objetos_disponibles(
-        self, inspector, permitir_pii: bool = False
+        self, inspector, permitir_pii: bool | None = None
     ) -> tuple[list[str], list[str]]:
         """Return the tables and views the analyst may use."""
-        excluidas = TABLAS_EXCLUIDAS - (
-            {"dim_cliente_persona"} if permitir_pii else set()
-        )
+        if permitir_pii is None:
+            excluidas = self._excluidas()
+        else:
+            excluidas = TABLAS_EXCLUIDAS - (
+                {"dim_cliente_persona"} if permitir_pii else set()
+            )
         tablas = [t for t in inspector.get_table_names() if t not in excluidas]
         vistas = [v for v in inspector.get_view_names() if v not in excluidas]
         return tablas, vistas
@@ -461,9 +629,7 @@ class DataAnalystSQLBackend:
             """Lista las tablas y vistas de la base de datos y el motor SQL (sqlite, postgresql...)."""
             try:
                 engine = self._get_engine()
-                tablas, vistas = self._objetos_disponibles(
-                    inspect(engine), permitir_pii=self._rol_actual == "superusuario"
-                )
+                tablas, vistas = self._objetos_disponibles(inspect(engine))
                 return _json({
                     "motor": engine.dialect.name,
                     "tablas": tablas,
@@ -478,9 +644,7 @@ class DataAnalystSQLBackend:
             try:
                 engine = self._get_engine()
                 inspector = inspect(engine)
-                tablas, vistas = self._objetos_disponibles(
-                    inspector, permitir_pii=self._rol_actual == "superusuario"
-                )
+                tablas, vistas = self._objetos_disponibles(inspector)
                 if tabla not in tablas + vistas:
                     return _json({
                         "error": f"La tabla '{tabla}' no existe o no está disponible.",
@@ -523,15 +687,13 @@ class DataAnalystSQLBackend:
             """Devuelve los valores distintos más frecuentes de una columna categórica. Úsala antes de filtrar con WHERE."""
             if (
                 _normalizar(columna) in COLUMNAS_SENSIBLES
-                and self._rol_actual != "superusuario"
+                and self._perfil_actual()["rol"] != "superusuario"
             ):
                 return _json({"error": "Columna con datos personales: no se muestran valores."})
             try:
                 engine = self._get_engine()
                 inspector = inspect(engine)
-                tablas, vistas = self._objetos_disponibles(
-                    inspector, permitir_pii=self._rol_actual == "superusuario"
-                )
+                tablas, vistas = self._objetos_disponibles(inspector)
                 if tabla not in tablas + vistas:
                     return _json({"error": f"La tabla '{tabla}' no existe o no está disponible."})
                 columnas_tabla = [c["name"] for c in inspector.get_columns(tabla)]

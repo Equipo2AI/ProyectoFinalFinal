@@ -15,11 +15,12 @@ logger = logging.getLogger(__name__)
 
 def crear_transporte(modulo: str, *, env: dict[str, str] | None = None) -> StdioTransport:
     """Usa el Python activo y una ruta estable, independiente del directorio actual."""
+    from proyecto.security.local_auth import subprocess_env
     return StdioTransport(
         command=sys.executable,
         args=["-m", modulo],
         cwd=str(Path(__file__).resolve().parents[2]),
-        env={**os.environ, **env} if env is not None else None,
+        env={**subprocess_env(), **(env or {})},
     )
 
 

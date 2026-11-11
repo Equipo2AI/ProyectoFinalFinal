@@ -187,18 +187,18 @@ def procesar_imagen(ruta: str, operacion: str = "ocr") -> Respuesta:
 
 
 def _get_orquestador():
-    global _ORQUESTADOR
-    if _ORQUESTADOR is None:
+    import streamlit as st
+    if 'orquestador_sesion' not in st.session_state:
         from proyecto.orchestration.orquestador import Orquestador
-
-        _ORQUESTADOR = Orquestador()
-    return _ORQUESTADOR
+        st.session_state.orquestador_sesion = Orquestador()
+    return st.session_state.orquestador_sesion
 
 
 def reiniciar_orquestador() -> None:
     """Limpia el historial del orquestador compartido por la UI."""
-    if _ORQUESTADOR is not None:
-        _ORQUESTADOR.reiniciar()
+    import streamlit as st
+    if 'orquestador_sesion' in st.session_state:
+        st.session_state.orquestador_sesion.reiniciar()
 
 
 def _normalizar(texto: str) -> str:
@@ -388,7 +388,23 @@ def preguntar_orquestador(
             resultado["nota"] = "Imagen pendiente · MCP directo"
             return resultado
 
-        texto = orquestador.procesar(consulta, perfil=perfil)
+        token = os.environ.get("PROYECTO_AUTH_TOKEN", "")
+        try:
+            import streamlit as st
+
+            token = st.session_state.get("auth_token", token) or token
+        except Exception:  # noqa: BLE001 - el servicio también se usa sin Streamlit
+            pass
+
+        if token:
+            from langsmith import tracing_context
+            from proyecto.security.local_auth import authenticated, authorize_request
+
+            with authenticated(token), tracing_context(enabled=False):
+                authorize_request(consulta)
+                texto = orquestador.procesar(consulta, perfil=perfil)
+        else:
+            texto = orquestador.procesar(consulta, perfil=perfil)
     except Exception as exc:  # noqa: BLE001 - se informa en la UI
         duracion = round(time.perf_counter() - inicio, 2)
         mensaje = (
