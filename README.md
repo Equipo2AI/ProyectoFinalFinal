@@ -269,10 +269,10 @@ herramienta explícitos produce mejores resultados.
 
 ## Orquestación en grafo
 
-El contrato de tareas, resultados y hubs de dominio está documentado en
-[`docs/arquitectura-tareas.md`](docs/arquitectura-tareas.md). Es el diseño que
-se está implementando para que el orquestador delegue objetivos de alto nivel y
-cada hub decida qué herramientas usar.
+El contrato de tareas, resultados y hubs de dominio vive en
+`proyecto/orchestration/tareas.py` y `proyecto/orchestration/hubs.py`. Es el
+diseño que permite que el orquestador delegue objetivos de alto nivel y cada hub
+decida qué herramientas usar.
 
 `proyecto/orchestration/grafo.py` implementa un `StateGraph` de LangGraph con
 estado compartido:
@@ -335,32 +335,19 @@ proyecto/
 
 ## Pruebas
 
-La verificación es manual: el repositorio no incluye pytest ni integración
-continua. Cada banco cubre un componente y se ejecuta desde la raíz del proyecto.
-
-| Banco | Cobertura | Requiere |
-|---|---|---|
-| `tests/probar_data_steward.py` | Estructura y calidad de la base | Ollama |
-| `tests/probar_orquestador_mcp.py` | Orquestador y llamadas MCP | Ollama |
-| `tests/probar_document_intelligence.py` | OCR y descripción de imágenes | Ollama (Qwen2.5-VL) |
-| `tests/rag_test.py` | Recuperación normativa y citas | Ollama y Pinecone |
-| `tests/probar_data_analyst.py` | Controles SQL del analista (`--solo-seguridad`) | Ninguno (base local) |
+La suite automatizada se ejecuta con:
 
 ```bash
-uv run python tests/probar_data_steward.py --caso 1
-uv run python tests/probar_orquestador_mcp.py --consulta "¿Qué problemas de calidad tiene raw_clientes?"
-uv run python tests/probar_document_intelligence.py --caso 1
-uv run python tests/rag_test.py --caso 1 --sin-evidencia
-uv run python tests/probar_data_analyst.py --solo-seguridad
+uv run pytest -q
 ```
 
-La prueba del analista no usa LLM. Ejecuta seis casos contra la base real y marca
-cada uno con `[OK]` o `[FALLA]`: escritura, varias consultas en una, datos
-personales, capa cruda, columna inexistente y un agregado permitido.
+Cubre el guard SQL, RLS por identidad, métricas, periodos, gráficas, hubs,
+tareas y autenticación local.
 
-Los servidores MCP se verifican de forma aislada, sin el orquestador, con
-`tests/probar_data_analyst_mcp.py` y `tests/probar_document_intelligence_mcp.py`.
-Ambos levantan el servidor por `stdio` y consultan sus herramientas directamente.
+Las pruebas manuales (`tests/probar_*.py`, `tests/rag_test.py` y la imagen de
+factura) no se publican en el repositorio; se conservan localmente para
+desarrollo. Los servidores MCP también pueden verificarse de forma aislada desde
+esos scripts locales.
 
 ## Configuración
 
@@ -387,8 +374,8 @@ Estos límites corresponden a la arquitectura y a las pruebas con agentes:
   lugar de volver al usuario.
 - Los modelos de 7-9B resuelven bien una herramienta aislada, pero pierden
   consistencia en SQL largo o en inferencias entre fuentes.
-- La evaluación es manual: las pruebas son scripts y no una suite con pytest ni
-  integración continua.
+- La suite automatizada cubre contratos y seguridad; las pruebas de calidad de
+  respuesta con LLM siguen siendo manuales y dependen de Ollama/Pinecone.
 
 ## Siguientes pasos
 
@@ -398,16 +385,20 @@ Estos límites corresponden a la arquitectura y a las pruebas con agentes:
    retome la ejecución.
 3. **Verificador contra esquema**: contrastar las tablas y columnas citadas con
    los metadatos antes de publicar la respuesta.
-4. **Suite de evaluación**: convertir los casos de este documento en pruebas
+4. **Suite de evaluación**: convertir los casos de evaluación en pruebas
    repetibles por agente, con criterios de aceptación.
 5. **Comparación de modelos**: medir 14B y 32B con la misma suite para evaluar el
    efecto en planificación e inferencia.
 
 
-## Autenticacion local de desarrollo
+## Autenticación local de desarrollo
 
-La interfaz exige iniciar sesion; no hay selector de rol. Un operador local
-aprovisiona las identidades y su alcance usando IDs de clientes existentes:
+La interfaz muestra primero el chat principal. Para consultar hay que abrir
+**Acceso local**, al final de la página, e iniciar sesión. Ahí se escriben el
+usuario y la clave de una identidad local; no se pone la contraseña de la base
+ni una API key. Ese acceso identifica a la persona, limita las filas y tablas a
+su alcance y registra auditoría. No hay selector de rol: el operador local
+aprovisiona las identidades y sus permisos usando IDs de clientes existentes:
 
 ```bash
 uv run python -m proyecto.security.local_auth --usuario usuario_prueba --rol normal --clientes 1

@@ -53,33 +53,6 @@ st.set_page_config(
 # Desarrollo local: solo el operador aprovisiona identidades y permisos.
 from proyecto.security.local_auth import login, logout, authenticated, principal
 
-if not st.session_state.get('auth_token'):
-    st.title('Acceso local de desarrollo')
-    with st.form('login_local'):
-        usuario = st.text_input('Usuario', key='login_usuario')
-        clave = st.text_input('Clave', type='password', key='login_clave')
-        entrar = st.form_submit_button('Entrar')
-    if entrar:
-        try:
-            st.session_state.auth_token = login(usuario, clave)
-            st.rerun()
-        except PermissionError:
-            st.error('Credenciales invalidas.')
-    st.stop()
-
-try:
-    with authenticated(st.session_state.auth_token):
-        identidad = principal()
-    st.caption(f"Sesion local: {identidad['subject']} ({identidad['role']})")
-except PermissionError:
-    st.session_state.clear()
-    st.rerun()
-
-if st.button('Cerrar sesion', key='logout_local'):
-    logout(st.session_state.auth_token)
-    st.session_state.clear()
-    st.rerun()
-
 for clave, valor in {
     "mensajes": [],
     "artefacto": None,
@@ -93,6 +66,16 @@ for clave, valor in {
 }.items():
     if clave not in st.session_state:
         st.session_state[clave] = valor
+
+autenticado = bool(st.session_state.get("auth_token"))
+identidad = None
+if autenticado:
+    try:
+        with authenticated(st.session_state.auth_token):
+            identidad = principal()
+    except PermissionError:
+        st.session_state.clear()
+        st.rerun()
 
 estilos.aplicar(st.session_state.tema)
 
@@ -260,6 +243,12 @@ with st.container(key="topbar"):
     with columna_accion:
         boton_panel(abierta)
 
+if not autenticado:
+    st.info(
+        "La interfaz está visible, pero para consultar necesitas iniciar sesión "
+        "en **Acceso local**, al final de la página."
+    )
+
 if abierta:
     izquierda, derecha = st.columns([1.55, 1], gap="medium")
 else:
@@ -281,7 +270,12 @@ with izquierda:
                 columnas = st.columns(3, gap="small")
                 for (clave, pregunta), columna in zip(SUGERENCIAS, columnas):
                     with columna:
-                        if st.button(pregunta, key=clave, width="stretch"):
+                        if st.button(
+                            pregunta,
+                            key=clave,
+                            width="stretch",
+                            disabled=not autenticado,
+                        ):
                             iniciar(pregunta)
             else:
                 for mensaje in st.session_state.mensajes:
@@ -311,6 +305,7 @@ with izquierda:
             accept_file=True,
             file_type=TIPOS_IMAGEN,
             max_upload_size=MAX_IMAGE_BYTES // (1024 * 1024),
+            disabled=not autenticado,
         )
         if entrada:
             if isinstance(entrada, str):
@@ -368,6 +363,43 @@ if st.session_state.mensajes:
         """,
         height=1,
     )
+
+
+def acceso_local() -> None:
+    st.markdown('<div id="acceso-local"></div>', unsafe_allow_html=True)
+    with st.expander("Acceso local", expanded=not autenticado):
+        st.caption(
+            "El acceso local identifica a la persona que usa la app. No es la "
+            "clave de la base ni una API key: el operador crea el usuario y la "
+            "clave, y aquí solo se escriben esas credenciales. Sirve para "
+            "aplicar el alcance por cliente, los permisos y la auditoría."
+        )
+        if autenticado and identidad:
+            st.caption(f"Sesión local: {identidad['subject']} ({identidad['role']})")
+            if st.button("Cerrar sesión", key="logout_local"):
+                logout(st.session_state.auth_token)
+                st.session_state.clear()
+                st.rerun()
+        else:
+            st.caption("Pide al operador que aprovisione una identidad con:")
+            st.code(
+                "uv run python -m proyecto.security.local_auth --usuario "
+                "usuario_prueba --rol normal --clientes 1",
+                language="bash",
+            )
+            with st.form("login_local"):
+                usuario = st.text_input("Usuario", key="login_usuario")
+                clave = st.text_input("Clave", type="password", key="login_clave")
+                entrar = st.form_submit_button("Entrar")
+            if entrar:
+                try:
+                    st.session_state.auth_token = login(usuario, clave)
+                    st.rerun()
+                except PermissionError:
+                    st.error("Credenciales inválidas.")
+
+
+acceso_local()
 
 if st.session_state.pensando:
     try:

@@ -26,6 +26,14 @@ proyecto/data/memory/
 
 AGENTS.md
 
+# Documentación interna: no se publica en el repo
+docs/
+
+# Pruebas manuales: se conservan solo en local
+tests/probar_*.py
+tests/rag_test.py
+tests/modelo-factura-ex.png
+
 # DeepEval: caché y resultados locales
 .deepeval/
 deepeval/resultados/*
