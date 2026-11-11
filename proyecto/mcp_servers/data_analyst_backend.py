@@ -21,7 +21,7 @@ from proyecto.metrics import Metrica
 from proyecto.metrics import catalogo_metricas as listar_catalogo_metricas
 from proyecto.metrics import obtener_metrica
 from proyecto.periods import resolver_periodo as resolver_periodo_determinista
-from proyecto.security.local_auth import audit, principal
+from proyecto.security.local_auth import audit, es_modo_demo, principal
 
 load_dotenv()
 
@@ -426,10 +426,32 @@ class DataAnalystSQLBackend:
             )
         return resultado["messages"][-1].content
 
+    @staticmethod
+    def _misma_base(url_db: str | None, user: dict) -> bool:
+        if not url_db:
+            return False
+        from pathlib import Path
+        from sqlalchemy.engine import make_url
+
+        try:
+            url = make_url(url_db)
+            return (
+                url.drivername == "sqlite"
+                and str(Path(url.database).resolve())
+                == str(Path(user["database"]).resolve())
+            )
+        except Exception:  # noqa: BLE001 - una URL no SQLite no se compara
+            return False
+
     def _get_engine(self):
         try:
             user = principal()
         except Exception:  # noqa: BLE001 - demo, CLI y pruebas sin sesión
+            user = None
+
+        # La identidad demo es un fallback de la app. Si una prueba o el CLI
+        # apuntan a otra base, se usa el engine directo de solo lectura.
+        if user is not None and es_modo_demo() and not self._misma_base(self.url_db, user):
             user = None
 
         if user is None:

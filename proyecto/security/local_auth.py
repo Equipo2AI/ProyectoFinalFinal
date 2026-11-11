@@ -49,6 +49,19 @@ def _serialized(func):
 ROOT = Path(__file__).resolve().parents[2] / '.local_auth'
 TOKEN = ContextVar('principal_token', default='')
 STATE = ROOT / 'identities.json'
+DEMO_SUBJECT = 'demo_superuser'
+DEMO_PERMISSIONS = ['aggregate', 'audit', 'governance', 'pii:nombre', 'pii:rfc']
+
+
+def auth_mode():
+    """``demo`` evita el login con una identidad sintética; ``local`` lo exige."""
+    return (os.environ.get('PROYECTO_AUTH_MODE', 'demo').strip().lower() or 'demo')
+
+
+def es_modo_demo():
+    return auth_mode() == 'demo' and not (
+        TOKEN.get() or os.environ.get('PROYECTO_AUTH_TOKEN', '')
+    )
 
 
 def _read():
@@ -72,6 +85,26 @@ def db_binding():
     if not path.is_file():
         raise PermissionError('Base autorizada no disponible.')
     return str(path), hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _demo_principal(permission=None):
+    """Identidad sintética para la etapa demo; no crea usuarios ni contraseñas."""
+    import sqlite3
+    path, digest = db_binding()
+    with closing(sqlite3.connect(Path(path).as_uri() + '?mode=ro', uri=True)) as c:
+        customers = sorted(row[0] for row in c.execute('SELECT num_cte FROM dim_cliente'))
+    if permission and permission not in DEMO_PERMISSIONS:
+        audit('permission', False, DEMO_SUBJECT)
+        raise PermissionError('Acceso denegado: permiso insuficiente.')
+    return {
+        'username': DEMO_SUBJECT,
+        'role': 'auditor',
+        'customers': customers,
+        'permissions': list(DEMO_PERMISSIONS),
+        'database': path,
+        'digest': digest,
+        'subject': DEMO_SUBJECT,
+    }
 
 
 @_serialized
@@ -126,6 +159,8 @@ def logout(token):
 
 def principal(permission=None):
     token = TOKEN.get() or os.environ.get('PROYECTO_AUTH_TOKEN', '')
+    if not token and es_modo_demo():
+        return _demo_principal(permission)
     data = _read()
     session = data['sessions'].get(hashlib.sha256(token.encode()).hexdigest())
     if not session or session['expires'] <= time.time():
@@ -166,6 +201,7 @@ def authenticated(token):
 def subprocess_env():
     # La aplicacion no hereda una identidad de otro turno de Streamlit.
     return {**os.environ, 'PROYECTO_AUTH_TOKEN': TOKEN.get() or os.environ.get('PROYECTO_AUTH_TOKEN', ''),
+            'PROYECTO_AUTH_MODE': auth_mode(),
             'LANGSMITH_TRACING': 'false', 'LANGCHAIN_TRACING_V2': 'false'}
 
 

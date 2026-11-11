@@ -391,14 +391,21 @@ Estos límites corresponden a la arquitectura y a las pruebas con agentes:
    efecto en planificación e inferencia.
 
 
-## Autenticación local de desarrollo
+## Acceso local y modo demo
 
-La interfaz muestra primero el chat principal. Para consultar hay que abrir
-**Acceso local**, al final de la página, e iniciar sesión. Ahí se escriben el
-usuario y la clave de una identidad local; no se pone la contraseña de la base
-ni una API key. Ese acceso identifica a la persona, limita las filas y tablas a
-su alcance y registra auditoría. No hay selector de rol: el operador local
-aprovisiona las identidades y sus permisos usando IDs de clientes existentes:
+Para esta etapa la interfaz arranca sin login con `PROYECTO_AUTH_MODE=demo`
+(valor por defecto). Usa una identidad sintética con alcance completo sobre la
+base de prueba: no crea usuarios ni contraseñas. No uses este modo con datos
+reales.
+
+El componente de login sigue disponible en `proyecto/ui/login.py` para que el
+equipo de frontend lo integre. Para probarlo sin alterar el flujo principal,
+abre la app con `?login=1`. Para exigir login en toda la app, define
+`PROYECTO_AUTH_MODE=local` y aprovisiona identidades. Ahí solo se escriben
+usuario y clave; no se pone la contraseña de la base ni una API key. El acceso
+identifica a la persona, limita filas y tablas a su alcance y registra
+auditoría. No hay selector de rol: el operador local aprovisiona las identidades
+y sus permisos usando IDs de clientes existentes:
 
 ```bash
 uv run python -m proyecto.security.local_auth --usuario usuario_prueba --rol normal --clientes 1

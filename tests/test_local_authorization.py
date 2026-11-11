@@ -3,6 +3,7 @@ from contextlib import closing
 import hashlib
 import secrets
 import json
+import os
 import subprocess
 import sys
 import sqlite3
@@ -86,6 +87,26 @@ class LocalAuthorizationTests(unittest.TestCase):
             finally:
                 c.close()
         self.assertEqual(hashlib.sha256(self.db.read_bytes()).hexdigest(), self.digest)
+
+    def test_demo_mode_without_login_has_full_scope_and_can_switch_to_local(self):
+        token_reset = auth.TOKEN.set('')
+        try:
+            with patch.dict(os.environ, {'PROYECTO_AUTH_MODE': 'demo', 'PROYECTO_AUTH_TOKEN': ''}):
+                user = auth.principal()
+                self.assertEqual(user['subject'], 'demo_superuser')
+                self.assertEqual(user['customers'], [1, 2])
+                self.assertEqual(user['role'], 'auditor')
+                auth.authorize_request('Muestra el nombre y RFC del cliente 2')
+                c = connect_scoped(self.db)
+                try:
+                    self.assertEqual(c.execute('SELECT COUNT(*) FROM dim_cuenta').fetchone()[0], 2)
+                finally:
+                    c.close()
+            with patch.dict(os.environ, {'PROYECTO_AUTH_MODE': 'local', 'PROYECTO_AUTH_TOKEN': ''}):
+                with self.assertRaises(PermissionError):
+                    auth.principal()
+        finally:
+            auth.TOKEN.reset(token_reset)
 
     def test_logout_revokes_session_and_wrong_password_does_not_authenticate(self):
         with self.assertRaises(PermissionError):
