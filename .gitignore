@@ -27,7 +27,8 @@ proyecto/data/memory/
 AGENTS.md
 
 # Documentación interna: no se publica en el repo
-docs/
+docs/*
+!docs/reporte_validacion_preguntas.md
 
 # Pruebas manuales: se conservan solo en local
 tests/probar_*.py

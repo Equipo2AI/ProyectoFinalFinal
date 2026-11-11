@@ -24,7 +24,7 @@ def _serialized(func):
     @wraps(func)
     def run(*args, **kwargs):
         with _MUTATIONS:
-            ROOT.mkdir(mode=0o700, exist_ok=True)
+            ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
             with (ROOT / 'identities.lock').open('a+b') as lock:
                 if lock.seek(0, os.SEEK_END) == 0:
                     lock.write(b'0')
@@ -46,7 +46,23 @@ def _serialized(func):
                         fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
     return run
 
-ROOT = Path(__file__).resolve().parents[2] / '.local_auth'
+LEGACY_ROOT = Path(__file__).resolve().parents[2] / '.local_auth'
+
+
+def auth_directory():
+    """CLI, Streamlit y MCP comparten un almacen privado por checkout y usuario."""
+    override = os.environ.get('PROYECTO_AUTH_DIR')
+    if override:
+        return Path(override).expanduser().resolve()
+    local = os.environ.get('LOCALAPPDATA')
+    if os.name == 'nt' and not local:
+        raise RuntimeError('LOCALAPPDATA no esta definido; inicia con tu usuario de Windows.')
+    base = Path(local) if local else Path.home() / '.local' / 'share'
+    project = hashlib.sha256(str(LEGACY_ROOT.parent).casefold().encode()).hexdigest()[:12]
+    return base / 'ProyectoFinalFinal' / 'auth' / project
+
+
+ROOT = auth_directory()
 TOKEN = ContextVar('principal_token', default='')
 STATE = ROOT / 'identities.json'
 DEMO_SUBJECT = 'demo_superuser'
@@ -54,8 +70,8 @@ DEMO_PERMISSIONS = ['aggregate', 'audit', 'governance', 'pii:nombre', 'pii:rfc']
 
 
 def auth_mode():
-    """``demo`` evita el login con una identidad sintética; ``local`` lo exige."""
-    return (os.environ.get('PROYECTO_AUTH_MODE', 'demo').strip().lower() or 'demo')
+    """El modo visual demo no concede identidad ni permisos de datos."""
+    return (os.environ.get('PROYECTO_AUTH_MODE', 'local').strip().lower() or 'local')
 
 
 def es_modo_demo():
@@ -69,10 +85,37 @@ def _read():
 
 
 def _write(data):
-    ROOT.mkdir(mode=0o700, exist_ok=True)
+    ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
     tmp = STATE.with_suffix('.tmp')
     tmp.write_text(json.dumps(data), encoding='utf-8')
     tmp.replace(STATE)
+
+
+@_serialized
+def migrate_identities(source):
+    """Importacion explicita, sin borrar origen ni sobrescribir identidades.
+
+    Solo se conservan hashes y permisos existentes; nunca sesiones antiguas.
+    """
+    try:
+        incoming = json.loads(Path(source).read_text(encoding='utf-8'))['users']
+    except PermissionError as error:
+        raise PermissionError('No se puede leer el origen de migracion con este usuario. No se cambian sus permisos.') from error
+    if not isinstance(incoming, dict):
+        raise ValueError('Registro de identidades invalido.')
+    data = _read()
+    for name, user in incoming.items():
+        if (not isinstance(user, dict) or user.get('role') not in {'normal','auditor'}
+                or not isinstance(user.get('customers'), list)
+                or not isinstance(user.get('permissions'), list)
+                or not all(k in user for k in ('salt','password','database','digest'))):
+            raise ValueError('Identidad de origen fuera de contrato; no se importa.')
+        if name in data['users'] and data['users'][name] != user:
+            raise ValueError('Hay identidades diferentes con el mismo nombre; no se sobrescribe el destino.')
+    added = sum(name not in data['users'] for name in incoming)
+    data['users'].update(incoming)
+    _write(data)
+    return added
 
 
 def db_binding():
@@ -88,23 +131,8 @@ def db_binding():
 
 
 def _demo_principal(permission=None):
-    """Identidad sintética para la etapa demo; no crea usuarios ni contraseñas."""
-    import sqlite3
-    path, digest = db_binding()
-    with closing(sqlite3.connect(Path(path).as_uri() + '?mode=ro', uri=True)) as c:
-        customers = sorted(row[0] for row in c.execute('SELECT num_cte FROM dim_cliente'))
-    if permission and permission not in DEMO_PERMISSIONS:
-        audit('permission', False, DEMO_SUBJECT)
-        raise PermissionError('Acceso denegado: permiso insuficiente.')
-    return {
-        'username': DEMO_SUBJECT,
-        'role': 'auditor',
-        'customers': customers,
-        'permissions': list(DEMO_PERMISSIONS),
-        'database': path,
-        'digest': digest,
-        'subject': DEMO_SUBJECT,
-    }
+    """Compatibilidad: la vista demo nunca suplanta un auditor autenticado."""
+    raise PermissionError('Acceso denegado: inicia sesion con una identidad aprovisionada.')
 
 
 @_serialized
@@ -159,8 +187,6 @@ def logout(token):
 
 def principal(permission=None):
     token = TOKEN.get() or os.environ.get('PROYECTO_AUTH_TOKEN', '')
-    if not token and es_modo_demo():
-        return _demo_principal(permission)
     data = _read()
     session = data['sessions'].get(hashlib.sha256(token.encode()).hexdigest())
     if not session or session['expires'] <= time.time():
@@ -176,7 +202,7 @@ def principal(permission=None):
 
 def audit(action, allowed, subject=None, sql=None):
     """Sin preguntas, SQL literal, cuentas, nombres ni resultados personales."""
-    ROOT.mkdir(mode=0o700, exist_ok=True)
+    ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
     item = {'time': time.time(), 'subject': subject, 'action': action, 'allowed': allowed}
     if subject and subject in _read()['users']:
         user = _read()['users'][subject]
@@ -231,11 +257,21 @@ def authorize_request(consulta):
 
 def main():
     p = argparse.ArgumentParser(description='Aprovisionamiento local por operador; no usar con datos reales sin autorizacion.')
-    p.add_argument('--usuario', required=True)
-    p.add_argument('--rol', choices=['normal', 'auditor'], required=True)
-    p.add_argument('--clientes', required=True, help='IDs autorizados separados por coma')
+    p.add_argument('--ruta', action='store_true', help='Mostrar el almacen efectivo sin credenciales')
+    p.add_argument('--migrar-desde', type=Path, help='Importar identidades recuperadas legitimamente')
+    p.add_argument('--usuario')
+    p.add_argument('--rol', choices=['normal', 'auditor'])
+    p.add_argument('--clientes', help='IDs autorizados separados por coma')
     p.add_argument('--permisos', default='', help='Permisos de auditoria separados por coma')
     a = p.parse_args()
+    if a.ruta:
+        print(ROOT)
+        return
+    if a.migrar_desde:
+        print(f'Identidades nuevas importadas: {migrate_identities(a.migrar_desde)}. No se importan sesiones.')
+        return
+    if not all((a.usuario, a.rol, a.clientes)):
+        p.error('Para crear un usuario indica --usuario, --rol y --clientes; o utiliza --ruta.')
     provision(a.usuario, getpass.getpass('Clave nueva (minimo 16 caracteres): '), a.rol,
               a.clientes.split(','), [x for x in a.permisos.split(',') if x])
     print('Identidad local creada. No se imprime ni guarda la clave en texto plano.')

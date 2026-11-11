@@ -9,6 +9,12 @@ from proyecto.mcp_servers.mcp_client import llamar_herramienta, llamar_herramien
 class DataAnalystAgent(DataAnalystSQLBackend):
     """Conserva url_db/conectar y usa MCP para las herramientas SQL."""
 
+    def procesar(self, consulta: str, contexto: str = "", perfil: dict | None = None) -> str:
+        """STDIO tambien para procesar; el servidor aloja solo el backend local."""
+        return self._llamar_mcp("analizar_datos", {
+            "consulta": consulta, "contexto": contexto, "perfil": self._perfil_actual(),
+        })
+
     def _entorno_mcp(self) -> dict[str, str]:
         # La URL y el perfil viajan solo en el entorno del subproceso, nunca
         # como argumento visible al modelo. El valor vacio impide tomar otra

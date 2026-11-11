@@ -393,19 +393,16 @@ Estos límites corresponden a la arquitectura y a las pruebas con agentes:
 
 ## Acceso local y modo demo
 
-Para esta etapa la interfaz arranca sin login con `PROYECTO_AUTH_MODE=demo`
-(valor por defecto). Usa una identidad sintética con alcance completo sobre la
-base de prueba: no crea usuarios ni contraseñas. No uses este modo con datos
-reales.
+La interfaz exige login y usa las identidades existentes en AppData. El modo
+visual `demo` del equipo se conserva como opcion de presentacion, pero nunca
+crea un auditor anonimo ni concede acceso a todos los clientes. El valor
+predeterminado es `PROYECTO_AUTH_MODE=local`; incluso si se indica `demo`, los
+permisos de datos requieren una sesion autenticada real.
 
-El componente de login sigue disponible en `proyecto/ui/login.py` para que el
-equipo de frontend lo integre. Para probarlo sin alterar el flujo principal,
-abre la app con `?login=1`. Para exigir login en toda la app, define
-`PROYECTO_AUTH_MODE=local` y aprovisiona identidades. Ahí solo se escriben
-usuario y clave; no se pone la contraseña de la base ni una API key. El acceso
-identifica a la persona, limita filas y tablas a su alcance y registra
-auditoría. No hay selector de rol: el operador local aprovisiona las identidades
-y sus permisos usando IDs de clientes existentes:
+Se conservan `render_login`, `identidad_actual` y `cerrar_sesion` para los
+consumidores del componente del equipo. La pantalla principal usa `render_access`
+con tema, validacion por rerun y borrado del historial al cerrar sesion.
+No hay selector de rol: el operador aprovisiona identidades y permisos.
 
 ```bash
 uv run python -m proyecto.security.local_auth --usuario usuario_prueba --rol normal --clientes 1
@@ -423,8 +420,23 @@ campos personales necesitan permisos adicionales. El chat nunca modifica roles.
 La sesion opaca dura una hora y puede revocarse al cerrar sesion. Esta ligada
 al archivo y SHA-256 de SQLite: si cambia la base hay que reprovisionar una
 identidad autorizada; no se reutiliza automaticamente contra otra fuente.
-`.local_auth/` contiene registros privados y auditoria y esta excluido de Git.
-No compartas ese directorio, claves, tokens ni capturas con datos personales.
+En Windows, los registros privados y la auditoria se guardan fuera del repositorio
+y de OneDrive, en `%LOCALAPPDATA%\ProyectoFinalFinal\auth\<id-del-proyecto>`.
+La consola, Streamlit y los procesos MCP calculan la misma ruta para este proyecto.
+Ejecuta todos con tu usuario habitual de Windows, sin administrador. Puedes consultar
+la ubicacion efectiva sin leer credenciales:
+
+```powershell
+.\.venv\Scripts\python.exe -m proyecto.security.local_auth --ruta
+```
+
+`PROYECTO_AUTH_DIR` permite configurar otra carpeta privada; si lo usas, debe tener
+el mismo valor en la consola y en Streamlit. No compartas ese directorio, claves,
+tokens ni capturas con datos personales. La carpeta antigua `.local_auth/` no se
+borra ni se alteran sus permisos y sigue excluida de Git. Si puedes leer legitimamente
+su registro, `--migrar-desde <ruta-a-identities.json>` importa identidades con sus
+hashes y permisos sin sobrescribir identidades distintas ni importar sesiones.
+Tras cambiar de ubicacion, reinicia Streamlit desde tu consola habitual.
 
 Ejecuta el servicio solo en localhost para desarrollo:
 
@@ -477,3 +489,54 @@ Pruebas focalizadas de autorizacion (fixture aislada, sin Ollama ni datos reales
 ```bash
 uv run python -m unittest discover -s tests -p test_local_authorization.py -v
 ```
+
+
+### Login visual y sesiones
+
+La pantalla de acceso usa la autenticacion local anterior, sin otro registro ni
+selector de permisos. Aprovisiona tu usuario con el comando de la seccion
+"Autenticacion local de desarrollo" (la clave se pide por consola; no hay una
+clave de demostracion fija). Abre Streamlit con el Python de `.venv` y entra con
+ese identificador y clave. El login y el chat permiten cambiar entre claro y
+oscuro. Cerrar sesion revoca el token y descarta el historial; una sesion vencida
+vuelve al acceso. Los permisos se validan de nuevo en el backend y MCP.
+
+### Mitigacion provisional de MiMo en Windows
+
+Se reprodujo el error CUDA en Ollama 0.40.16 durante el calentamiento de Flash
+Attention. Con `use_mmap=true` se observaron una carga directa y otra a traves
+del orquestador exitosas por GPU. Esto es una mitigacion observada, **no una
+reparacion garantizada del fallo intermitente** ni una prueba de causa unica.
+No se cambiaron controladores, modelos, servicio ni configuracion de Windows.
+
+`proyecto/config/ollama_runtime.py` envia esa opcion dentro de `options` de la
+solicitud para MiMo en Windows; el constructor original de la version instalada
+de LangChain no la serializa por si solo. Los demas modelos conservan sus
+opciones. Para desactivar la mitigacion solo en la terminal actual:
+
+```powershell
+$env:PROYECTO_OLLAMA_MMAP = "0"
+```
+
+Para volver al comportamiento de la aplicacion, elimina esa variable de la
+terminal (`Remove-Item Env:PROYECTO_OLLAMA_MMAP`). No uses `setx` ni cambies `.env`.
+Referencias: [carga predeterminada de Ollama en Windows/CUDA](https://github.com/ollama/ollama/blob/main/server/sched.go)
+y [reporte de fallo intermitente de memoria del host](https://github.com/ollama/ollama/issues/17380).
+La similitud de ese reporte con los registros locales no demuestra que sea
+la misma causa en este equipo.
+
+
+### Conciliacion local de autenticacion y hubs
+
+Las mejoras de hubs, metricas y graficas se conservan con autenticacion
+obligatoria. El `perfil` recibido por API/MCP orienta el flujo pero no concede
+roles: el alcance y los permisos provienen de la sesion real de AppData. El hub
+opcional mantiene instancias separadas por sesion y conserva la ruta MCP para
+los planes bancarios verificados. No se habilita ningun auditor anonimo.
+
+La evidencia y los limites posteriores a la integracion estan en
+`docs/reporte_validacion_preguntas.md`. No se repitieron las 30 preguntas.
+La prueba manual existente `tests/probar_data_analyst_mcp.py` se conserva local
+(segun la exclusion del equipo) y ahora verifica MCP real y Streamlit sin
+guardar contrasenas ni alterar la base. Las pruebas unitarias del equipo usan
+identidades reales sobre fixtures aisladas; no requieren acceso anonimo.

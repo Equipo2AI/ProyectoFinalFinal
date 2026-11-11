@@ -65,15 +65,8 @@ _ENGINE = None
 
 
 def _get_engine():
-    from proyecto.security.local_auth import TOKEN, principal
-
-    try:
-        principal("governance")
-    except PermissionError:
-        # Las pruebas y el CLI sin sesión conservan el modo local. Si hay una
-        # identidad autenticada, el permiso de gobierno sí es obligatorio.
-        if TOKEN.get() or os.environ.get("PROYECTO_AUTH_TOKEN"):
-            raise
+    from proyecto.security.local_auth import principal
+    principal("governance")
     global _ENGINE
     if _ENGINE is None:
         url_db = get_database_url()

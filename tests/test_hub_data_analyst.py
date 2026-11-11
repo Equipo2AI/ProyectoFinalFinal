@@ -64,7 +64,7 @@ def test_hub_usa_tools_de_bajo_nivel_y_no_analizar_datos():
     assert "analizar_datos" not in nombres
 
 
-def test_hub_configura_perfil_antes_de_ejecutar(monkeypatch):
+def test_hub_configura_perfil_antes_de_ejecutar(monkeypatch, identidad_prueba):
     hub = HubDataAnalyst()
     capturado: dict = {}
 

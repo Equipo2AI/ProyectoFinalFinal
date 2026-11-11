@@ -15,7 +15,7 @@ RAIZ = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture()
-def backend(tmp_path):
+def backend(tmp_path, sesion_local):
     destino = tmp_path / "banco.db"
     conexion = sqlite3.connect(destino)
     try:
@@ -25,7 +25,9 @@ def backend(tmp_path):
     finally:
         conexion.close()
 
+    sesion_local(destino)
     agente = DataAnalystSQLBackend(url_db=f"sqlite:///{destino}")
+    agente._autenticar_prueba = lambda rol: sesion_local(destino, rol)
     try:
         yield agente
     finally:
@@ -42,6 +44,7 @@ def _grafica(backend, **argumentos):
 
 
 def test_superusuario_grafica_agregado_por_segmento(backend):
+    backend._autenticar_prueba("auditor")
     backend.configurar_perfil({"rol": "superusuario"})
     resultado = _grafica(
         backend,
@@ -94,6 +97,7 @@ def test_usuario_grafica_su_propio_alcance(backend):
 
 
 def test_no_grafica_identificadores(backend):
+    backend._autenticar_prueba("auditor")
     backend.configurar_perfil({"rol": "superusuario"})
     resultado = _grafica(
         backend,
@@ -111,6 +115,7 @@ def test_no_grafica_identificadores(backend):
 
 
 def test_rechaza_grafica_de_resultado_truncado(backend):
+    backend._autenticar_prueba("auditor")
     backend.configurar_perfil({"rol": "superusuario"})
     resultado = _grafica(
         backend,
