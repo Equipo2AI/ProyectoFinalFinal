@@ -16,7 +16,7 @@ RAIZ = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture()
-def engine(tmp_path, monkeypatch):
+def engine(tmp_path, monkeypatch, sesion_local):
     destino = tmp_path / "banco.db"
     conexion = sqlite3.connect(destino)
     try:
@@ -26,6 +26,7 @@ def engine(tmp_path, monkeypatch):
     finally:
         conexion.close()
 
+    sesion_local(destino, "auditor")
     motor = create_engine(f"sqlite:///{destino}")
     monkeypatch.setattr(steward, "_ENGINE", motor)
     try:

@@ -30,6 +30,7 @@ class ResultadoValidacionSQL(BaseModel):
     sql: str
     normalizado: str | None = None
     errores: list[str] = Field(default_factory=list)
+    tipo_error: str | None = None
     tablas: list[str] = Field(default_factory=list)
     columnas: list[str] = Field(default_factory=list)
     pii: list[str] = Field(default_factory=list)
@@ -427,6 +428,7 @@ def validar_sql(
 
     expr = expresiones[0]
     if expr is None or not isinstance(expr, (exp.Select, exp.Union)):
+        resultado.tipo_error = "autorizacion_denegada"
         resultado.errores.append("Solo se permiten consultas SELECT o WITH ... SELECT.")
         return resultado
 
@@ -459,6 +461,7 @@ def validar_sql(
     )
     for prohibida in prohibidas:
         if expr.find(prohibida) is not None:
+            resultado.tipo_error = "autorizacion_denegada"
             resultado.errores.append(
                 "La consulta contiene una operación de escritura o administración."
             )
@@ -479,12 +482,13 @@ def validar_sql(
     resultado.tablas = tablas
 
     for tabla in tablas:
-        if tabla not in catalogo:
-            resultado.errores.append(f"La tabla '{tabla}' no existe.")
-        elif tabla in excluidas:
+        if tabla in excluidas:
+            resultado.tipo_error = "autorizacion_denegada"
             resultado.errores.append(
                 f"La tabla '{tabla}' no está disponible para análisis."
             )
+        elif tabla not in catalogo:
+            resultado.errores.append(f"La tabla '{tabla}' no existe.")
 
     if resultado.errores:
         return resultado
@@ -498,6 +502,7 @@ def validar_sql(
     )
     resultado.pii = _pii_en_consulta(expr, catalogo, columnas_sensibles)
     if resultado.pii and not permitir_pii:
+        resultado.tipo_error = "autorizacion_denegada"
         resultado.errores.append(
             "La consulta devuelve datos personales ("
             + ", ".join(resultado.pii)
@@ -511,7 +516,10 @@ def validar_sql(
     # Row-level security: solo se aplica cuando hay un perfil de usuario
     # autenticado. Sin perfil se conserva el modo demo de las pruebas actuales.
     if rol == "usuario" and cliente_id is not None:
-        resultado.errores.extend(_validar_rls(expr, engine, catalogo, cliente_id))
+        errores_rls = _validar_rls(expr, engine, catalogo, cliente_id)
+        if errores_rls:
+            resultado.tipo_error = "autorizacion_denegada"
+        resultado.errores.extend(errores_rls)
 
     resultado.requiere_limite = any(
         select.args.get("limit") is None for select in expr.find_all(exp.Select)

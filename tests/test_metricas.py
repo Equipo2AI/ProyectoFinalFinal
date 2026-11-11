@@ -15,7 +15,7 @@ RAIZ = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture()
-def backend(tmp_path):
+def backend(tmp_path, sesion_local):
     destino = tmp_path / "banco.db"
     conexion = sqlite3.connect(destino)
     try:
@@ -25,7 +25,9 @@ def backend(tmp_path):
     finally:
         conexion.close()
 
+    sesion_local(destino)
     agente = DataAnalystSQLBackend(url_db=f"sqlite:///{destino}")
+    agente._autenticar_prueba = lambda rol: sesion_local(destino, rol)
     try:
         yield agente
     finally:
@@ -51,6 +53,7 @@ def test_catalogo_expone_metricas_y_dimensiones(backend):
 
 
 def test_consultar_metrica_sin_agrupacion(backend):
+    backend._autenticar_prueba("auditor")
     backend.configurar_perfil({"rol": "superusuario"})
     datos = _llamar(backend, "consultar_metrica", {"metrica": "clientes"})
 
@@ -62,6 +65,7 @@ def test_consultar_metrica_sin_agrupacion(backend):
 
 
 def test_consultar_metrica_agrupada_y_ordenada(backend):
+    backend._autenticar_prueba("auditor")
     backend.configurar_perfil({"rol": "superusuario"})
     datos = _llamar(
         backend,
@@ -89,6 +93,7 @@ def test_consultar_metrica_respeta_el_alcance_del_usuario(backend):
 
 
 def test_consultar_metrica_rechaza_metrica_y_dimension_desconocidas(backend):
+    backend._autenticar_prueba("auditor")
     backend.configurar_perfil({"rol": "superusuario"})
     inexistente = _llamar(backend, "consultar_metrica", {"metrica": "utilidad"})
     dimension = _llamar(
@@ -104,6 +109,7 @@ def test_consultar_metrica_rechaza_metrica_y_dimension_desconocidas(backend):
 
 
 def test_resolver_valor_encuentra_el_valor_canonico(backend):
+    backend._autenticar_prueba("auditor")
     backend.configurar_perfil({"rol": "superusuario"})
     datos = _llamar(
         backend,
@@ -121,6 +127,7 @@ def test_resolver_valor_encuentra_el_valor_canonico(backend):
 
 
 def test_verificar_cifras_contra_la_ultima_consulta(backend):
+    backend._autenticar_prueba("auditor")
     backend.configurar_perfil({"rol": "superusuario"})
     ejecucion = _llamar(
         backend,

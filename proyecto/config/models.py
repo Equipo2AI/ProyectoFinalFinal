@@ -46,3 +46,17 @@ def modelo_de(agente: str) -> str:
 def recargar() -> None:
     """Limpia la caché del archivo; útil para pruebas que editan el YAML."""
     _agentes.cache_clear()
+
+
+def opciones_ollama(modelo: str) -> dict:
+    """Mitigacion reversible de carga de MiMo en Windows, no cambio de modelo.
+
+    Solicitar mmap evita el --load-mode none predeterminado de Windows/CUDA.
+    No demuestra reparacion del runtime. PROYECTO_OLLAMA_MMAP=0 la desactiva.
+    """
+    import os
+    import sys
+    if (sys.platform == 'win32' and modelo.split(':')[0] == 'mimo-v2.6'
+            and os.environ.get('PROYECTO_OLLAMA_MMAP', '1') != '0'):
+        return {'use_mmap': True}
+    return {}

@@ -88,25 +88,18 @@ class LocalAuthorizationTests(unittest.TestCase):
                 c.close()
         self.assertEqual(hashlib.sha256(self.db.read_bytes()).hexdigest(), self.digest)
 
-    def test_demo_mode_without_login_has_full_scope_and_can_switch_to_local(self):
-        token_reset = auth.TOKEN.set('')
+    def test_demo_and_local_modes_require_an_authenticated_identity(self):
+        reset = auth.TOKEN.set('')
         try:
-            with patch.dict(os.environ, {'PROYECTO_AUTH_MODE': 'demo', 'PROYECTO_AUTH_TOKEN': ''}):
-                user = auth.principal()
-                self.assertEqual(user['subject'], 'demo_superuser')
-                self.assertEqual(user['customers'], [1, 2])
-                self.assertEqual(user['role'], 'auditor')
-                auth.authorize_request('Muestra el nombre y RFC del cliente 2')
-                c = connect_scoped(self.db)
-                try:
-                    self.assertEqual(c.execute('SELECT COUNT(*) FROM dim_cuenta').fetchone()[0], 2)
-                finally:
-                    c.close()
-            with patch.dict(os.environ, {'PROYECTO_AUTH_MODE': 'local', 'PROYECTO_AUTH_TOKEN': ''}):
-                with self.assertRaises(PermissionError):
-                    auth.principal()
+            for mode in ['demo', 'local']:
+                with patch.dict(os.environ, {'PROYECTO_AUTH_MODE': mode, 'PROYECTO_AUTH_TOKEN': ''}):
+                    with self.assertRaises(PermissionError):
+                        auth.principal()
+                    with auth.authenticated(self.normal):
+                        self.assertEqual(auth.principal()['customers'], [1])
+                        self.assertEqual(auth.principal()['role'], 'normal')
         finally:
-            auth.TOKEN.reset(token_reset)
+            auth.TOKEN.reset(reset)
 
     def test_logout_revokes_session_and_wrong_password_does_not_authenticate(self):
         with self.assertRaises(PermissionError):
@@ -115,6 +108,73 @@ class LocalAuthorizationTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             with auth.authenticated(self.normal):
                 pass
+
+    def test_migration_preserves_users_without_importing_sessions(self):
+        before = auth._read()
+        source = self.root / 'recovered.json'
+        incoming = {'users': {'recovered': before['users']['normal']},
+                    'sessions': {'old-session': {'user': 'recovered'}}}
+        source.write_text(json.dumps(incoming), encoding='utf-8')
+        original = source.read_bytes()
+        self.assertEqual(auth.migrate_identities(source), 1)
+        after = auth._read()
+        self.assertEqual(after['users']['recovered'], before['users']['normal'])
+        self.assertEqual(after['sessions'], before['sessions'])
+        self.assertEqual(source.read_bytes(), original)
+        self.assertEqual(auth.migrate_identities(source), 0)
+
+    def test_migration_does_not_overwrite_conflicting_identity(self):
+        before = auth._read()
+        source = self.root / 'conflicting.json'
+        source.write_text(json.dumps({'users': {'normal': before['users']['auditor']}}), encoding='utf-8')
+        with self.assertRaises(ValueError):
+            auth.migrate_identities(source)
+        self.assertEqual(auth._read(), before)
+
+    def test_location_is_stable_and_outside_checkout(self):
+        import os
+        with patch.dict(os.environ, {'LOCALAPPDATA': str(self.root / 'profile')}, clear=True):
+            first = auth.auth_directory()
+            self.assertEqual(first, auth.auth_directory())
+            self.assertTrue(first.is_relative_to(self.root / 'profile'))
+            self.assertFalse(first.is_relative_to(auth.LEGACY_ROOT))
+
+    def test_backend_rejects_anonymous_and_cannot_elevate_with_profile(self):
+        from proyecto.mcp_servers.data_analyst_backend import DataAnalystSQLBackend
+        backend = DataAnalystSQLBackend(url_db=f'sqlite:///{self.db}')
+        with auth.authenticated(self.normal):
+            backend.configurar_perfil({'rol': 'superusuario'})
+            self.assertEqual(backend._perfil_actual(), {'rol':'usuario', 'cliente_id':1})
+        reset = auth.TOKEN.set('')
+        try:
+            with patch.dict(os.environ, {'PROYECTO_AUTH_MODE':'demo','PROYECTO_AUTH_TOKEN':''}):
+                with self.assertRaises(PermissionError):
+                    backend._get_engine()
+                catalog = next(t for t in backend._tools if t.name=='catalogo_metricas')
+                self.assertEqual(json.loads(catalog.invoke({}))['tipo_error'], 'autorizacion_denegada')
+        finally:
+            auth.TOKEN.reset(reset)
+
+    def test_hub_cache_is_isolated_by_authenticated_session(self):
+        from proyecto.orchestration.grafo import _get_hub_data_analyst
+        with auth.authenticated(self.normal):
+            first = _get_hub_data_analyst()
+            self.assertIs(first, _get_hub_data_analyst())
+        with auth.authenticated(self.auditor):
+            self.assertIsNot(first, _get_hub_data_analyst())
+
+    def test_graph_stops_before_another_model_step_on_denial_or_empty(self):
+        from langchain_core.messages import ToolMessage
+        from proyecto.mcp_servers.data_analyst_backend import DataAnalystSQLBackend
+        backend = DataAnalystSQLBackend(url_db=f'sqlite:///{self.db}')
+        for payload, expected in [({'error':'denied','tipo_error':'autorizacion_denegada'}, 'Acceso denegado:'),
+                                  ({'columnas':['num_cte'],'filas':[]}, 'No se encontraron resultados')]:
+            class Graph:
+                def stream(self, *args, **kwargs):
+                    yield {'messages':[ToolMessage(content=json.dumps(payload), name='ejecutar_consulta', tool_call_id='fixture')]}
+                    raise AssertionError('El grafo volvio a ejecutar un paso despues de un resultado terminal')
+            with auth.authenticated(self.normal), patch.object(backend, '_get_agente', return_value=Graph()):
+                self.assertTrue(backend.procesar('Explora la informacion disponible').startswith(expected))
 
     def test_concurrent_logins_preserve_both_sessions(self):
         code = '''import sys,json

@@ -4,6 +4,7 @@ import base64
 import difflib
 import json
 import os
+import re
 import unicodedata
 
 from dotenv import load_dotenv
@@ -150,6 +151,15 @@ def _prompt_sesion(rol: str, cliente_id: int | None) -> str:
     return SYSTEM_PROMPT
 
 
+def nombre_buscado(consulta: str) -> str | None:
+    """Identificacion por nombre; nunca deriva la identidad del alcance SQL."""
+    patron = (r"\b(?:n[uú]mero|identificador|id)\s+(?:de(?:l)?\s+)?"
+              r"(?:usuario|cliente)\s+de\s+"
+              r"(?!(?:mi|mis|su|sus|el|la|los|las)\b)([^?!.\n]+)")
+    match = re.search(patron, consulta, re.I)
+    return match[1].strip() if match else None
+
+
 def _normalizar(texto: str) -> str:
     normalizado = unicodedata.normalize("NFKD", texto.casefold())
     return "".join(c for c in normalizado if not unicodedata.combining(c))
@@ -161,6 +171,22 @@ def _sqlite_solo_lectura(conexion_dbapi, _registro) -> None:
 
 def _json(datos: dict) -> str:
     return json.dumps(datos, ensure_ascii=False, default=str)
+
+
+def _respuesta_terminal(nombre: str, contenido: str) -> str | None:
+    """Solo resultados concluyentes: no confundir errores tecnicos con ausencia."""
+    try:
+        datos = json.loads(contenido)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(datos, dict):
+        return None
+    if datos.get("tipo_error") == "autorizacion_denegada":
+        return "Acceso denegado: tu identidad no tiene permiso para consultar esos datos."
+    if (nombre in {"ejecutar_consulta", "consultar_metrica"} and "error" not in datos
+            and isinstance(datos.get("columnas"), list) and datos.get("filas") == []):
+        return "No se encontraron resultados dentro de tu alcance autorizado para los filtros solicitados."
+    return None
 
 
 class DataAnalystSQLBackend:
@@ -201,6 +227,8 @@ class DataAnalystSQLBackend:
         self.url_db = url_db
         self._engine = None
         self._agentes = {}
+        self._ultimo_resultado = None
+        self._ultimo_sql = None
 
     def configurar_perfil(self, perfil: dict | None) -> None:
         """Fija el perfil que usan las tools de esta instancia.
@@ -211,26 +239,11 @@ class DataAnalystSQLBackend:
         self._rol_actual, self._cliente_actual = _normalizar_perfil(perfil)
 
     def _perfil_actual(self) -> dict[str, object]:
-        """Combina el perfil explícito con la identidad local autenticada.
-
-        La UI usa ``authenticated`` y no pasa ``perfil``. Las pruebas y el CLI
-        pueden fijar el perfil explícitamente; en ese caso tiene prioridad.
-        """
-        rol = self._rol_actual
-        cliente_id = self._cliente_actual
-        if rol == "usuario" and cliente_id is None:
-            try:
-                user = principal()
-            except Exception:  # noqa: BLE001 - sin sesión se conserva el modo demo
-                user = None
-            if user:
-                if user.get("role") == "auditor":
-                    rol = "superusuario"
-                elif user.get("role") == "normal":
-                    clientes = list(user.get("customers") or [])
-                    if len(clientes) == 1:
-                        cliente_id = int(clientes[0])
-        return {"rol": rol, "cliente_id": cliente_id}
+        """El perfil orienta al hub; solo la sesion real concede permisos."""
+        user = principal()
+        customers = user['customers']
+        return {'rol': 'superusuario' if user['role'] == 'auditor' else 'usuario',
+                'cliente_id': customers[0] if user['role'] == 'normal' and len(customers) == 1 else None}
 
     @staticmethod
     def _auditar(action: str, allowed: bool, sql: str | None = None) -> None:
@@ -274,6 +287,7 @@ class DataAnalystSQLBackend:
             return {
                 "error": " ".join(validacion.errores),
                 "errores": validacion.errores,
+                "tipo_error": validacion.tipo_error,
                 "validacion": validacion.model_dump(),
             }
 
@@ -294,13 +308,11 @@ class DataAnalystSQLBackend:
             for columna in columnas
             if _normalizar(columna) in COLUMNAS_SENSIBLES
         ]
-        if (
-            sensibles
-            and not confiar_en_alcance
-            and self._perfil_actual()["rol"] != "superusuario"
-        ):
+        sensibles = [c for c in sensibles if 'pii:' + _normalizar(c) not in principal()['permissions']]
+        if sensibles:
             self._auditar("sql_pii", False, sql)
             return {
+                "tipo_error": "autorizacion_denegada",
                 "error": (
                     f"La consulta devuelve datos personales "
                     f"({', '.join(sensibles)}). Usa agregados (COUNT, AVG...) "
@@ -322,7 +334,7 @@ class DataAnalystSQLBackend:
         clave = f"{rol}:{cliente_id}" if rol else "normal"
         if clave not in self._agentes:
             from langchain.agents import create_agent
-            from langchain_ollama import ChatOllama
+            from proyecto.config.ollama_runtime import ChatOllama
 
             llm = ChatOllama(
                 model=self.modelo,
@@ -352,78 +364,84 @@ class DataAnalystSQLBackend:
             )
         return self._agentes[clave]
 
-    def procesar(
-        self,
-        consulta: str,
-        contexto: str = "",
-        perfil: dict | None = None,
-    ) -> str:
+    def procesar(self, consulta: str, contexto: str = "", perfil: dict | None = None) -> str:
         from proyecto.security.local_auth import authorize_request
-
         try:
             user = authorize_request(consulta)
+            # Resolver un identificador a partir de un nombre necesita los
+            # permisos existentes de auditoria y lectura de ese campo. Sin
+            # ellos el modelo solo ve catalogos/cuentas, y no puede resolver
+            # legitimamente la identidad por mas consultas que intente.
+            nombre = nombre_buscado(consulta)
+            if nombre:
+                principal('audit')
+                principal('pii:nombre')
         except PermissionError as error:
             return str(error)
-
-        if user["role"] == "auditor" and "audit" not in user["permissions"]:
-            principal("aggregate")
-        audit("analizar_datos", True, user["subject"])
-
-        if perfil:
-            self.configurar_perfil(perfil)
-        elif user["role"] == "auditor":
-            self.configurar_perfil({"rol": "superusuario"})
-        else:
-            clientes = list(user.get("customers") or [])
-            self.configurar_perfil(
-                {
-                    "rol": "usuario",
-                    "cliente_id": clientes[0] if len(clientes) == 1 else None,
-                }
-            )
-
-        rol, cliente_id = self._rol_actual, self._cliente_actual
-        sesion = _contexto_sesion(rol, cliente_id)
-        if sesion:
-            contexto = f"{contexto}\n\n{sesion}".strip()
-
-        from proyecto.agents.banking_queries import (
-            format_result,
-            normalize,
-            plan_query,
-        )
-
+        if user['role'] == 'auditor' and 'audit' not in user['permissions']:
+            principal('aggregate')
+        self.configurar_perfil(perfil)
+        sesion = self._perfil_actual()
+        rol, cliente_id = sesion['rol'], sesion['cliente_id']
+        audit('analizar_datos', True, user['subject'])
+        if nombre:
+            # La relacion num_cte/nombre debe provenir de la tabla de personas
+            # dentro del alcance autenticado. No consultar ni mostrar perfiles.
+            literal = nombre.replace("'", "''")
+            sql = ("SELECT DISTINCT num_cte FROM dim_cliente_persona "
+                   f"WHERE nombre = '{literal}' COLLATE NOCASE")
+            result = self._consultar(sql, confiar_en_alcance=True)
+            terminal = _respuesta_terminal('ejecutar_consulta', _json(result))
+            if terminal:
+                return terminal
+            if 'error' in result:
+                return "No se pudo verificar la identidad por un error de consulta. No se atribuye ningún identificador."
+            filas = result.get('filas', [])
+            if len(filas) != 1 or result.get('truncado'):
+                return "La búsqueda no identifica de forma única a una persona dentro de tu alcance autorizado."
+            return f"Número de cliente verificado: {filas[0][0]}. Fuente: coincidencia exacta del nombre en SQLite dentro de tu alcance autorizado."
+        from proyecto.agents.banking_queries import plan_query, format_result, normalize
         plan = plan_query(consulta)
         if plan:
             title, sql = plan
             result = self._consultar(sql, confiar_en_alcance=True)
+            terminal = _respuesta_terminal("ejecutar_consulta", _json(result))
+            if terminal:
+                return terminal
             answer = format_result(title, result, sql)
-            if "estado de cuenta" in normalize(consulta):
-                balance = plan_query(
-                    normalize(consulta).replace("estado de cuenta", "saldo")
-                )
+            if 'estado de cuenta' in normalize(consulta):
+                balance = plan_query(normalize(consulta).replace('estado de cuenta', 'saldo'))
                 if balance:
                     title2, sql2 = balance
-                    result2 = self._consultar(sql2, confiar_en_alcance=True)
-                    answer = (
-                        format_result(title2, result2, sql2)
-                        + "\n\n"
-                        + answer
-                    )
+                    answer = format_result(title2, self._consultar(sql2, confiar_en_alcance=True), sql2) + '\n\n' + answer
             return answer
-
         contenido = consulta
         if contexto.strip():
             contenido = (
                 f"Contexto de la conversación:\n{contexto}\n\nPregunta: {consulta}"
             )
+        from contextlib import closing
+        from langchain_core.messages import ToolMessage
         from langsmith import tracing_context
-
         with tracing_context(enabled=False):
-            resultado = self._get_agente(rol, cliente_id).invoke(
+            # Revisar la salida del nodo tools antes de volver al modelo. Una
+            # denegacion o un SELECT vacio ya concluyen la consulta; no son SQL
+            # defectuoso que deba reformularse o reintentarse.
+            with closing(self._get_agente(rol, cliente_id).stream(
                 {"messages": [{"role": "user", "content": contenido}]},
                 config={"recursion_limit": 25},
-            )
+                stream_mode="values",
+            )) as estados:
+                for resultado in estados:
+                    terminales = []
+                    for mensaje in reversed(resultado["messages"]):
+                        if not isinstance(mensaje, ToolMessage):
+                            break
+                        terminal = _respuesta_terminal(mensaje.name, mensaje.content)
+                        if terminal:
+                            terminales.append(terminal)
+                    if terminales:
+                        return next((t for t in terminales if t.startswith("Acceso denegado:")), terminales[0])
         return resultado["messages"][-1].content
 
     @staticmethod
@@ -444,73 +462,30 @@ class DataAnalystSQLBackend:
             return False
 
     def _get_engine(self):
-        try:
-            user = principal()
-        except Exception:  # noqa: BLE001 - demo, CLI y pruebas sin sesión
-            user = None
-
-        # La identidad demo es un fallback de la app. Si una prueba o el CLI
-        # apuntan a otra base, se usa el engine directo de solo lectura.
-        if user is not None and es_modo_demo() and not self._misma_base(self.url_db, user):
-            user = None
-
-        if user is None:
-            if self._engine is not None and getattr(self, "_identity", None) is not None:
-                self._engine.dispose()
-                self._engine = None
-                self._agentes = {}
-            if self._engine is None:
-                if not self.url_db:
-                    raise RuntimeError(
-                        "No hay base configurada: define DATABASE_URL o usa conectar()."
-                    )
-                connect_args = {}
-                if self.url_db.startswith("postgresql"):
-                    connect_args["options"] = "-c default_transaction_read_only=on"
-                self._engine = create_engine(self.url_db, connect_args=connect_args)
-                if self._engine.dialect.name == "sqlite":
-                    event.listen(self._engine, "connect", _sqlite_solo_lectura)
-                self._identity = None
-            return self._engine
-
-        identity = (
-            user["subject"],
-            tuple(user["customers"]),
-            tuple(user["permissions"]),
-        )
-        if self._engine is not None and getattr(self, "_identity", None) != identity:
+        user = principal()
+        identity = (user['subject'], tuple(user['customers']), tuple(user['permissions']))
+        if self._engine is not None and getattr(self, '_identity', None) != identity:
             self._engine.dispose()
             self._engine = None
             self._agentes = {}
+            self._ultimo_resultado = None
+            self._ultimo_sql = None
         if self._engine is None:
             from sqlalchemy.engine import make_url
             from proyecto.security.scoped_sqlite import connect_scoped
-
             if not self.url_db:
-                raise PermissionError("No hay base autorizada.")
+                raise PermissionError('No hay base autorizada.')
             url = make_url(self.url_db)
-            if url.drivername != "sqlite":
-                raise PermissionError(
-                    "El control local de alcance solo admite SQLite."
-                )
-            self._engine = create_engine(
-                "sqlite://", creator=lambda: connect_scoped(url.database)
-            )
+            if url.drivername != 'sqlite':
+                raise PermissionError('El control local de alcance solo admite SQLite.')
+            self._engine = create_engine('sqlite://', creator=lambda: connect_scoped(url.database))
             self._identity = identity
         return self._engine
 
-    def _excluidas(self) -> set[str]:
-        try:
-            user = principal()
-        except Exception:  # noqa: BLE001 - pruebas y CLI sin sesión
-            user = None
-        if user:
-            pii = "audit" in user["permissions"] and any(
-                p.startswith("pii:") for p in user["permissions"]
-            )
-        else:
-            pii = self._perfil_actual()["rol"] == "superusuario"
-        return TABLAS_EXCLUIDAS - ({"dim_cliente_persona"} if pii else set())
+    def _excluidas(self):
+        user = principal()
+        pii = 'audit' in user['permissions'] and any(p.startswith('pii:') for p in user['permissions'])
+        return TABLAS_EXCLUIDAS - ({'dim_cliente_persona'} if pii else set())
 
     def _objetos_disponibles(
         self, inspector, permitir_pii: bool | None = None
@@ -535,6 +510,8 @@ class DataAnalystSQLBackend:
         ``valores_columna``) también deben respetar la sesión: de lo contrario
         un usuario podría listar los ``num_cte`` de todos los clientes.
         """
+        perfil = self._perfil_actual()
+        self._rol_actual, self._cliente_actual = perfil['rol'], perfil['cliente_id']
         if self._rol_actual != "usuario" or self._cliente_actual is None:
             return "", {}
         if "num_cte" in columnas:
@@ -940,7 +917,7 @@ class DataAnalystSQLBackend:
                 "texto_redactado": redactado,
             })
 
-        return [
+        herramientas = [
             listar_tablas,
             describir_tabla,
             valores_columna,
@@ -953,3 +930,19 @@ class DataAnalystSQLBackend:
             resolver_valor,
             verificar_cifras,
         ]
+
+        # Todas las tools, incluso catalogos, requieren una sesion real.
+        from functools import wraps
+        def proteger(func):
+            @wraps(func)
+            def ejecutar(*args, **kwargs):
+                try:
+                    principal()
+                    return func(*args, **kwargs)
+                except PermissionError:
+                    return _json({'error': 'Acceso denegado: permiso insuficiente o sesion invalida.',
+                                  'tipo_error': 'autorizacion_denegada'})
+            return ejecutar
+        for herramienta in herramientas:
+            herramienta.func = proteger(herramienta.func)
+        return herramientas

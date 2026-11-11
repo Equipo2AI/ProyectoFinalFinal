@@ -18,7 +18,7 @@ from fastmcp.client.transports import StdioTransport
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
-from langchain_ollama import ChatOllama
+from proyecto.config.ollama_runtime import ChatOllama
 
 from proyecto.agents import (
     data_steward_agent,
@@ -610,6 +610,12 @@ class Orquestador:
 
         ``perfil`` es el contexto de sesión autenticada (rol y cliente_id).
         """
+        from proyecto.security.local_auth import authorize_request
+        user = authorize_request(consulta)
+        perfil = {
+            "rol": "superusuario" if user['role'] == 'auditor' else "usuario",
+            "cliente_id": user['customers'][0] if user['role'] == 'normal' else None,
+        }
         self.ultimo_estado_grafo = {}
         if self.modo == "hub":
             return self._procesar_hub(consulta, perfil=perfil)

@@ -21,6 +21,8 @@ El modo se controla con ``ORCHESTRATION_MODE``:
 from __future__ import annotations
 
 import base64
+import hashlib
+from functools import lru_cache
 import json
 import operator
 import os
@@ -28,7 +30,7 @@ import re
 from pathlib import Path
 from typing import Annotated, Any, TypedDict
 
-from langchain_ollama import ChatOllama
+from proyecto.config.ollama_runtime import ChatOllama
 from langgraph.graph import END, START, StateGraph
 
 from proyecto.agents import data_steward_agent
@@ -239,6 +241,12 @@ def planear_rutas(
         return ["document_intelligence"]
 
     texto = _normalizar(consulta or "")
+
+    # No enviar identificaciones de personas a la respuesta directa del LLM,
+    # aunque el chat sea nuevo o antes se haya usado otro especialista.
+    from proyecto.mcp_servers.data_analyst_backend import nombre_buscado
+    if nombre_buscado(consulta):
+        return ["data_analyst"]
 
     # Si ya hay un documento procesado, las preguntas sobre su contenido se
     # responden con el contexto documental; no deben desviarse a SQL.
@@ -573,14 +581,16 @@ def _contexto_previo(estado: EstadoGrafo) -> str:
     return "\n\n".join(partes)
 
 
-_HUB_DATA_ANALYST = None
+@lru_cache(maxsize=32)
+def _hub_por_sesion(clave: str) -> HubDataAnalyst:
+    return HubDataAnalyst()
 
 
 def _get_hub_data_analyst() -> HubDataAnalyst:
-    global _HUB_DATA_ANALYST
-    if _HUB_DATA_ANALYST is None:
-        _HUB_DATA_ANALYST = HubDataAnalyst()
-    return _HUB_DATA_ANALYST
+    from proyecto.security.local_auth import principal, TOKEN
+    principal()
+    token = TOKEN.get() or os.environ.get('PROYECTO_AUTH_TOKEN', '')
+    return _hub_por_sesion(hashlib.sha256(token.encode()).hexdigest())
 
 
 def _nodo_data_analyst_con_hub(estado: EstadoGrafo) -> dict:
@@ -638,7 +648,11 @@ def _nodo_data_analyst_con_hub(estado: EstadoGrafo) -> dict:
 
 def _nodo_data_analyst(estado: EstadoGrafo) -> dict:
     if os.environ.get("DATA_ANALYST_HUB") == "1":
-        return _nodo_data_analyst_con_hub(estado)
+        from proyecto.agents.banking_queries import plan_query
+        from proyecto.mcp_servers.data_analyst_backend import nombre_buscado
+        consulta = estado.get("consulta") or ""
+        if not plan_query(consulta) and not nombre_buscado(consulta):
+            return _nodo_data_analyst_con_hub(estado)
 
     if _es_inventario_sql(_normalizar(estado.get("consulta") or "")):
         salida, traza, estado_llamada = _ejecutar_mcp(
@@ -913,6 +927,8 @@ def _respuesta_directa(estado: EstadoGrafo) -> str:
         respuesta = ChatOllama(
             model=estado.get("modelo") or modelo_de("orchestrator"),
             temperature=0,
+            reasoning=False,
+            timeout=60,
         ).invoke(mensajes)
         texto = _texto(getattr(respuesta, "content", respuesta)).strip()
         return texto or "No pude generar una respuesta directa."

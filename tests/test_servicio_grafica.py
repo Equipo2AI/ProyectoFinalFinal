@@ -6,7 +6,7 @@ from proyecto import servicio
 from proyecto.charts import generar_grafica
 
 
-def test_respuesta_expone_grafica_datos_sql_y_redacta_pii(monkeypatch):
+def test_respuesta_expone_grafica_datos_sql_y_redacta_pii(monkeypatch, identidad_prueba):
     png = generar_grafica(
         ["segmento", "clientes"],
         [["Banca masiva", 10], ["Banca preferente", 5]],

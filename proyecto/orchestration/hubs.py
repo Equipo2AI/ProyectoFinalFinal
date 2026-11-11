@@ -15,12 +15,12 @@ import unicodedata
 from typing import Any
 
 from langchain.agents import create_agent
-from langchain_ollama import ChatOllama
+from proyecto.config.ollama_runtime import ChatOllama
 from pydantic import BaseModel, ConfigDict, Field
 
 from proyecto.charts import generar_grafica
 from proyecto.guardrails import limpiar_base64, redactar_pii, verificar_cifras
-from proyecto.mcp_servers.data_analyst_backend import DataAnalystSQLBackend
+from proyecto.mcp_servers.data_analyst_backend import DataAnalystSQLBackend, _respuesta_terminal, nombre_buscado
 from proyecto.orchestration.tareas import (
     ContextoHub,
     DominioTarea,
@@ -157,7 +157,9 @@ class HubLangChain:
 
         inicio = time.perf_counter()
         try:
-            resultado = self._get_agente().invoke(
+            from contextlib import closing
+            from langchain_core.messages import ToolMessage
+            with closing(self._get_agente().stream(
                 {
                     "messages": [
                         {
@@ -167,7 +169,20 @@ class HubLangChain:
                     ]
                 },
                 config={"recursion_limit": self.max_iterations},
-            )
+                stream_mode="values",
+            )) as estados:
+                for resultado in estados:
+                    terminales = []
+                    for mensaje in reversed(resultado.get("messages") or []):
+                        if not isinstance(mensaje, ToolMessage):
+                            break
+                        terminal = _respuesta_terminal(mensaje.name, mensaje.content)
+                        if terminal:
+                            terminales.append(terminal)
+                    if terminales:
+                        terminal = next((t for t in terminales if t.startswith("Acceso denegado:")), terminales[0])
+                        resultado = {**resultado, "structured_response": SalidaHub(respuesta=terminal, evidencia={"terminal": True})}
+                        break
         except Exception as error:  # noqa: BLE001 - se informa al orquestador
             return ResultadoTarea(
                 tarea_id=tarea.id,
@@ -279,8 +294,20 @@ class HubDataAnalyst(HubLangChain):
         )
 
     def ejecutar(self, tarea: Tarea, contexto: ContextoHub) -> ResultadoTarea:
+        from proyecto.security.local_auth import authorize_request
+        try:
+            authorize_request(tarea.instruccion)
+        except PermissionError as error:
+            return ResultadoTarea(tarea_id=tarea.id, estado=EstadoResultado.OK,
+                                  respuesta=str(error), evidencia={"terminal": True})
+        if nombre_buscado(tarea.instruccion):
+            return ResultadoTarea(tarea_id=tarea.id, estado=EstadoResultado.OK,
+                                  respuesta=self.backend.procesar(tarea.instruccion),
+                                  evidencia={"terminal": True})
         self.backend.configurar_perfil(contexto.perfil)
         resultado = super().ejecutar(tarea, contexto)
+        if resultado.evidencia.get("terminal"):
+            return resultado
         resultado = self._contrastar_con_sql_ejecutado(resultado)
         return self._agregar_grafica_si_aplica(resultado, tarea)
 

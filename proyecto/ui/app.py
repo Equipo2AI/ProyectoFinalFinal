@@ -1,6 +1,6 @@
 """Interfaz Streamlit del agente.
 
-    uv run --with streamlit streamlit run proyecto/ui/app.py
+    python -m streamlit run proyecto/ui/app.py
 """
 
 from __future__ import annotations
@@ -50,8 +50,10 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# Desarrollo local: solo el operador aprovisiona identidades y permisos.
-from proyecto.security.local_auth import authenticated, es_modo_demo, principal
+st.session_state.setdefault('tema', 'oscuro')
+estilos.aplicar(st.session_state.tema)
+from ui.login import render_access
+render_access()
 
 for clave, valor in {
     "mensajes": [],
@@ -67,25 +69,8 @@ for clave, valor in {
     if clave not in st.session_state:
         st.session_state[clave] = valor
 
-token = st.session_state.get("auth_token")
-modo_demo = es_modo_demo() and not token
-identidad = None
-if token:
-    try:
-        with authenticated(token):
-            identidad = principal()
-    except PermissionError:
-        st.session_state.pop("auth_token", None)
-        st.rerun()
-elif modo_demo:
-    try:
-        identidad = principal()
-    except PermissionError:
-        identidad = None
-
-puede_consultar = identidad is not None
-
-estilos.aplicar(st.session_state.tema)
+modo_demo = False
+puede_consultar = True  # render_access ya valido la identidad
 
 
 def _limpiar_imagen() -> None:

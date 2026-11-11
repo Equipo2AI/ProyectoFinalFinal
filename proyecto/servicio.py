@@ -404,6 +404,8 @@ def preguntar_orquestador(
                 authorize_request(consulta)
                 texto = orquestador.procesar(consulta, perfil=perfil)
         else:
+            from proyecto.security.local_auth import authorize_request
+            authorize_request(consulta)
             texto = orquestador.procesar(consulta, perfil=perfil)
     except Exception as exc:  # noqa: BLE001 - se informa en la UI
         duracion = round(time.perf_counter() - inicio, 2)

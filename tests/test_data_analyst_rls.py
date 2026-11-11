@@ -14,7 +14,7 @@ RAIZ = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture()
-def backend(tmp_path):
+def backend(tmp_path, sesion_local):
     destino = tmp_path / "banco.db"
     conexion = sqlite3.connect(destino)
     try:
@@ -24,7 +24,9 @@ def backend(tmp_path):
     finally:
         conexion.close()
 
+    sesion_local(destino)
     agente = DataAnalystSQLBackend(url_db=f"sqlite:///{destino}")
+    agente._autenticar_prueba = lambda rol: sesion_local(destino, rol)
     try:
         yield agente
     finally:
@@ -56,6 +58,7 @@ def test_usuario_solo_cuenta_y_lista_su_propio_alcance(backend):
 
 
 def test_superusuario_conserva_alcance_completo(backend):
+    backend._autenticar_prueba("auditor")
     backend.configurar_perfil({"rol": "superusuario"})
 
     descripcion = json.loads(
