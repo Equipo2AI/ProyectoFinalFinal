@@ -313,6 +313,9 @@ with izquierda:
                         else:
                             st.markdown(componentes.texto(mensaje["texto"]))
                         if mensaje["rol"] == "assistant":
+                            grafica = mensaje.get("grafica")
+                            if grafica:
+                                st.image(grafica, width="stretch")
                             st.markdown(
                                 componentes.meta_mensaje(
                                     mensaje.get("pasos"),
@@ -451,6 +454,7 @@ if st.session_state.pensando:
                 "pasos": pasos,
                 "duracion": artefacto.get("duracion"),
                 "formato": artefacto.get("formato"),
+                "grafica": artefacto.get("grafica"),
             }
         )
     finally:
