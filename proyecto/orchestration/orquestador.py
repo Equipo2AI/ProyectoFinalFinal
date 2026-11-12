@@ -639,6 +639,17 @@ class Orquestador:
         """
         from proyecto.security.local_auth import authorize_request
         user = authorize_request(consulta)
+        from proyecto.orchestration.grafo import fuera_de_alcance, RESPUESTA_FUERA_DE_ALCANCE
+        if fuera_de_alcance(consulta, hay_contexto=bool(self._mensajes or self._documentos),
+                           imagen_pendiente=self._imagen_pendiente):
+            # No preparar/actualizar memoria aqui: puede disparar inferencias.
+            self.ultimas_herramientas = []
+            self.agentes_invocados = []
+            self.ultimo_estado_grafo = {"respuesta": RESPUESTA_FUERA_DE_ALCANCE,
+                                       "verificacion": {"estado": "fuera_de_alcance"}}
+            self._mensajes.extend([HumanMessage(content=consulta),
+                                   AIMessage(content=RESPUESTA_FUERA_DE_ALCANCE)])
+            return RESPUESTA_FUERA_DE_ALCANCE
         perfil = {
             "rol": "superusuario" if user['role'] == 'auditor' else "usuario",
             "cliente_id": user['customers'][0] if user['role'] == 'normal' else None,

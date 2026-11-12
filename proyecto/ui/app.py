@@ -130,6 +130,8 @@ def iniciar(
     archivo_nombre: str | None = None,
     archivo_tipo: str | None = None,
 ) -> None:
+    if st.session_state.pensando:
+        return
     st.session_state.mensajes.append({"rol": "user", "texto": texto})
     st.session_state.consulta_actual = texto
     st.session_state.archivo_actual = archivo_path
@@ -300,7 +302,7 @@ with izquierda:
                             pregunta,
                             key=clave,
                             width="stretch",
-                            disabled=not puede_consultar,
+                            disabled=not puede_consultar or st.session_state.pensando,
                         ):
                             iniciar(pregunta)
             else:
@@ -332,9 +334,9 @@ with izquierda:
             accept_file=True,
             file_type=TIPOS_ARCHIVO,
             max_upload_size=MAX_ARCHIVO_BYTES // (1024 * 1024),
-            disabled=not puede_consultar,
+            disabled=not puede_consultar or st.session_state.pensando,
         )
-        if entrada:
+        if entrada and not st.session_state.pensando:
             if isinstance(entrada, str):
                 texto = entrada.strip()
                 archivos = []

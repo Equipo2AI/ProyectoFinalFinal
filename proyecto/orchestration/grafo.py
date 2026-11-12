@@ -112,6 +112,10 @@ _RE_SEGUIMIENTO = re.compile(
     r"filtra|filtras|muestra|dame|agrega|quita|cambia)\b",
     re.IGNORECASE,
 )
+_RE_BANCARIA = re.compile(
+    r"\b(?:cuentas?|movimientos?|saldos?|gaste|gastos|retiros|estado de cuenta|"
+    r"perfil|rfc|promotores|sucursales)\b", re.IGNORECASE,
+)
 
 PROMPT_DIRECTO = """
 Eres el nodo de respuesta directa de un sistema multi-agente bancario.
@@ -255,6 +259,55 @@ def _es_inventario_sql(texto: str) -> bool:
     )
 
 
+RESPUESTA_FUERA_DE_ALCANCE = (
+    "Esa consulta queda fuera de mi especialidad. Puedo ayudarte con servicios "
+    "financieros, cuentas y movimientos, análisis y calidad de datos bancarios, "
+    "normatividad y cumplimiento."
+)
+
+
+def fuera_de_alcance(
+    consulta: str, *, hay_contexto: bool = False,
+    imagen_pendiente: str | None = None,
+) -> bool:
+    """Filtro conservador de intenciones explicitas; desconocido no significa ajeno.
+
+    No es un clasificador general: combina peticion, tema ajeno, evidencia de
+    dominio y referencias conversacionales. Ante duda conserva el flujo actual.
+    """
+    texto = _normalizar(consulta or "")
+    if imagen_pendiente or _tiene_ruta_imagen(consulta) or _tiene_ruta_documento(consulta):
+        return False
+    if (_tabla_mencionada(consulta) or _es_consulta_normativa(consulta)
+            or _RE_BANCARIA.search(texto)
+            or _RE_COMPLIANCE.search(texto) or _RE_DOCUMENTO.search(texto)):
+        return False
+    if re.search(
+        r"\b(?:banc\w*|financier\w*|cuentas?|clientes?|movimientos?|saldos?|"
+        r"transacciones?|credit\w*|tarjetas?|prestamos?|intereses|comisiones?|"
+        r"inversion\w*|ahorr\w*|hipotecas?|pagos?|fraudes?|riesgos?|costos?|presupuest\w*|"
+        r"sql|datasets?|csv|datos|tablas?|columnas?|grafic\w*|agentes?|"
+        r"orquestador|ollama|mimo)\b", texto,
+    ):
+        return False
+    if hay_contexto and re.search(
+        r"\b(?:eso|esto|esa|ese|anterior|mismo|segun|al respecto)\b", texto,
+    ):
+        return False
+    peticion = re.search(
+        r"\b(?:por que|que|como|cuantos?|cual|explica\w*|dime|dame|"
+        r"escribe\w*|crea|prepara\w*|cuentame|hablame)\b", texto,
+    )
+    tema_ajeno = re.search(
+        r"\bcielo\b.{0,60}\bazul\b|\bfotosintesis\b|"
+        r"\b(?:planetas?|dinosaurios?|astronomia)\b|"
+        r"\b(?:receta|cocinar|preparar)\b.{0,60}\b(?:pizza|pastel|tarta|pasta)\b|"
+        r"\b(?:poema|cuento|cancion|chiste)\b|"
+        r"\bcapital de (?:francia|italia|japon|alemania)\b", texto,
+    )
+    return bool(peticion and tema_ajeno)
+
+
 def planear_rutas(
     consulta: str,
     ultimo_agente: str | None = None,
@@ -267,6 +320,9 @@ def planear_rutas(
     no dependa de que un modelo pequeño acierte la ruta; el LLM se reserva para
     la respuesta directa y para los especialistas que ya la usan internamente.
     """
+    if fuera_de_alcance(consulta, hay_contexto=bool(ultimo_agente or contexto_documentos),
+                       imagen_pendiente=imagen_pendiente):
+        return ["directo"]
     if imagen_pendiente or _tiene_ruta_imagen(consulta):
         return ["document_intelligence"]
     if _tiene_ruta_documento(consulta):
@@ -300,7 +356,7 @@ def planear_rutas(
 
     if normativa:
         return ['normatividad_rag']
-    bancaria = bool(re.search(r'\b(?:cuentas?|movimientos?|saldos?|gaste|gastos|retiros|estado de cuenta|perfil|rfc|promotores|sucursales)\b', texto))
+    bancaria = bool(_RE_BANCARIA.search(texto))
     dataset = bool(tabla or re.search(r'\b(?:csv|archivo|dataset|pii|calidad|faltantes|nulos|duplicados|columnas)\b', texto))
     if bancaria and not dataset:
         return ['data_analyst']
@@ -973,6 +1029,12 @@ def _decidir_verificacion(estado: EstadoGrafo) -> str:
 
 
 def _respuesta_directa(estado: EstadoGrafo) -> str:
+    if fuera_de_alcance(
+        estado.get("consulta") or "",
+        hay_contexto=bool(estado.get("historial") or estado.get("contexto_documentos")),
+        imagen_pendiente=estado.get("imagen_pendiente"),
+    ):
+        return RESPUESTA_FUERA_DE_ALCANCE
     historial = _normalizar_historial(estado.get("historial") or [])
     if not historial:
         historial = [{"role": "user", "content": estado.get("consulta") or ""}]

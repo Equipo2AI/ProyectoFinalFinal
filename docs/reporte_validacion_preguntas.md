@@ -2032,3 +2032,50 @@ No se corrigio automaticamente ningun componente. No se certifica acceso autoriz
 No se hacen afirmaciones legales actuales a partir del corpus. Se distinguen el contenido local disponible y la evidencia efectivamente usada por la aplicacion. El resultado no demuestra una fuga de datos, pero tampoco permite certificar los controles de acceso.
 
 El unico archivo agregado al repositorio por esta tarea es este reporte. La instrumentacion y los logs de diagnostico quedaron fuera del repositorio; no se publican credenciales ni logs sin redactar.
+
+
+## Integracion de documentos y bloqueo de entrada - 2026-11-11
+
+Orden seguido: primero se corrigio nuestra entrada de chat y pasaron tres
+pruebas (bloqueo, reactivacion tras respuesta/error y rechazo de duplicado).
+No se modificaron el CSS ni el diseno visual. Despues se consultaron upstream
+sin alterar archivos y se incorporaron por fast-forward los dos commits hasta
+`a05e57b`, conciliando el conflicto de app.py: nuevos adjuntos y limites junto
+con el bloqueo mientras pensando=True. El filtro de alcance previo se conserva
+con reconocimiento de las rutas de documentos del equipo.
+
+Mejoras incorporadas: conversion de documentos con MarkItDown, nuevos adjuntos
+PDF/DOCX/XLSX/PPTX/CSV/HTML/TXT/MD, contexto de documentos en el orquestador,
+cache de recuperacion normativa por consulta y verificacion de citas contra
+evidencia ya recuperada. Se mantuvieron login obligatorio, permisos reales,
+AppData, herramientas SQL/MCP, reporte historico y mitigacion de MiMo.
+
+### Evidencia focalizada de esta etapa
+
+- Tres pruebas iniciales de la entrada pasaron antes de integrar. Despues de
+  integrar pasaron 45 pruebas focalizadas de UI, alcance/enrutamiento,
+  autenticacion, evidencia normativa y serializacion de la mitigacion. No se
+  repitieron las 30 preguntas ni se afirma una nueva aprobacion de todo el lote.
+- Edge real, con sesiones temporales de prueba, comparo nuestra interfaz y una
+  copia de upstream con el mismo Streamlit 1.67.0: ambos tuvieron ancho de chat
+  1362.8 px sin panel y 812.4 px con panel en una ventana de 1440 px. No se
+  reprodujo la captura comprimida ni se atribuye una causa no demostrada.
+- Tras integrar se revisaron capturas reales en claro/oscuro y con traza, a
+  anchos de ventana 1440/1024/600 px. No se observo texto vertical ni columnas
+  comprimidas. CSS y componentes coinciden exactamente con nuestra base previa.
+- En Edge se envio una consulta real de conteos de catalogos: la entrada se
+  deshabilito durante MCP, volvio a habilitarse, hubo una sola pareja de
+  mensajes y la respuesta SQL y su traza quedaron visibles sin comprimir el chat.
+- La prueba manual MCP/AppTest existente paso con login normal/auditor,
+  consultas autorizadas, rechazo de perfil suplantado/acceso ajeno, consulta
+  vacia, identificacion denegada, historial separado y logout. Las identidades
+  existentes no se modificaron; las identidades de prueba fueron temporales.
+- convertir_documento_markdown se ejecuto por MCP real sobre TXT y DOCX
+  sinteticos y devolvio el contenido esperado. Esto no certifica conversion de
+  todos los formatos ni OCR de PDF escaneado, ni la sintesis LLM de un documento.
+- Se instalo el conjunto de dependencias MarkItDown requerido por el equipo en
+  .venv, incluyendo la actualizacion de certifi exigida por ese paquete. No se
+  actualizo Streamlit ni se cambiaron modelos de Ollama o configuracion Windows.
+- SQLite conservo su SHA-256. No se tocaron documentos originales, .env ni
+  credenciales. Capturas y respaldos permanecen fuera de Git. La inferencia
+  vision/OCR y la sintesis abierta de documentos no se repitieron en esta etapa.
