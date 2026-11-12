@@ -28,6 +28,10 @@ def modelos_requeridos() -> list[str]:
         if not isinstance(modelo, str) or not modelo.strip():
             raise ValueError(f"Falta el modelo de {agente} en models.yaml.")
         modelos.add(modelo.strip())
+    # El OCR de PDF usa un modelo independiente del agente de imágenes.
+    modelo_pdf = os.environ.get("DOCUMENT_PDF_MODEL", "qwen2.5vl:3b").strip()
+    if modelo_pdf:
+        modelos.add(modelo_pdf)
     if not modelos:
         raise ValueError("No hay modelos Ollama configurados en models.yaml.")
     return sorted(modelos)

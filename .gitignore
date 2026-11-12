@@ -21,14 +21,14 @@ proyecto/data/audit_log.json
 proyecto/data/quality_runs.json
 proyecto/data/data_quality_incidents.json
 *.db
+proyecto/data/document_context.db*
 tests/datos/
 proyecto/data/memory/
 
 AGENTS.md
 
 # Documentación interna: no se publica en el repo
-docs/*
-!docs/reporte_validacion_preguntas.md
+docs/
 
 # Pruebas manuales: se conservan solo en local
 tests/probar_*.py

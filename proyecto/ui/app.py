@@ -324,7 +324,7 @@ with izquierda:
                     if st.session_state.get("archivo_tipo") == "imagen":
                         estado = "Procesando imagen…"
                     elif st.session_state.get("archivo_tipo") == "documento":
-                        estado = "Convirtiendo documento…"
+                        estado = "Leyendo documento (un PDF escaneado puede tardar)…"
                     else:
                         estado = "Analizando la consulta…"
                     componentes.pensando(estado)

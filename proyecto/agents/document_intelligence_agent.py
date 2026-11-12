@@ -5,9 +5,9 @@ Qwen2.5-VL servido localmente con Ollama. También convierte documentos locales
 (PDF, DOCX, XLSX, PPTX, CSV, HTML y texto) a Markdown con MarkItDown para que
 otro agente pueda procesarlos.
 
-La conversión a Markdown no hace OCR: si un PDF es escaneado y no tiene capa de
-texto, MarkItDown devolverá poco o ningún contenido. Para esos casos se debe
-usar una tool de OCR/visión sobre las páginas convertidas a imagen.
+Los PDF se procesan por página: si tienen capa de texto se extrae directamente;
+si una página está escaneada o tiene poco texto, se rasteriza y se aplica OCR
+local con Qwen2.5-VL. El OCR nunca sale de la máquina.
 """
 
 from __future__ import annotations
@@ -176,8 +176,21 @@ def _extraer_ruta_documento(consulta: str) -> str | None:
     return coincidencia.group(1) or coincidencia.group(2)
 
 
-def _convertir_documento(path: Path) -> str:
-    """Convert a local document to Markdown with MarkItDown."""
+def _convertir_documento(
+    path: Path,
+    modo: str = "auto",
+    paginas: str | None = None,
+) -> str:
+    """Convert a local document to Markdown, with local OCR for PDF pages."""
+    if path.suffix.lower() == ".pdf":
+        from proyecto.agents.pdf_reader import pdf_to_markdown
+
+        return pdf_to_markdown(
+            str(path),
+            modo=modo,
+            paginas=paginas,
+        )
+
     from markitdown import MarkItDown
 
     resultado = MarkItDown().convert(str(path))
@@ -221,10 +234,23 @@ def describe_an_image(image_path: str) -> str:
 
 
 @tool
-def document_to_markdown(file_path: str) -> str:
-    """Convierte un documento local (PDF, DOCX, XLSX, PPTX, CSV, HTML, TXT) a Markdown."""
+def document_to_markdown(
+    file_path: str,
+    modo: str = "auto",
+    paginas: str | None = None,
+) -> str:
+    """Convierte un documento local a Markdown.
+
+    En PDF usa la capa de texto y, si una página no tiene texto suficiente,
+    aplica OCR local con Qwen2.5-VL. ``modo`` puede ser ``auto``, ``texto``,
+    ``ocr`` o ``describir``; ``paginas`` acepta rangos como ``1-5,8``.
+    """
     try:
-        return _convertir_documento(_resolver_documento(file_path))
+        return _convertir_documento(
+            _resolver_documento(file_path),
+            modo=modo,
+            paginas=paginas,
+        )
     except Exception as error:  # noqa: BLE001 - se devuelve al agente como texto
         return _error_documento(error)
 
@@ -234,7 +260,8 @@ class DocumentIntelligenceAgent:
         self.nombre = "document_intelligence"
         self.descripcion = (
             "Lee imágenes (facturas, recibos, comprobantes) con OCR y visión, "
-            "y convierte documentos locales (PDF, DOCX, XLSX, PPTX) a Markdown."
+            "y convierte documentos locales (PDF, DOCX, XLSX, PPTX) a Markdown; "
+            "en PDF usa texto nativo y OCR local de páginas escaneadas."
         )
         # Qwen2.5-VL no soporta tool calling en Ollama. En vez de cargar un
         # segundo LLM solo para enrutar, `procesar` despacha a la tool adecuada.
@@ -262,7 +289,7 @@ class DocumentIntelligenceAgent:
     def __repr__(self) -> str:
         return (
             f"<Agente {self.nombre} | visión: {self.modelo} | "
-            "documentos: MarkItDown>"
+            "documentos: MarkItDown + PDF OCR>"
         )
 
 

@@ -7,6 +7,7 @@ import os
 import sys
 import unicodedata
 from contextvars import ContextVar
+from dataclasses import replace
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -32,12 +33,14 @@ from proyecto.agents.document_intelligence_agent import (
     PATRON_RUTA_IMAGEN,
 )
 from proyecto.config.models import modelo_de
-from proyecto.memory.long_term import LongTermMemory
+from proyecto.memory.document_context import DocumentContextStore
+from proyecto.memory.long_term import LongTermMemory, config_from_file
 
 _RAIZ = Path(__file__).resolve().parents[2]
 
 logger = logging.getLogger(__name__)
 MCP_TIMEOUT = float(os.getenv("MCP_TIMEOUT", "180"))
+MCP_DOCUMENT_TIMEOUT = float(os.getenv("MCP_DOCUMENT_TIMEOUT", "1800"))
 
 AGENTES = {
     "data_steward": data_steward_agent,
@@ -143,6 +146,13 @@ def _normalizar(texto: str) -> str:
     return "".join(c for c in normalizado if not unicodedata.combining(c))
 
 
+def _entero_env(nombre: str, defecto: int, minimo: int = 1) -> int:
+    try:
+        return max(minimo, int(str(os.getenv(nombre, defecto)).strip()))
+    except (TypeError, ValueError):
+        return defecto
+
+
 def _ruta_imagen_de_consulta(consulta: str) -> str | None:
     coincidencia = PATRON_RUTA_IMAGEN.search(consulta or "")
     if not coincidencia:
@@ -201,7 +211,12 @@ def _llamar_mcp(servidor: str, herramienta: str, argumentos: dict) -> str:
     )
 
     async def ejecutar() -> str:
-        async with Client(transporte, timeout=MCP_TIMEOUT) as cliente:
+        timeout = (
+            MCP_DOCUMENT_TIMEOUT
+            if servidor == "document_intelligence_server"
+            else MCP_TIMEOUT
+        )
+        async with Client(transporte, timeout=timeout) as cliente:
             resultado = await cliente.call_tool(herramienta, argumentos)
             if resultado.is_error:
                 raise RuntimeError(
@@ -380,23 +395,42 @@ class Orquestador:
         self,
         modelo: str | None = None,
         memory: LongTermMemory | None = None,
+        usuario: str | None = None,
+        document_store: DocumentContextStore | None = None,
     ):
         self.nombre = "orquestador"
         self.modelo = modelo or modelo_de("orchestrator")
+        self.usuario = str(
+            usuario or os.getenv("PROYECTO_AUTH_SUBJECT") or "local"
+        ).strip() or "local"
         self.herramientas = list(HERRAMIENTAS_MCP)
         self.agentes_invocados: list[str] = []  # trazas de la última consulta
         self.ultimas_herramientas: list[dict] = []  # nombre, args, salida, estado
         self.ultimo_estado_grafo: dict = {}  # resultados estructurados del turno
         self._agente = None
         self._mensajes: list = []  # historial de la conversación
-        self._documentos: list[dict] = []  # OCR/descripción usados como contexto
+        self._documentos: list[dict] = []  # caché de la sesión actual
+        self._document_store = document_store
         self._imagen_pendiente: str | None = None
         self._ultimo_agente: str | None = None
         self.modo = os.getenv("ORCHESTRATION_MODE", "graph").strip().lower()
         if self.modo not in {"graph", "hub"}:
             self.modo = "graph"
         self.modo_efectivo = self.modo
-        self.memory = memory or LongTermMemory(model=modelo)
+        if memory is None:
+            self.memory = LongTermMemory(
+                model=modelo,
+                config=replace(config_from_file(), user=self.usuario),
+            )
+        else:
+            self.memory = memory
+
+    @property
+    def document_store(self) -> DocumentContextStore:
+        """Almacén privado perezoso para no crear archivos al importar."""
+        if self._document_store is None:
+            self._document_store = DocumentContextStore()
+        return self._document_store
 
     def _get_agente(self):
         if self._agente is None:
@@ -429,6 +463,7 @@ class Orquestador:
         self.agentes_invocados = []
         self.ultimas_herramientas = []
         self.memory.update(self._mensajes)
+        self._limitar_historial()
 
     @property
     def imagen_pendiente(self) -> str | None:
@@ -446,43 +481,51 @@ class Orquestador:
         operacion: str,
         texto: str,
         nombre: str | None = None,
-    ) -> None:
-        """Guarda el texto de una imagen para responder consultas posteriores."""
+    ) -> str | None:
+        """Guarda el texto de un documento o imagen en el contexto del usuario."""
         texto = (texto or "").strip()
         if not texto or texto.startswith("No se pudo procesar la imagen:"):
-            return
+            return None
 
         ruta_resuelta = str(Path(ruta).expanduser().resolve())
+        etiqueta = (nombre or Path(ruta_resuelta).name).strip()
+        try:
+            doc_id = self.document_store.save(
+                self.usuario,
+                etiqueta,
+                operacion,
+                texto,
+                ruta_resuelta,
+            )
+        except Exception as error:  # noqa: BLE001 - no romper la respuesta
+            logger.warning("No se pudo guardar el contexto documental: %s", error)
+            return None
+
         self._documentos = [
             documento
             for documento in self._documentos
             if documento.get("ruta") != ruta_resuelta
+            or documento.get("operacion") != operacion
         ]
         self._documentos.append(
             {
+                "doc_id": doc_id,
                 "ruta": ruta_resuelta,
-                "nombre": nombre or Path(ruta_resuelta).name,
+                "nombre": etiqueta,
                 "operacion": operacion,
-                "texto": texto,
             }
         )
         self._documentos = self._documentos[-5:]
         self._ultimo_agente = "document_intelligence"
         if self._imagen_pendiente == ruta_resuelta:
             self._imagen_pendiente = None
+        return doc_id
 
-    def _contexto_documentos(self) -> str:
+    def _contexto_documentos(self, consulta: str = "") -> str:
         partes: list[str] = []
-        for documento in self._documentos[-3:]:
-            texto = str(documento.get("texto") or "")
-            if len(texto) > 6000:
-                texto = texto[:6000].rstrip() + "\n[…texto truncado…]"
-            partes.append(
-                f"Documento: {documento.get('nombre')} "
-                f"({documento.get('operacion')})\n"
-                f"Ruta original: {documento.get('ruta')}\n"
-                f"Texto ya extraído:\n{texto}"
-            )
+        contexto = self.document_store.build_context(self.usuario, consulta)
+        if contexto:
+            partes.append(contexto)
 
         if self._imagen_pendiente:
             partes.append(
@@ -495,9 +538,10 @@ class Orquestador:
             return ""
         return (
             f"{_MARCADOR_CONTEXTO}\n"
-            "Contexto documental de esta conversación. Úsalo como evidencia "
-            "para preguntas de seguimiento; no lo envíes a data_analyst ni "
-            "vuelvas a procesar la imagen salvo que el usuario lo pida.\n\n"
+            "Contexto documental privado del usuario autenticado. Úsalo como "
+            "evidencia para preguntas de seguimiento. No lo envíes a Pinecone, "
+            "al índice normativo ni a otros usuarios; no vuelvas a procesar la "
+            "imagen salvo que el usuario lo pida.\n\n"
             + "\n\n".join(partes)
         )
 
@@ -514,6 +558,30 @@ class Orquestador:
             rol = "Usuario" if tipo == "human" else "Asistente"
             partes.append(f"{rol}: {texto[:800]}")
         return "\n".join(partes)
+
+    def _historial_para_modelo(self) -> list:
+        """Ventana acotada del chat; el contexto documental va aparte."""
+        max_mensajes = _entero_env("CHAT_HISTORY_MESSAGES", 12, 2)
+        max_caracteres = _entero_env("CHAT_HISTORY_CHARS", 8_000, 1_000)
+        seleccion: list = []
+        total = 0
+        for mensaje in reversed(self._mensajes[-max_mensajes:]):
+            if isinstance(mensaje, dict):
+                texto = str(mensaje.get("content") or "")
+            else:
+                texto = self._extraer_texto(mensaje)
+            if seleccion and total + len(texto) > max_caracteres:
+                break
+            seleccion.append(mensaje)
+            total += len(texto)
+        if not seleccion and self._mensajes:
+            seleccion = [self._mensajes[-1]]
+        return list(reversed(seleccion))
+
+    def _limitar_historial(self) -> None:
+        maximo = _entero_env("CHAT_HISTORY_STORAGE_MESSAGES", 80, 8)
+        if len(self._mensajes) > maximo:
+            self._mensajes = self._mensajes[-maximo:]
 
     def _resultados_data_steward(self) -> list[dict]:
         """Recupera las salidas estructuradas del Data Steward para verificarlas."""
@@ -556,6 +624,7 @@ class Orquestador:
             mensajes = [*mensajes, AIMessage(content=respuesta)]
         self._mensajes = mensajes
         self.memory.update(self._mensajes)
+        self._limitar_historial()
         return respuesta
 
     def _registrar_herramientas(self, nuevos: list) -> None:
@@ -625,6 +694,7 @@ class Orquestador:
         ]
         self._ultimo_agente = "normatividad_rag"
         self.memory.update(self._mensajes)
+        self._limitar_historial()
         return salida
 
     def procesar(self, consulta: str, perfil: dict | None = None) -> str:
@@ -670,11 +740,11 @@ class Orquestador:
     ) -> str:
         from proyecto.orchestration.grafo import ejecutar_grafo
 
-        historial = self.memory.prepare(self._mensajes, consulta)
+        historial = self.memory.prepare(self._historial_para_modelo(), consulta)
         estado = ejecutar_grafo(
             consulta,
             historial=historial,
-            contexto_documentos=self._contexto_documentos(),
+            contexto_documentos=self._contexto_documentos(consulta),
             contexto_analista=self._contexto_analista(),
             modelo=self.modelo,
             imagen_pendiente=self._imagen_pendiente,
@@ -741,6 +811,7 @@ class Orquestador:
             AIMessage(content=respuesta),
         ]
         self.memory.update(self._mensajes)
+        self._limitar_historial()
         self.modo_efectivo = "grafo"
         return respuesta
 
@@ -751,8 +822,8 @@ class Orquestador:
         if _es_consulta_normativa(consulta):
             return self._responder_normatividad(consulta)
 
-        entrada = self.memory.prepare(self._mensajes, consulta)
-        contexto = self._contexto_documentos()
+        entrada = self.memory.prepare(self._historial_para_modelo(), consulta)
+        contexto = self._contexto_documentos(consulta)
         if contexto:
             entrada = [{"role": "system", "content": contexto}, *entrada]
 
@@ -809,6 +880,7 @@ class Orquestador:
             if getattr(mensaje, "type", "") != "system"
         ]
         self.memory.update(self._mensajes)
+        self._limitar_historial()
         return self._extraer_texto(mensajes[-1])
 
     def reiniciar(self) -> None:

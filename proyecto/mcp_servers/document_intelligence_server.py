@@ -29,9 +29,19 @@ def describir_imagen(image_path: str) -> str:
 
 
 @mcp.tool()
-def convertir_documento_markdown(file_path: str) -> str:
-    """Convierte un documento local (PDF, DOCX, XLSX, PPTX) a Markdown."""
-    return document_to_markdown.invoke({"file_path": file_path})
+def convertir_documento_markdown(
+    file_path: str,
+    modo: str = "auto",
+    paginas: str = "",
+) -> str:
+    """Convierte un documento local a Markdown.
+
+    En PDF extrae el texto nativo y aplica OCR local a las páginas escaneadas.
+    """
+    argumentos: dict[str, str] = {"file_path": file_path, "modo": modo or "auto"}
+    if (paginas or "").strip():
+        argumentos["paginas"] = paginas
+    return document_to_markdown.invoke(argumentos)
 
 
 if __name__ == "__main__":

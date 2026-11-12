@@ -101,6 +101,7 @@ def _llamar_mcp_document_intelligence(
     nombre_tool: str,
     ruta: str,
     campo: str = "image_path",
+    extra: dict[str, str] | None = None,
 ) -> str:
     """Llama una tool del servidor MCP por stdio."""
     from fastmcp import Client
@@ -111,11 +112,12 @@ def _llamar_mcp_document_intelligence(
         args=["-m", "proyecto.mcp_servers.document_intelligence_server"],
         cwd=str(_RAIZ),
     )
+    argumentos = {campo: ruta, **(extra or {})}
 
     async def ejecutar() -> str:
-        timeout = float(os.getenv("MCP_TIMEOUT", "180"))
+        timeout = float(os.getenv("MCP_DOCUMENT_TIMEOUT", "1800"))
         async with Client(transporte, timeout=timeout) as cliente:
-            resultado = await cliente.call_tool(nombre_tool, {campo: ruta})
+            resultado = await cliente.call_tool(nombre_tool, argumentos)
             if resultado.is_error:
                 raise RuntimeError(f"El servidor MCP falló al ejecutar {nombre_tool}.")
             return "\n".join(
@@ -125,6 +127,25 @@ def _llamar_mcp_document_intelligence(
             ).strip()
 
     return asyncio.run(ejecutar())
+
+
+_PAGINAS_RE = re.compile(
+    r"\b(?:p[aá]ginas?|pags?\.?|hojas?)\s+(\d+(?:\s*(?:-|a|y|,)\s*\d+)*)",
+    re.IGNORECASE,
+)
+
+
+def _paginas_solicitadas(consulta: str) -> str:
+    """Extrae un rango de páginas de la consulta, por ejemplo ``1-5,8``."""
+    coincidencia = _PAGINAS_RE.search(consulta or "")
+    if not coincidencia:
+        return ""
+    fragmento = coincidencia.group(1)
+    fragmento = re.sub(r"\s*a\s*", "-", fragmento, flags=re.IGNORECASE)
+    fragmento = re.sub(r"\s*y\s*", ",", fragmento, flags=re.IGNORECASE)
+    fragmento = re.sub(r"\s*-\s*", "-", fragmento)
+    fragmento = re.sub(r"\s*,\s*", ",", fragmento)
+    return fragmento.strip(" ,-")
 
 
 def procesar_imagen(ruta: str, operacion: str = "ocr") -> Respuesta:
@@ -243,16 +264,22 @@ def procesar_documento(
     via = "MCP"
     error: str | None = None
     alertas: list[str] = []
+    extra: dict[str, str] = {"modo": "auto"}
+    if sufijo == ".pdf":
+        paginas = _paginas_solicitadas(consulta)
+        if paginas:
+            extra["paginas"] = paginas
     try:
         texto = _llamar_mcp_document_intelligence(
             "convertir_documento_markdown",
             str(ruta_path),
             campo="file_path",
+            extra=extra,
         )
     except Exception as exc:  # noqa: BLE001 - se intenta el respaldo local
         try:
             texto = document_to_markdown.invoke(
-                {"file_path": str(ruta_path)}
+                {"file_path": str(ruta_path), **extra}
             )
             via = f"Fallback local ({type(exc).__name__})"
         except Exception as exc_local:  # noqa: BLE001
@@ -293,7 +320,7 @@ def procesar_documento(
             "fuentes": [etiqueta],
             "duracion": duracion,
             "modelo": None,
-            "nota": f"Documento · MarkItDown · vía {via}",
+            "nota": f"Documento · MarkItDown/PDF OCR · vía {via}",
             "error": error,
             "formato": "markdown",
         }
@@ -310,11 +337,39 @@ def procesar_documento(
     )
 
 
+def _usuario_actual() -> str:
+    """Identidad autenticada para aislar el contexto documental."""
+    token = os.environ.get("PROYECTO_AUTH_TOKEN", "")
+    try:
+        import streamlit as st
+
+        token = str(st.session_state.get("auth_token", token) or token)
+    except Exception:  # noqa: BLE001 - el servicio también se usa sin Streamlit
+        pass
+
+    if not token:
+        return (
+            os.getenv("PROYECTO_AUTH_SUBJECT", "local").strip() or "local"
+        )
+    try:
+        from proyecto.security.local_auth import authenticated, principal
+
+        with authenticated(token):
+            return str(principal().get("subject") or "local").strip() or "local"
+    except Exception:  # noqa: BLE001 - se usa un ámbito local seguro
+        return os.getenv("PROYECTO_AUTH_SUBJECT", "local").strip() or "local"
+
+
 def _get_orquestador():
     import streamlit as st
-    if 'orquestador_sesion' not in st.session_state:
+
+    usuario = _usuario_actual()
+    actual = st.session_state.get("orquestador_sesion")
+    if actual is None or st.session_state.get("orquestador_usuario") != usuario:
         from proyecto.orchestration.orquestador import Orquestador
-        st.session_state.orquestador_sesion = Orquestador()
+
+        st.session_state.orquestador_sesion = Orquestador(usuario=usuario)
+        st.session_state.orquestador_usuario = usuario
     return st.session_state.orquestador_sesion
 
 

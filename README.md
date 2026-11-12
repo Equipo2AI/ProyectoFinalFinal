@@ -79,7 +79,9 @@ se define, se usa la ruta de `proyecto/config/data_connection.yaml` y, en su
 defecto, `proyecto/bd/banamex.db`. `MCP_TIMEOUT` (segundos, 180 por defecto)
 limita cada llamada MCP `stdio` para que una tool colgada no bloquee la UI. El
 valor por defecto cubre el arranque en frío de Ollama; si tu equipo es más lento,
-súbelo en `.env`.
+súbelo en `.env`. Las llamadas de documentos usan `MCP_DOCUMENT_TIMEOUT` (1,800
+segundos por defecto) porque un PDF escaneado puede tardar varios minutos en
+OCR.
 
 ## Base sintética
 
@@ -129,12 +131,27 @@ Ejemplo de una consulta de normatividad con evidencia y fuentes:
 | `document_intelligence` | Lectura de imágenes y documentos | `qwen2.5vl:7b` | `extraer_texto_imagen`, `describir_imagen`, `convertir_documento_markdown` |
 | `compliance` | Reglas regulatorias: KYC, AML | `qwen2.5:7b-instruct` | `revisar_compliance_demo` (demostración, fase 2) |
 
-`convertir_documento_markdown` usa **MarkItDown** para convertir PDF, DOCX,
-XLSX, PPTX, CSV, HTML y texto local a Markdown. No hace OCR: si un PDF es
-escaneado y no tiene capa de texto, devuelve un aviso y requiere el flujo de
-OCR/visión sobre las páginas convertidas a imagen. El resultado de OCR,
-descripción o Markdown se entrega al orquestador, que decide qué responder al
-cliente en lugar de mostrar el texto crudo directamente.
+`convertir_documento_markdown` usa **MarkItDown** para DOCX, XLSX, PPTX, CSV,
+HTML y texto. Los PDF se procesan por página: si tienen capa de texto se extrae
+directamente; si una página está escaneada o tiene poco texto, se rasteriza y se
+transcribe con **OCR local** (`DOCUMENT_PDF_MODEL`, por defecto
+`qwen2.5vl:3b`). El resultado conserva marcas `## Página N` y se guarda en el
+contexto privado. `DOCUMENT_PDF_OCR_MAX_PAGES` limita cuántas páginas sin texto
+se procesan por PDF (20 por defecto); las páginas de texto nativo no consumen
+ese límite. `DOCUMENT_PDF_DPI` controla la resolución de rasterizado (150 por
+defecto). Si el PDF excede el límite, se puede indicar un rango en el mensaje de
+carga, por ejemplo «lee las páginas 21-30». El resultado de OCR, descripción o
+Markdown se entrega al orquestador,
+que decide qué responder al cliente en lugar de mostrar el texto crudo
+directamente.
+
+El texto completo de cada documento se guarda en un SQLite local
+(`proyecto/data/document_context.db`), aislado por el usuario autenticado
+(`subject`). **No se indexa en Pinecone ni se comparte con otros usuarios.** El
+orquestador recibe un contexto acotado: el documento activo completo si cabe, o
+un resumen extractivo más las secciones relevantes. La retención y los límites
+se configuran con `DOCUMENT_CONTEXT_TTL_DAYS`, `DOCUMENT_CONTEXT_MAX_DOCS`,
+`DOCUMENT_CONTEXT_MAX_CHARS` y `DOCUMENT_CONTEXT_SUMMARY_CHARS`.
 
 En el Data Analyst, `analizar_datos` recibe la pregunta en lenguaje natural y la
 resuelve con las herramientas SQL (`listar_tablas`, `describir_tabla`,
@@ -332,6 +349,7 @@ proyecto/
 │   ├── normatividad_rag_agent.py
 │   ├── data_analyst_agent.py
 │   ├── document_intelligence_agent.py
+│   ├── pdf_reader.py         # Texto nativo + OCR por página de PDF
 │   └── compliance_agent.py
 ├── mcp_servers/              # Servidores MCP por especialista
 ├── orchestration/
@@ -364,12 +382,16 @@ La conexión a datos se toma de `config/data_connection.yaml`, que apunta a
 `proyecto/bd/banamex.db`. Cuando `DATABASE_URL` está definida, tiene prioridad.
 
 La memoria de largo plazo se configura en `config/memory.yaml` y está desactivada
-por defecto.
+por defecto. Es independiente del contexto documental privado, que vive en
+SQLite local y se recorta por presupuesto de caracteres antes de llegar al
+modelo. El historial de chat también tiene una ventana propia
+(`CHAT_HISTORY_MESSAGES`, `CHAT_HISTORY_CHARS`).
 
 El modelo de cada agente se toma de `config/models.yaml` al inicializar el agente.
 Si el archivo o la entrada faltan, se usa el valor por defecto de
 `proyecto/config/models.py`. `DOCUMENT_INTELLIGENCE_MODEL` sobrescribe el modelo
-de visión.
+de visión de imágenes y `DOCUMENT_PDF_MODEL` el de OCR de PDF (por defecto
+`qwen2.5vl:3b`).
 
 ## Límites conocidos
 
@@ -383,6 +405,9 @@ Estos límites corresponden a la arquitectura y a las pruebas con agentes:
   lugar de volver al usuario.
 - Los modelos de 7-9B resuelven bien una herramienta aislada, pero pierden
   consistencia en SQL largo o en inferencias entre fuentes.
+- El OCR de PDF está limitado a 20 páginas sin texto por archivo. Un PDF
+  escaneado de 20 páginas puede tardar unos 15 minutos en un Mac de 16 GB; el
+  texto nativo se extrae sin OCR y es mucho más rápido.
 - La suite automatizada cubre contratos y seguridad; las pruebas de calidad de
   respuesta con LLM siguen siendo manuales y dependen de Ollama/Pinecone.
 
@@ -543,8 +568,8 @@ roles: el alcance y los permisos provienen de la sesion real de AppData. El hub
 opcional mantiene instancias separadas por sesion y conserva la ruta MCP para
 los planes bancarios verificados. No se habilita ningun auditor anonimo.
 
-La evidencia y los limites posteriores a la integracion estan en
-`docs/reporte_validacion_preguntas.md`. No se repitieron las 30 preguntas.
+La evidencia y los limites posteriores a la integracion se conservan fuera
+del repositorio. No se repitieron las 30 preguntas.
 La prueba manual existente `tests/probar_data_analyst_mcp.py` se conserva local
 (segun la exclusion del equipo) y ahora verifica MCP real y Streamlit sin
 guardar contrasenas ni alterar la base. Las pruebas unitarias del equipo usan

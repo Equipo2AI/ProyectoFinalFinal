@@ -114,7 +114,16 @@ _RE_SEGUIMIENTO = re.compile(
 )
 _RE_BANCARIA = re.compile(
     r"\b(?:cuentas?|movimientos?|saldos?|gaste|gastos|retiros|estado de cuenta|"
-    r"perfil|rfc|promotores|sucursales)\b", re.IGNORECASE,
+    r"perfil|rfc|promotores|sucursales)\b",
+    re.IGNORECASE,
+)
+# Fuentes que compiten con el documento activo. Si el usuario las pide de
+# forma explícita, se respeta el especialista; si no, manda el documento.
+_RE_OTRA_FUENTE = re.compile(
+    r"\b(?:base\s+de\s+datos|sql|dataset|datasets|csv|raw_|dim_|fact_|vw_|"
+    r"normativa|normatividad|politica|politicas|manual|manuales|ley|leyes|"
+    r"kyc|aml|lavado|compliance|regulatori[oa])\b",
+    re.IGNORECASE,
 )
 
 PROMPT_DIRECTO = """
@@ -127,7 +136,10 @@ que se reformule para enviarla al especialista adecuado.
 
 Si recibes contexto documental de un archivo ya procesado, úsalo como
 evidencia y responde con él; no pidas reformular la consulta ni vuelvas a
-procesar el archivo.
+procesar el archivo. Si la pregunta menciona saldo, cuenta, correo, plazo,
+tasa o una relación entre datos, primero intenta responder con el documento.
+Si el dato no está allí, dilo y ofrece consultar la base de datos, sin
+inventarlo.
 
 No inventes cifras, leyes, fuentes, tablas ni datos personales. Si no tienes
 contexto suficiente, dilo explícitamente.
@@ -267,7 +279,9 @@ RESPUESTA_FUERA_DE_ALCANCE = (
 
 
 def fuera_de_alcance(
-    consulta: str, *, hay_contexto: bool = False,
+    consulta: str,
+    *,
+    hay_contexto: bool = False,
     imagen_pendiente: str | None = None,
 ) -> bool:
     """Filtro conservador de intenciones explicitas; desconocido no significa ajeno.
@@ -276,36 +290,53 @@ def fuera_de_alcance(
     dominio y referencias conversacionales. Ante duda conserva el flujo actual.
     """
     texto = _normalizar(consulta or "")
-    if imagen_pendiente or _tiene_ruta_imagen(consulta) or _tiene_ruta_documento(consulta):
+    if (
+        imagen_pendiente
+        or _tiene_ruta_imagen(consulta)
+        or _tiene_ruta_documento(consulta)
+    ):
         return False
-    if (_tabla_mencionada(consulta) or _es_consulta_normativa(consulta)
-            or _RE_BANCARIA.search(texto)
-            or _RE_COMPLIANCE.search(texto) or _RE_DOCUMENTO.search(texto)):
+    if (
+        _tabla_mencionada(consulta)
+        or _es_consulta_normativa(consulta)
+        or _RE_BANCARIA.search(texto)
+        or _RE_COMPLIANCE.search(texto)
+        or _RE_DOCUMENTO.search(texto)
+    ):
         return False
     if re.search(
         r"\b(?:banc\w*|financier\w*|cuentas?|clientes?|movimientos?|saldos?|"
         r"transacciones?|credit\w*|tarjetas?|prestamos?|intereses|comisiones?|"
         r"inversion\w*|ahorr\w*|hipotecas?|pagos?|fraudes?|riesgos?|costos?|presupuest\w*|"
         r"sql|datasets?|csv|datos|tablas?|columnas?|grafic\w*|agentes?|"
-        r"orquestador|ollama|mimo)\b", texto,
+        r"orquestador|ollama|mimo)\b",
+        texto,
     ):
         return False
     if hay_contexto and re.search(
-        r"\b(?:eso|esto|esa|ese|anterior|mismo|segun|al respecto)\b", texto,
+        r"\b(?:eso|esto|esa|ese|anterior|mismo|segun|al respecto)\b",
+        texto,
     ):
         return False
     peticion = re.search(
         r"\b(?:por que|que|como|cuantos?|cual|explica\w*|dime|dame|"
-        r"escribe\w*|crea|prepara\w*|cuentame|hablame)\b", texto,
+        r"escribe\w*|crea|prepara\w*|cuentame|hablame)\b",
+        texto,
     )
     tema_ajeno = re.search(
         r"\bcielo\b.{0,60}\bazul\b|\bfotosintesis\b|"
         r"\b(?:planetas?|dinosaurios?|astronomia)\b|"
         r"\b(?:receta|cocinar|preparar)\b.{0,60}\b(?:pizza|pastel|tarta|pasta)\b|"
         r"\b(?:poema|cuento|cancion|chiste)\b|"
-        r"\bcapital de (?:francia|italia|japon|alemania)\b", texto,
+        r"\bcapital de (?:francia|italia|japon|alemania)\b",
+        texto,
     )
     return bool(peticion and tema_ajeno)
+
+
+def _pide_otra_fuente(texto: str) -> bool:
+    """True solo si el usuario nombra explícitamente otra fuente."""
+    return bool(_RE_OTRA_FUENTE.search(texto or ""))
 
 
 def planear_rutas(
@@ -336,15 +367,11 @@ def planear_rutas(
     if nombre_buscado(consulta):
         return ["data_analyst"]
 
-    # Si ya hay un documento procesado, las preguntas sobre su contenido se
-    # responden con el contexto documental; no deben desviarse a SQL.
-    if contexto_documentos and (
-        _RE_DOCUMENTO.search(texto)
-        or (
-            ultimo_agente == "document_intelligence"
-            and _RE_DOCUMENTO_AMPLIO.search(texto)
-        )
-    ):
+    # Si ya hay un documento procesado, sus preguntas de seguimiento tienen
+    # prioridad. Así "saldo", "plazo", "relación" o "correo" no se desvían a
+    # SQL/metadatos solo por coincidir con palabras del dominio bancario. El
+    # usuario puede pedir otra fuente de forma explícita.
+    if contexto_documentos and not _pide_otra_fuente(texto):
         return ["directo"]
 
     tabla = _tabla_mencionada(consulta)
