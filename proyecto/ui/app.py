@@ -17,13 +17,23 @@ import streamlit as st
 
 from servicio import (
     preguntar_orquestador,
+    procesar_documento,
     procesar_imagen_auto,
     reiniciar_orquestador,
 )
-from agents.document_intelligence_agent import EXTENSIONES_IMAGEN, MAX_IMAGE_BYTES
+from agents.document_intelligence_agent import (
+    EXTENSIONES_DOCUMENTO,
+    EXTENSIONES_IMAGEN,
+    MAX_DOCUMENT_BYTES,
+    MAX_IMAGE_BYTES,
+)
 from ui import componentes, estilos
 
-TIPOS_IMAGEN = sorted(extension.lstrip(".") for extension in EXTENSIONES_IMAGEN)
+TIPOS_ARCHIVO = sorted(
+    extension.lstrip(".")
+    for extension in EXTENSIONES_IMAGEN | EXTENSIONES_DOCUMENTO
+)
+MAX_ARCHIVO_BYTES = max(MAX_IMAGE_BYTES, MAX_DOCUMENT_BYTES)
 
 SUGERENCIAS = [
     (
@@ -62,8 +72,9 @@ for clave, valor in {
     "pensando": False,
     "consola_abierta": False,
     "tema": "oscuro",
-    "imagen_actual": None,
-    "imagen_nombre_actual": None,
+    "archivo_actual": None,
+    "archivo_nombre_actual": None,
+    "archivo_tipo": None,
     "upload_dir": None,
 }.items():
     if clave not in st.session_state:
@@ -73,7 +84,7 @@ modo_demo = False
 puede_consultar = True  # render_access ya valido la identidad
 
 
-def _limpiar_imagen() -> None:
+def _limpiar_archivo() -> None:
     directorio = st.session_state.get("upload_dir")
     if directorio:
         shutil.rmtree(directorio, ignore_errors=True)
@@ -81,18 +92,26 @@ def _limpiar_imagen() -> None:
     st.session_state.upload_dir = None
 
 
-def _guardar_imagen_chat(archivo) -> tuple[str, str] | None:
-    """Guarda la imagen enviada desde el chat en un directorio temporal."""
+def _guardar_archivo_chat(archivo) -> tuple[str, str, str] | None:
+    """Guarda una imagen o documento enviado desde el chat."""
     if archivo is None:
         return None
 
-    if archivo.size > MAX_IMAGE_BYTES:
-        st.error("La imagen supera el límite de 10 MB.")
+    sufijo = Path(archivo.name).suffix.lower()
+    if sufijo in EXTENSIONES_IMAGEN:
+        tipo = "imagen"
+        limite = MAX_IMAGE_BYTES
+        etiqueta_limite = "10 MB"
+    elif sufijo in EXTENSIONES_DOCUMENTO:
+        tipo = "documento"
+        limite = MAX_DOCUMENT_BYTES
+        etiqueta_limite = "25 MB"
+    else:
+        st.error(f"Formato no soportado: {sufijo or 'sin extensión'}")
         return None
 
-    sufijo = Path(archivo.name).suffix.lower()
-    if sufijo not in EXTENSIONES_IMAGEN:
-        st.error(f"Formato no soportado: {sufijo}")
+    if archivo.size > limite:
+        st.error(f"El archivo supera el límite de {etiqueta_limite}.")
         return None
 
     directorio = st.session_state.get("upload_dir")
@@ -100,32 +119,35 @@ def _guardar_imagen_chat(archivo) -> tuple[str, str] | None:
         directorio = tempfile.mkdtemp(prefix="docint_ui_")
         st.session_state.upload_dir = directorio
 
-    destino = Path(directorio) / f"imagen_{uuid.uuid4().hex}{sufijo}"
+    destino = Path(directorio) / f"{tipo}_{uuid.uuid4().hex}{sufijo}"
     destino.write_bytes(archivo.getvalue())
-    return str(destino), archivo.name
+    return str(destino), archivo.name, tipo
 
 
 def iniciar(
     texto: str,
-    imagen_path: str | None = None,
-    imagen_nombre: str | None = None,
+    archivo_path: str | None = None,
+    archivo_nombre: str | None = None,
+    archivo_tipo: str | None = None,
 ) -> None:
     st.session_state.mensajes.append({"rol": "user", "texto": texto})
     st.session_state.consulta_actual = texto
-    st.session_state.imagen_actual = imagen_path
-    st.session_state.imagen_nombre_actual = imagen_nombre
+    st.session_state.archivo_actual = archivo_path
+    st.session_state.archivo_nombre_actual = archivo_nombre
+    st.session_state.archivo_tipo = archivo_tipo
     st.session_state.pensando = True
     st.rerun()
 
 
 def limpiar() -> None:
-    _limpiar_imagen()
+    _limpiar_archivo()
     reiniciar_orquestador()
     st.session_state.mensajes = []
     st.session_state.artefacto = None
     st.session_state.consulta_actual = None
-    st.session_state.imagen_actual = None
-    st.session_state.imagen_nombre_actual = None
+    st.session_state.archivo_actual = None
+    st.session_state.archivo_nombre_actual = None
+    st.session_state.archivo_tipo = None
     st.session_state.pensando = False
     st.session_state.consola_abierta = False
     st.rerun()
@@ -297,18 +319,19 @@ with izquierda:
                                 unsafe_allow_html=True,
                             )
                 if st.session_state.pensando:
-                    estado = (
-                        "Procesando imagen…"
-                        if st.session_state.get("imagen_actual")
-                        else "Analizando la consulta…"
-                    )
+                    if st.session_state.get("archivo_tipo") == "imagen":
+                        estado = "Procesando imagen…"
+                    elif st.session_state.get("archivo_tipo") == "documento":
+                        estado = "Convirtiendo documento…"
+                    else:
+                        estado = "Analizando la consulta…"
                     componentes.pensando(estado)
 
         entrada = st.chat_input(
-            "Hazme una consulta",
+            "Hazme una consulta o adjunta un archivo",
             accept_file=True,
-            file_type=TIPOS_IMAGEN,
-            max_upload_size=MAX_IMAGE_BYTES // (1024 * 1024),
+            file_type=TIPOS_ARCHIVO,
+            max_upload_size=MAX_ARCHIVO_BYTES // (1024 * 1024),
             disabled=not puede_consultar,
         )
         if entrada:
@@ -320,13 +343,19 @@ with izquierda:
                 archivos = list(entrada.files or [])
 
             if archivos:
-                guardado = _guardar_imagen_chat(archivos[0])
+                guardado = _guardar_archivo_chat(archivos[0])
                 if guardado:
-                    ruta, nombre = guardado
+                    ruta, nombre, tipo = guardado
+                    predeterminado = (
+                        "Analiza la imagen adjunta y responde lo más útil."
+                        if tipo == "imagen"
+                        else "Analiza el documento adjunto y responde lo más útil."
+                    )
                     iniciar(
-                        texto or "Analiza la imagen adjunta",
-                        imagen_path=ruta,
-                        imagen_nombre=nombre,
+                        texto or predeterminado,
+                        archivo_path=ruta,
+                        archivo_nombre=nombre,
+                        archivo_tipo=tipo,
                     )
             elif texto:
                 iniciar(texto)
@@ -372,11 +401,18 @@ if st.session_state.mensajes:
 
 if st.session_state.pensando:
     try:
-        if st.session_state.get("imagen_actual"):
+        tipo_archivo = st.session_state.get("archivo_tipo")
+        if tipo_archivo == "imagen":
             artefacto = procesar_imagen_auto(
-                st.session_state.imagen_actual,
+                st.session_state.archivo_actual,
                 st.session_state.consulta_actual or "",
-                st.session_state.get("imagen_nombre_actual"),
+                st.session_state.get("archivo_nombre_actual"),
+            )
+        elif tipo_archivo == "documento":
+            artefacto = procesar_documento(
+                st.session_state.archivo_actual,
+                st.session_state.consulta_actual or "",
+                st.session_state.get("archivo_nombre_actual"),
             )
         else:
             artefacto = preguntar_orquestador(
@@ -417,6 +453,7 @@ if st.session_state.pensando:
         )
     finally:
         st.session_state.pensando = False
-        st.session_state.imagen_actual = None
-        st.session_state.imagen_nombre_actual = None
+        st.session_state.archivo_actual = None
+        st.session_state.archivo_nombre_actual = None
+        st.session_state.archivo_tipo = None
     st.rerun()

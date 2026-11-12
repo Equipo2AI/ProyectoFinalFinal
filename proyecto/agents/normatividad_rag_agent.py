@@ -45,6 +45,9 @@ class NormatividadRAGAgent:
         self._retriever = None
         self._llm = None
         self._cache_evidencia: dict[str, dict] = {}
+        # Una sola recuperación por consulta: buscar_normatividad,
+        # buscar_evidencia y verificar_cita comparten estos fragmentos.
+        self._cache_consultas: dict[str, list[str]] = {}
         self._tools = list(self._crear_herramientas_busqueda())
         self.herramientas = [herramienta.name for herramienta in self._tools]
 
@@ -80,11 +83,27 @@ class NormatividadRAGAgent:
         return fragmento
 
     def _recuperar(self, query: str) -> list[dict]:
+        clave = (query or "").strip()
+        if clave in self._cache_consultas:
+            return [
+                self._cache_evidencia[cita_id]
+                for cita_id in self._cache_consultas[clave]
+            ]
         docs = self._get_retriever().invoke(query)
-        return [
+        fragmentos = [
             self._fragmento(doc, indice)
             for indice, doc in enumerate(docs or [])
         ]
+        self._cache_consultas[clave] = [
+            fragmento["cita_id"] for fragmento in fragmentos
+        ]
+        return fragmentos
+
+    def _formatear_fragmentos(self, fragmentos: list[dict]) -> str:
+        return "\n\n---\n\n".join(
+            f"FUENTE: {self._ubicacion(fragmento)}\n{fragmento['texto']}"
+            for fragmento in fragmentos
+        )
 
     @staticmethod
     def _ubicacion(fragmento: dict) -> str:
@@ -105,14 +124,11 @@ class NormatividadRAGAgent:
     def _crear_herramientas_busqueda(self):
         @tool
         def buscar_normatividad(query: str) -> str:
-            """Busca y sintetiza evidencia normativa; conserva compatibilidad."""
+            """Busca y devuelve evidencia normativa formateada; conserva compatibilidad."""
             fragmentos = self._recuperar(query)
             if not fragmentos:
                 return "No se encontró evidencia normativa relevante."
-            return "\n\n---\n\n".join(
-                f"FUENTE: {self._ubicacion(fragmento)}\n{fragmento['texto']}"
-                for fragmento in fragmentos
-            )
+            return self._formatear_fragmentos(fragmentos)
 
         @tool
         def buscar_evidencia(query: str) -> str:
@@ -141,12 +157,41 @@ class NormatividadRAGAgent:
                 query: Consulta original para recuperar la misma evidencia.
                 cita_id: Identificador devuelto por buscar_evidencia.
             """
-            if cita_id and cita_id in self._cache_evidencia:
-                fragmentos = [self._cache_evidencia[cita_id]]
-                consulta_usada = query or "(cache)"
+            consulta_usada = query or "(cache)"
+            if cita_id:
+                # La verificación no vuelve a consultar el índice: solo puede
+                # validar evidencia que ya fue recuperada en esta sesión.
+                fragmento = self._cache_evidencia.get(cita_id)
+                if fragmento is None:
+                    return json.dumps(
+                        {
+                            "existe": False,
+                            "coincide": False,
+                            "consulta_usada": consulta_usada,
+                            "cita_id": cita_id,
+                            "fragmentos_revisados": 0,
+                            "error": "cita_id_no_en_cache",
+                            "nota": (
+                                "El cita_id no corresponde a evidencia recuperada "
+                                "en esta sesión. Usa buscar_evidencia y verifica "
+                                "contra el cita_id devuelto."
+                            ),
+                        },
+                        ensure_ascii=False,
+                        default=str,
+                    )
+                fragmentos = [fragmento]
+            elif query and query.strip() in self._cache_consultas:
+                # Reutiliza exactamente la recuperación ya hecha por
+                # buscar_normatividad o buscar_evidencia.
+                fragmentos = [
+                    self._cache_evidencia[cita]
+                    for cita in self._cache_consultas[query.strip()]
+                ]
+            elif query:
+                fragmentos = self._recuperar(query)
             else:
-                consulta_usada = query or cita
-                fragmentos = self._recuperar(consulta_usada)
+                fragmentos = []
 
             buscada = self._normalizar_cita(cita)
             for fragmento in fragmentos:
@@ -189,7 +234,7 @@ class NormatividadRAGAgent:
     # Interfaz pública
 
     def procesar(self, consulta: str) -> str:
-        """Recupera evidencia y responde con una síntesis basada en ella."""
+        """Recupera evidencia y la devuelve con fuentes, sin inventar una síntesis."""
         from queue import Queue, Empty
         from threading import Thread
         import socket

@@ -1,13 +1,15 @@
-"""Servidor MCP de lectura de imágenes (OCR y descripción).
+"""Servidor MCP de imágenes y documentos.
 
-Expone las dos tools del agente `document_intelligence` para que el
-orquestador principal pueda llamarlas sin cargar un agente adicional.
+Expone OCR, descripción de imágenes y conversión de documentos a Markdown
+para que el orquestador principal pueda usar el agente sin cargarlo
+directamente.
 """
 
 from fastmcp import FastMCP
 
 from proyecto.agents.document_intelligence_agent import (
     describe_an_image,
+    document_to_markdown,
     ocr_image,
 )
 
@@ -24,6 +26,12 @@ def extraer_texto_imagen(image_path: str) -> str:
 def describir_imagen(image_path: str) -> str:
     """Describe una imagen local y resume sus datos visibles si es un comprobante."""
     return describe_an_image.invoke({"image_path": image_path})
+
+
+@mcp.tool()
+def convertir_documento_markdown(file_path: str) -> str:
+    """Convierte un documento local (PDF, DOCX, XLSX, PPTX) a Markdown."""
+    return document_to_markdown.invoke({"file_path": file_path})
 
 
 if __name__ == "__main__":

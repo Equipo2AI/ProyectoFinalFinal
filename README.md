@@ -111,7 +111,8 @@ uv run --with streamlit streamlit run proyecto/ui/app.py
 
 El panel de traza muestra, por turno, la herramienta MCP invocada, sus
 argumentos, el estado, la consulta SQL, la gráfica y las fuentes. La interfaz
-también admite imágenes para OCR o descripción.
+también admite imágenes para OCR o descripción y documentos locales (PDF, DOCX,
+XLSX, PPTX, CSV, HTML y texto) para convertirlos a Markdown.
 
 Ejemplo de una consulta de normatividad con evidencia y fuentes:
 
@@ -125,8 +126,15 @@ Ejemplo de una consulta de normatividad con evidencia y fuentes:
 | `data_steward` | Gobierno y calidad de datos bancarios | `qwen2.5:7b-instruct` | `inspeccionar_dataset`, `validar_calidad_datos`, `evaluar_calidad` |
 | `data_analyst` | Análisis cuantitativo sobre datos bancarios | `mimo-v2.6` | `analizar_datos`, `listar_tablas`, `describir_tabla`, `valores_columna`, `validar_sql`, `ejecutar_consulta`, `graficar_consulta`, `catalogo_metricas`, `consultar_metrica`, `resolver_periodo`, `resolver_valor`, `verificar_cifras` |
 | `normatividad_rag` | Búsqueda semántica sobre documentación | `llama3.1:latest` | `buscar_normatividad`, `buscar_evidencia`, `verificar_cita` |
-| `document_intelligence` | Lectura de imágenes y documentos | `qwen2.5vl:7b` | `extraer_texto_imagen`, `describir_imagen` |
+| `document_intelligence` | Lectura de imágenes y documentos | `qwen2.5vl:7b` | `extraer_texto_imagen`, `describir_imagen`, `convertir_documento_markdown` |
 | `compliance` | Reglas regulatorias: KYC, AML | `qwen2.5:7b-instruct` | `revisar_compliance_demo` (demostración, fase 2) |
+
+`convertir_documento_markdown` usa **MarkItDown** para convertir PDF, DOCX,
+XLSX, PPTX, CSV, HTML y texto local a Markdown. No hace OCR: si un PDF es
+escaneado y no tiene capa de texto, devuelve un aviso y requiere el flujo de
+OCR/visión sobre las páginas convertidas a imagen. El resultado de OCR,
+descripción o Markdown se entrega al orquestador, que decide qué responder al
+cliente en lugar de mostrar el texto crudo directamente.
 
 En el Data Analyst, `analizar_datos` recibe la pregunta en lenguaje natural y la
 resuelve con las herramientas SQL (`listar_tablas`, `describir_tabla`,
@@ -198,7 +206,8 @@ El agente `normatividad_rag` responde únicamente con evidencia recuperada:
 - **Evidencia cruda**: `buscar_evidencia` devuelve fragmentos con `fuente`,
   `pagina`/`fila` y `cita_id` sin sintetizar. `verificar_cita` comprueba que una
   cita textual exista en la evidencia recuperada; `buscar_normatividad` se
-  conserva por compatibilidad.
+  conserva por compatibilidad. Las tres reutilizan la misma recuperación
+  cacheada por consulta: no repiten la búsqueda en Pinecone.
 
 Para reindexar el corpus:
 

@@ -1,8 +1,9 @@
 """Servidor MCP de normatividad.
 
-`buscar_normatividad` conserva el contrato anterior: devuelve una respuesta ya
-sintetizada. `buscar_evidencia` expone la recuperación cruda y `verificar_cita`
-comprueba una cita textual contra esa evidencia.
+`buscar_normatividad` conserva el contrato anterior y devuelve evidencia
+formateada. `buscar_evidencia` expone la recuperación cruda y `verificar_cita`
+comprueba una cita textual contra esa evidencia. Las tres comparten la misma
+recuperación cacheada por consulta y no vuelven a consultar el índice.
 """
 
 from fastmcp import FastMCP

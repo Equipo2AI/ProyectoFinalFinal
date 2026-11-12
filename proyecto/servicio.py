@@ -23,8 +23,11 @@ if str(_RAIZ) not in sys.path:
     sys.path.insert(0, str(_RAIZ))
 
 from proyecto.agents.document_intelligence_agent import (
+    EXTENSIONES_DOCUMENTO,
+    MAX_DOCUMENT_BYTES,
     MODELO_VISION_POR_DEFECTO,
     describe_an_image,
+    document_to_markdown,
     ocr_image,
 )
 from proyecto.guardrails import limpiar_base64, redactar_pii
@@ -42,6 +45,7 @@ _TOOL_A_AGENTE = {
     "mcp_graficar_consulta": "data_analyst",
     "mcp_extraer_texto_imagen": "document_intelligence",
     "mcp_describir_imagen": "document_intelligence",
+    "mcp_convertir_documento_markdown": "document_intelligence",
     # Tools de bajo nivel usadas por el hub y por el grafo.
     "listar_tablas": "data_analyst",
     "describir_tabla": "data_analyst",
@@ -62,6 +66,8 @@ _TOOL_A_AGENTE = {
     "buscar_normatividad": "normatividad_rag",
     "ocr_image": "document_intelligence",
     "describe_an_image": "document_intelligence",
+    "document_to_markdown": "document_intelligence",
+    "convertir_documento_markdown": "document_intelligence",
 }
 
 
@@ -91,7 +97,11 @@ class Respuesta(TypedDict, total=False):
     formato: str | None
 
 
-def _llamar_mcp_document_intelligence(nombre_tool: str, ruta: str) -> str:
+def _llamar_mcp_document_intelligence(
+    nombre_tool: str,
+    ruta: str,
+    campo: str = "image_path",
+) -> str:
     """Llama una tool del servidor MCP por stdio."""
     from fastmcp import Client
     from fastmcp.client.transports import StdioTransport
@@ -105,7 +115,7 @@ def _llamar_mcp_document_intelligence(nombre_tool: str, ruta: str) -> str:
     async def ejecutar() -> str:
         timeout = float(os.getenv("MCP_TIMEOUT", "180"))
         async with Client(transporte, timeout=timeout) as cliente:
-            resultado = await cliente.call_tool(nombre_tool, {"image_path": ruta})
+            resultado = await cliente.call_tool(nombre_tool, {campo: ruta})
             if resultado.is_error:
                 raise RuntimeError(f"El servidor MCP falló al ejecutar {nombre_tool}.")
             return "\n".join(
@@ -184,6 +194,120 @@ def procesar_imagen(ruta: str, operacion: str = "ocr") -> Respuesta:
         "error": error,
         "formato": "texto" if not es_descripcion and not error else "markdown",
     }
+
+
+def procesar_documento(
+    ruta: str,
+    consulta: str = "",
+    nombre: str | None = None,
+) -> Respuesta:
+    """Convierte un documento y entrega el resultado al orquestador."""
+    inicio = time.perf_counter()
+    ruta_path = Path(ruta).expanduser().resolve()
+    etiqueta = (nombre or ruta_path.name).strip() or ruta_path.name
+    sufijo = ruta_path.suffix.lower()
+
+    mensaje_error: str | None = None
+    if not ruta_path.is_file():
+        mensaje_error = f"No existe el documento: {ruta}"
+    elif sufijo not in EXTENSIONES_DOCUMENTO:
+        permitidos = ", ".join(sorted(EXTENSIONES_DOCUMENTO))
+        mensaje_error = (
+            f"Formato no soportado: {sufijo or 'sin extensión'}. "
+            f"Usa: {permitidos}."
+        )
+    elif ruta_path.stat().st_size > MAX_DOCUMENT_BYTES:
+        mensaje_error = "El documento supera el límite de 25 MB."
+
+    if mensaje_error:
+        duracion = round(time.perf_counter() - inicio, 2)
+        return {
+            "respuesta": mensaje_error,
+            "pasos": [
+                {
+                    "agente": "document_intelligence",
+                    "accion": "No se pudo convertir el documento",
+                    "detalle": etiqueta,
+                    "duracion": duracion,
+                    "estado": "error",
+                }
+            ],
+            "agentes": ["document_intelligence"],
+            "herramientas": [],
+            "fuentes": [etiqueta],
+            "duracion": duracion,
+            "error": mensaje_error,
+            "formato": "markdown",
+        }
+
+    via = "MCP"
+    error: str | None = None
+    alertas: list[str] = []
+    try:
+        texto = _llamar_mcp_document_intelligence(
+            "convertir_documento_markdown",
+            str(ruta_path),
+            campo="file_path",
+        )
+    except Exception as exc:  # noqa: BLE001 - se intenta el respaldo local
+        try:
+            texto = document_to_markdown.invoke(
+                {"file_path": str(ruta_path)}
+            )
+            via = f"Fallback local ({type(exc).__name__})"
+        except Exception as exc_local:  # noqa: BLE001
+            texto = (
+                "No se pudo convertir el documento a Markdown: "
+                f"{type(exc_local).__name__}: {exc_local}"
+            )
+            via = "Error"
+            error = texto
+
+    if texto.startswith("No se pudo convertir el documento a Markdown:"):
+        error = texto
+    elif texto.startswith("MarkItDown no extrajo texto"):
+        alertas.append(texto)
+
+    duracion = round(time.perf_counter() - inicio, 2)
+    estado = "error" if error else ("alerta" if alertas else "ok")
+    paso_conversion: Paso = {
+        "agente": "document_intelligence",
+        "accion": "Conversión de documento a Markdown",
+        "detalle": f"{etiqueta} · vía {via}",
+        "duracion": duracion,
+        "estado": estado,
+    }
+    herramientas = (
+        ["mcp_convertir_documento_markdown"]
+        if via == "MCP"
+        else ["document_to_markdown"]
+    )
+
+    if error or alertas:
+        return {
+            "respuesta": texto,
+            "pasos": [paso_conversion],
+            "agentes": ["document_intelligence"],
+            "herramientas": herramientas,
+            "alertas": alertas,
+            "fuentes": [etiqueta],
+            "duracion": duracion,
+            "modelo": None,
+            "nota": f"Documento · MarkItDown · vía {via}",
+            "error": error,
+            "formato": "markdown",
+        }
+
+    return _responder_con_archivo(
+        consulta,
+        str(ruta_path),
+        etiqueta,
+        "documento",
+        "markdown",
+        texto,
+        [paso_conversion],
+        herramientas,
+    )
 
 
 def _get_orquestador():
@@ -360,6 +484,78 @@ def _registrar_documento_en_orquestador(
         pass
 
 
+def _responder_con_archivo(
+    consulta: str,
+    ruta: str,
+    etiqueta: str,
+    tipo: str,
+    operacion: str,
+    texto: str,
+    pasos_previos: list[Paso],
+    herramientas: list[str],
+) -> Respuesta:
+    """Entrega el resultado del subagente al orquestador para la respuesta final."""
+    try:
+        _registrar_documento_en_orquestador(
+            _get_orquestador(),
+            ruta,
+            operacion,
+            texto,
+            etiqueta,
+        )
+    except Exception:  # noqa: BLE001 - el subagente ya procesó el archivo
+        pass
+
+    instruccion = (consulta or "").strip()
+    if not instruccion:
+        instruccion = "Analiza el archivo adjunto y responde lo más útil."
+
+    prompt = (
+        f"El subagente document_intelligence ya procesó el {tipo} adjunto. "
+        f"Instrucción del cliente: {instruccion}\n\n"
+        "Usa el resultado procesado como evidencia y responde al cliente. "
+        "Decide qué hacer con la instrucción: si pide OCR, transcripción, "
+        "descripción o Markdown, entrégalo; si no, sintetiza la respuesta y "
+        "evita repetir todo el contenido. No inventes datos."
+    )
+    resultado = preguntar_orquestador(prompt)
+
+    if resultado.get("error"):
+        resultado["respuesta"] = (
+            "No pude generar la respuesta final con el orquestador. "
+            f"{resultado.get('respuesta') or ''}"
+        ).strip()
+
+    pasos = [
+        *pasos_previos,
+        *(resultado.get("pasos") or []),
+    ]
+    agentes: list[str] = []
+    for agente in [
+        "document_intelligence",
+        "orquestador",
+        *(resultado.get("agentes") or []),
+    ]:
+        if agente and agente not in agentes:
+            agentes.append(agente)
+
+    nombres: list[str] = []
+    for herramienta in [
+        *herramientas,
+        *(resultado.get("herramientas") or []),
+    ]:
+        if herramienta and herramienta not in nombres:
+            nombres.append(herramienta)
+
+    resultado["pasos"] = pasos
+    resultado["agentes"] = agentes
+    resultado["herramientas"] = nombres
+    resultado["fuentes"] = [etiqueta]
+    resultado["nota"] = "Subagente document_intelligence · respuesta del orquestador"
+    resultado["formato"] = "markdown"
+    return resultado
+
+
 def preguntar_orquestador(
     consulta: str, perfil: dict | None = None
 ) -> Respuesta:
@@ -379,14 +575,18 @@ def preguntar_orquestador(
         operacion = _operacion_explicita(consulta)
         if pendiente and operacion:
             resultado = procesar_imagen(pendiente, operacion)
-            _registrar_documento_en_orquestador(
-                orquestador,
+            if resultado.get("error"):
+                return resultado
+            return _responder_con_archivo(
+                consulta,
                 pendiente,
+                Path(pendiente).name,
+                "imagen",
                 operacion,
                 str(resultado.get("respuesta") or ""),
+                resultado.get("pasos") or [],
+                resultado.get("herramientas") or [],
             )
-            resultado["nota"] = "Imagen pendiente · MCP directo"
-            return resultado
 
         token = os.environ.get("PROYECTO_AUTH_TOKEN", "")
         try:
@@ -625,20 +825,20 @@ def procesar_imagen_auto(
     operacion = _operacion_explicita(indicacion)
     if operacion:
         resultado = procesar_imagen(str(ruta_path), operacion)
-        if not resultado.get("error"):
-            try:
-                _registrar_documento_en_orquestador(
-                    _get_orquestador(),
-                    str(ruta_path),
-                    operacion,
-                    str(resultado.get("respuesta") or ""),
-                    etiqueta,
-                )
-            except Exception:  # noqa: BLE001 - el OCR ya se obtuvo
-                pass
-        resultado["fuentes"] = [etiqueta]
-        resultado["nota"] = "Imagen · MCP directo"
-        return resultado
+        if resultado.get("error"):
+            resultado["fuentes"] = [etiqueta]
+            resultado["nota"] = "Imagen · MCP directo"
+            return resultado
+        return _responder_con_archivo(
+            indicacion,
+            str(ruta_path),
+            etiqueta,
+            "imagen",
+            operacion,
+            str(resultado.get("respuesta") or ""),
+            resultado.get("pasos") or [],
+            resultado.get("herramientas") or [],
+        )
 
     # Si la intención es ambigua, el orquestador decide. Dejamos la imagen
     # marcada como pendiente para que una respuesta posterior ("descríbela",

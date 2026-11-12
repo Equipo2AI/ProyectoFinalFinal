@@ -12,8 +12,10 @@ from proyecto.agents.normatividad_rag_agent import NormatividadRAGAgent
 class RetrieverFalso:
     def __init__(self, docs):
         self.docs = docs
+        self.llamadas = 0
 
     def invoke(self, query):
+        self.llamadas += 1
         return list(self.docs)
 
 
@@ -114,3 +116,46 @@ def test_buscar_normatividad_conserva_compatibilidad():
 
     assert "FUENTE: manual_cuentas.pdf, página 4" in texto
     assert "Artículo 12" in texto
+
+
+def test_buscar_normatividad_y_evidencia_comparten_recuperacion():
+    agente = _agente()
+
+    _tool(agente, "buscar_normatividad").invoke({"query": "cancelar"})
+    _tool(agente, "buscar_evidencia").invoke({"query": "cancelar"})
+
+    assert agente._retriever.llamadas == 1
+
+
+def test_verificar_cita_reutiliza_query_cacheada():
+    agente = _agente()
+
+    _tool(agente, "buscar_normatividad").invoke({"query": "cancelar"})
+    resultado = json.loads(
+        _tool(agente, "verificar_cita").invoke(
+            {
+                "cita": "El cliente puede solicitar la cancelación de su cuenta",
+                "query": "cancelar",
+            }
+        )
+    )
+
+    assert resultado["existe"] is True
+    assert agente._retriever.llamadas == 1
+
+
+def test_verificar_cita_con_cita_id_invalido_no_repite_recuperacion():
+    agente = _agente()
+
+    resultado = json.loads(
+        _tool(agente, "verificar_cita").invoke(
+            {
+                "cita": "El banco devuelve el saldo en 24 horas.",
+                "cita_id": "inexistente",
+            }
+        )
+    )
+
+    assert resultado["existe"] is False
+    assert resultado["error"] == "cita_id_no_en_cache"
+    assert agente._retriever.llamadas == 0

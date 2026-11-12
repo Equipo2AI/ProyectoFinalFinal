@@ -37,6 +37,7 @@ from proyecto.agents import data_steward_agent
 from proyecto.guardrails import limpiar_base64
 from proyecto.agents.document_intelligence_agent import (
     PALABRAS_DESCRIPCION,
+    PATRON_RUTA_DOCUMENTO,
     PATRON_RUTA_IMAGEN,
 )
 from proyecto.config.models import modelo_de
@@ -120,8 +121,26 @@ aclaraciones generales o preguntas que no correspondan a un especialista.
 Si la consulta requiere datos, normativa, imágenes o compliance, dilo y pide
 que se reformule para enviarla al especialista adecuado.
 
+Si recibes contexto documental de un archivo ya procesado, úsalo como
+evidencia y responde con él; no pidas reformular la consulta ni vuelvas a
+procesar el archivo.
+
 No inventes cifras, leyes, fuentes, tablas ni datos personales. Si no tienes
 contexto suficiente, dilo explícitamente.
+"""
+
+PROMPT_DOCUMENTO = """
+Eres el orquestador de un sistema multi-agente bancario. El subagente
+document_intelligence ya procesó el archivo adjunto y te entrega su resultado.
+
+Usa la instrucción del cliente y el resultado del subagente para decidir qué
+hacer y responder al cliente. Si el cliente pidió OCR, transcripción,
+descripción o Markdown, entrega eso; si pidió un dato o un resumen, responde
+con la información relevante. Si no hay una instrucción clara, resume o
+describe lo más útil.
+
+No inventes datos que no aparezcan en el resultado. No muestres el texto
+completo si el cliente no lo pidió.
 """
 
 
@@ -202,6 +221,17 @@ def _ruta_imagen(consulta: str) -> str | None:
     return coincidencia.group(1) or coincidencia.group(2)
 
 
+def _tiene_ruta_documento(consulta: str) -> bool:
+    return bool(PATRON_RUTA_DOCUMENTO.search(consulta or ""))
+
+
+def _ruta_documento(consulta: str) -> str | None:
+    coincidencia = PATRON_RUTA_DOCUMENTO.search(consulta or "")
+    if not coincidencia:
+        return None
+    return coincidencia.group(1) or coincidencia.group(2)
+
+
 def _tabla_mencionada(consulta: str) -> str:
     coincidencia = _RE_TABLA.search(consulta or "")
     return coincidencia.group(0) if coincidencia else ""
@@ -238,6 +268,8 @@ def planear_rutas(
     la respuesta directa y para los especialistas que ya la usan internamente.
     """
     if imagen_pendiente or _tiene_ruta_imagen(consulta):
+        return ["document_intelligence"]
+    if _tiene_ruta_documento(consulta):
         return ["document_intelligence"]
 
     texto = _normalizar(consulta or "")
@@ -787,10 +819,38 @@ def _nodo_normatividad(estado: EstadoGrafo) -> dict:
 def _nodo_documento(estado: EstadoGrafo) -> dict:
     consulta = estado.get("consulta") or ""
     ruta = estado.get("imagen_pendiente") or _ruta_imagen(consulta)
+
     if not ruta:
+        ruta_documento = _ruta_documento(consulta)
+        if ruta_documento:
+            salida, traza, estado_llamada = _ejecutar_mcp(
+                "document_intelligence_server",
+                "convertir_documento_markdown",
+                {"file_path": ruta_documento},
+                "mcp_convertir_documento_markdown",
+            )
+            if salida.startswith("No se pudo convertir el documento"):
+                estado_llamada = "error"
+            return {
+                "resultados": {
+                    "document_intelligence": {
+                        "agente": "document_intelligence",
+                        "respuesta": salida,
+                        "estado": estado_llamada,
+                    }
+                },
+                "trazas": [traza],
+                "errores": (
+                    [f"document_intelligence: {salida}"]
+                    if estado_llamada == "error"
+                    else []
+                ),
+            }
+
         respuesta = (
-            "Proporciona la ruta local de una imagen "
-            "(por ejemplo: tests/modelo-factura-ex.png)."
+            "Proporciona la ruta local de una imagen o documento "
+            "(por ejemplo: tests/modelo-factura-ex.png o "
+            "data_governance_files/archivo.pdf)."
         )
         return {
             "resultados": {
@@ -801,7 +861,7 @@ def _nodo_documento(estado: EstadoGrafo) -> dict:
                 }
             },
             "trazas": [],
-            "errores": ["document_intelligence: falta la ruta de la imagen"],
+            "errores": ["document_intelligence: falta la ruta del archivo"],
         }
 
     texto = _normalizar(consulta)
@@ -939,12 +999,56 @@ def _respuesta_directa(estado: EstadoGrafo) -> str:
         )
 
 
+def _respuesta_documento(estado: EstadoGrafo, resultado: dict) -> str:
+    """Sintetiza el resultado del subagente document_intelligence."""
+    consulta = str(estado.get("consulta") or "").strip()
+    salida = str(resultado.get("respuesta") or "").strip()
+    if not salida:
+        return "El subagente document_intelligence no devolvió contenido."
+
+    if len(salida) > 12000:
+        salida = salida[:12000].rstrip() + "\n[…resultado truncado…]"
+
+    mensajes = [
+        {"role": "system", "content": PROMPT_DOCUMENTO},
+        {
+            "role": "user",
+            "content": (
+                f"Instrucción del cliente:\n{consulta or '(sin instrucción)'}\n\n"
+                "Resultado del subagente document_intelligence:\n"
+                f"{salida}"
+            ),
+        },
+    ]
+    try:
+        respuesta = ChatOllama(
+            model=estado.get("modelo") or modelo_de("orchestrator"),
+            temperature=0,
+            reasoning=False,
+            timeout=60,
+        ).invoke(mensajes)
+        texto = _texto(getattr(respuesta, "content", respuesta)).strip()
+        return texto or salida
+    except Exception as error:  # noqa: BLE001 - se informa en la UI
+        return (
+            "No pude generar la respuesta final con el orquestador: "
+            f"{type(error).__name__}: {error}\n\n"
+            "Resultado del subagente document_intelligence:\n"
+            f"{salida}"
+        )
+
+
 def _nodo_sintetizar(estado: EstadoGrafo) -> dict:
     plan = list(estado.get("plan") or [])
     resultados = estado.get("resultados") or {}
 
     if not plan or plan == ["directo"]:
         return {"respuesta": _respuesta_directa(estado)}
+
+    if plan == ["document_intelligence"]:
+        resultado = resultados.get("document_intelligence") or {}
+        if resultado.get("estado") != "error" and resultado.get("respuesta"):
+            return {"respuesta": _respuesta_documento(estado, resultado)}
 
     partes: list[str] = []
     for agente in plan:

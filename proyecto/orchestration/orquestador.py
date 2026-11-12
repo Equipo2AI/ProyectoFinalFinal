@@ -27,7 +27,10 @@ from proyecto.agents import (
     document_intelligence_agent,
     compliance_agent,
 )
-from proyecto.agents.document_intelligence_agent import PATRON_RUTA_IMAGEN
+from proyecto.agents.document_intelligence_agent import (
+    PATRON_RUTA_DOCUMENTO,
+    PATRON_RUTA_IMAGEN,
+)
 from proyecto.config.models import modelo_de
 from proyecto.memory.long_term import LongTermMemory
 
@@ -55,8 +58,9 @@ Las herramientas disponibles son:
 - data_analyst: preguntas cuantitativas que requieren SQL de solo lectura sobre
   la misma base sintética (conteos, sumas, promedios, rankings, comparaciones).
 - normatividad_rag: políticas, manuales, glosario, reglas y normativa indexada.
-- document_intelligence: OCR o descripción de una imagen local. Requiere que la
-  consulta incluya una ruta de imagen existente.
+- document_intelligence: OCR o descripción de una imagen local, o conversión de
+  un documento local (PDF, DOCX, XLSX, PPTX, CSV, HTML) a Markdown. Requiere que
+  la consulta incluya una ruta local existente.
 
 Reglas:
 _ A cualquier tema ajeno a temas bancarios o financieros, no contestar e indicarle al usuario que
@@ -92,6 +96,11 @@ ese no es tu propósito.
 - Si la consulta incluye una imagen pero no dice si hay que extraer texto o
   describirla, elige la opción más útil según la intención. Si sigue siendo
   ambigua, pregunta al usuario antes de llamar la herramienta.
+- Si la consulta incluye un PDF, DOCX, XLSX, PPTX, CSV o HTML local y pide
+  leerlo, convertirlo o pasarlo a Markdown, usa
+  mcp_convertir_documento_markdown. No uses OCR de imagen para documentos.
+  La conversión no hace OCR: si un PDF escaneado no tiene texto, informa que
+  se necesita OCR sobre sus páginas convertidas a imagen.
 - Si la consulta es un saludo o algo general que no requiere especialista,
   responde directamente sin llamar herramientas.
 - No inventes rutas de imágenes ni datos que no existan.
@@ -136,6 +145,13 @@ def _normalizar(texto: str) -> str:
 
 def _ruta_imagen_de_consulta(consulta: str) -> str | None:
     coincidencia = PATRON_RUTA_IMAGEN.search(consulta or "")
+    if not coincidencia:
+        return None
+    return coincidencia.group(1) or coincidencia.group(2)
+
+
+def _ruta_documento_de_consulta(consulta: str) -> str | None:
+    coincidencia = PATRON_RUTA_DOCUMENTO.search(consulta or "")
     if not coincidencia:
         return None
     return coincidencia.group(1) or coincidencia.group(2)
@@ -321,6 +337,16 @@ def mcp_describir_imagen(image_path: str) -> str:
     )
 
 
+@tool
+def mcp_convertir_documento_markdown(file_path: str) -> str:
+    """Convierte un documento local (PDF, DOCX, XLSX, PPTX, CSV, HTML) a Markdown."""
+    return _llamar_mcp(
+        "document_intelligence_server",
+        "convertir_documento_markdown",
+        {"file_path": file_path},
+    )
+
+
 HERRAMIENTAS_MCP = [
     mcp_inspeccionar_dataset,
     mcp_validar_calidad_datos,
@@ -330,6 +356,7 @@ HERRAMIENTAS_MCP = [
     mcp_graficar_consulta,
     mcp_extraer_texto_imagen,
     mcp_describir_imagen,
+    mcp_convertir_documento_markdown,
 ]
 
 
@@ -662,23 +689,35 @@ class Orquestador:
         ruta_documento = estado.get("imagen_pendiente")
         for traza in trazas:
             nombre = str(traza.get("name") or "")
+            nombres_imagen = {
+                "mcp_extraer_texto_imagen",
+                "mcp_describir_imagen",
+            }
             if (
-                nombre not in {"mcp_extraer_texto_imagen", "mcp_describir_imagen"}
-                or traza.get("estado") == "error"
-            ):
+                nombre not in nombres_imagen
+                and nombre != "mcp_convertir_documento_markdown"
+            ) or traza.get("estado") == "error":
                 continue
-            ruta = ruta_documento or _ruta_imagen_de_consulta(consulta)
+
+            salida = str(traza.get("salida") or "")
+            if nombre == "mcp_convertir_documento_markdown":
+                ruta = _ruta_documento_de_consulta(consulta)
+                operacion = "markdown"
+                if salida.startswith("MarkItDown no extrajo texto"):
+                    continue
+            else:
+                ruta = ruta_documento or _ruta_imagen_de_consulta(consulta)
+                operacion = (
+                    "descripcion"
+                    if nombre == "mcp_describir_imagen"
+                    else "ocr"
+                )
             if not ruta:
                 continue
-            operacion = (
-                "descripcion"
-                if nombre == "mcp_describir_imagen"
-                else "ocr"
-            )
             self.registrar_documento(
                 ruta,
                 operacion,
-                str(traza.get("salida") or ""),
+                salida,
                 Path(ruta).name,
             )
 
