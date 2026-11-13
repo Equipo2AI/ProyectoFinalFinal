@@ -88,6 +88,19 @@ _RE_ANALITICA = re.compile(
     r"tendencia|comparacion|comparar)\b",
     re.IGNORECASE,
 )
+# Términos que piden una métrica, no solo un conteo de metadatos. Sirven para
+# no mandar al LLM preguntas como "¿cuántas filas tiene raw_clientes?".
+_RE_ANALITICA_FUERTE = re.compile(
+    r"\b(?:total|suma|sumar|promedio|media|saldo|saldos|monto|montos|"
+    r"distribucion|distribuyen|ranking|top|porcentaje|metricas?|"
+    r"transacciones?|movimientos?|tendencia|comparacion|comparar)\b",
+    re.IGNORECASE,
+)
+_RE_CONECTOR_MULTI = re.compile(
+    r"\b(?:y|ademas|tambien|junto|mientras|compara|comparar|relaciona|"
+    r"relacionar)\b",
+    re.IGNORECASE,
+)
 _RE_CALIDAD = re.compile(
     r"\b(?:duplicad\w*|faltantes?|nulos?|calidad|problemas?|"
     r"inconsistencias?)\b",
@@ -179,6 +192,9 @@ class EstadoGrafo(TypedDict, total=False):
 
     plan: list[str]
     rutas: list[str]
+    subpreguntas: list[str]
+    plan_origen: str
+    plan_razon: str
     pendientes: list[str]
     siguiente: str
     reintento: bool
@@ -409,6 +425,274 @@ def planear_rutas(
     return list(dict.fromkeys(rutas)) or ["directo"]
 
 
+_PROMPT_PLANIFICADOR = """
+Eres el planificador de un sistema multiagente bancario. Tu única tarea es
+decidir qué especialistas deben intervenir para responder la consulta. No
+respondas la consulta.
+
+Especialistas:
+- data_steward: estructura, metadatos, tablas, columnas, calidad, nulos,
+  duplicados y relaciones.
+- data_analyst: métricas, conteos, saldos, promedios, rankings, transacciones,
+  clientes y cuentas.
+- normatividad_rag: leyes, políticas, manuales, glosario, aviso de privacidad y
+  normativa.
+- document_intelligence: imágenes, facturas, recibos, OCR y documentos locales
+  (PDF, DOCX, XLSX, PPTX, CSV, HTML).
+- compliance: KYC, AML, lavado, sanciones y reportes regulatorios (fase 2).
+- directo: saludos, aclaraciones o preguntas que no requieren especialista.
+
+Las pistas léxicas son sugerencias calculadas por reglas. Úsalas como guía,
+pero decide según la intención completa de la consulta. Si hay varias
+intenciones, incluye todos los especialistas necesarios. No incluyas
+especialistas que no aporten evidencia. No inventes dominios.
+
+Devuelve SOLO JSON válido con esta forma:
+{
+  "plan": ["agente"],
+  "subpreguntas": ["subpregunta concreta"],
+  "razon": "explicación breve"
+}
+"""
+
+_ALIAS_AGENTES = {
+    "data steward": "data_steward",
+    "data_steward": "data_steward",
+    "steward": "data_steward",
+    "data analyst": "data_analyst",
+    "data_analyst": "data_analyst",
+    "analyst": "data_analyst",
+    "analista": "data_analyst",
+    "normatividad": "normatividad_rag",
+    "normatividad rag": "normatividad_rag",
+    "normatividad_rag": "normatividad_rag",
+    "normativa": "normatividad_rag",
+    "document intelligence": "document_intelligence",
+    "document_intelligence": "document_intelligence",
+    "documento": "document_intelligence",
+    "documentos": "document_intelligence",
+    "compliance": "compliance",
+    "directo": "directo",
+    "direct": "directo",
+}
+
+
+def _pistas_plan(
+    consulta: str,
+    *,
+    ultimo_agente: str | None = None,
+    imagen_pendiente: str | None = None,
+    contexto_documentos: str = "",
+) -> dict[str, Any]:
+    """Señales léxicas para el planificador; no son la decisión final."""
+    texto = _normalizar(consulta or "")
+    tabla = _tabla_mencionada(consulta)
+    normativa = bool(
+        _es_consulta_normativa(consulta)
+        or re.search(r"\b(?:portal|terminos|historial crediticio)\b", texto)
+    )
+    metadata = bool(_RE_METADATA.search(texto) or tabla)
+    analitica = bool(_RE_ANALITICA.search(texto))
+    analitica_fuerte = bool(_RE_ANALITICA_FUERTE.search(texto))
+    bancaria = bool(_RE_BANCARIA.search(texto))
+    compliance = bool(_RE_COMPLIANCE.search(texto))
+    documento = bool(
+        imagen_pendiente
+        or _tiene_ruta_imagen(consulta)
+        or _tiene_ruta_documento(consulta)
+        or _RE_DOCUMENTO.search(texto)
+    )
+
+    dominios: list[str] = []
+    if metadata:
+        dominios.append("data_steward")
+    if analitica or bancaria:
+        dominios.append("data_analyst")
+    if normativa:
+        dominios.append("normatividad_rag")
+    if documento:
+        dominios.append("document_intelligence")
+    if compliance:
+        dominios.append("compliance")
+
+    return {
+        "texto": texto,
+        "tabla": tabla,
+        "metadata": metadata,
+        "analitica": analitica,
+        "analitica_fuerte": analitica_fuerte,
+        "bancaria": bancaria,
+        "normativa": normativa,
+        "compliance": compliance,
+        "documento": documento,
+        "dominios": list(dict.fromkeys(dominios)),
+        "ultimo_agente": ultimo_agente,
+        "hay_contexto_documental": bool(contexto_documentos),
+    }
+
+
+def _normalizar_agente_plan(valor: Any) -> str | None:
+    clave = _normalizar(str(valor or "")).replace("-", "_")
+    clave = re.sub(r"\s+", " ", clave).strip()
+    return _ALIAS_AGENTES.get(clave)
+
+
+def _validar_plan_llm(datos: Any) -> tuple[list[str], list[str], str] | None:
+    if not isinstance(datos, dict):
+        return None
+    plan_bruto = datos.get("plan")
+    if not isinstance(plan_bruto, list):
+        return None
+
+    plan: list[str] = []
+    for valor in plan_bruto:
+        agente = _normalizar_agente_plan(valor)
+        if agente and agente not in plan:
+            plan.append(agente)
+    if not plan:
+        return None
+    if "directo" in plan and len(plan) > 1:
+        plan = [agente for agente in plan if agente != "directo"]
+
+    subpreguntas_brutas = datos.get("subpreguntas")
+    if not isinstance(subpreguntas_brutas, list):
+        subpreguntas_brutas = []
+    subpreguntas = [
+        str(valor).strip()
+        for valor in subpreguntas_brutas
+        if str(valor).strip()
+    ][:8]
+    razon = str(datos.get("razon") or "").strip()[:500]
+    return plan, subpreguntas, razon
+
+
+def _leer_json_modelo(texto: str) -> Any:
+    limpio = (texto or "").strip()
+    if limpio.startswith("```"):
+        limpio = re.sub(r"^```(?:json)?\s*", "", limpio, flags=re.IGNORECASE)
+        limpio = re.sub(r"\s*```$", "", limpio)
+    try:
+        return json.loads(limpio)
+    except (TypeError, ValueError):
+        coincidencia = re.search(r"\{.*\}", limpio, flags=re.DOTALL)
+        if not coincidencia:
+            return None
+        try:
+            return json.loads(coincidencia.group(0))
+        except (TypeError, ValueError):
+            return None
+
+
+def _plan_llm(
+    consulta: str,
+    pistas: dict[str, Any],
+    modelo: str | None = None,
+) -> tuple[list[str], list[str], str] | None:
+    """Pide un plan al LLM; devuelve None si no hay un plan válido."""
+    mensajes = [
+        {"role": "system", "content": _PROMPT_PLANIFICADOR},
+        {
+            "role": "user",
+            "content": (
+                "Pistas léxicas (sugerencias, no obligaciones):\n"
+                f"{json.dumps(pistas, ensure_ascii=False)}\n\n"
+                "Consulta:\n"
+                f"{consulta}"
+            ),
+        },
+    ]
+    try:
+        respuesta = ChatOllama(
+            model=modelo or modelo_de("orchestrator"),
+            temperature=0,
+            format="json",
+            reasoning=False,
+            timeout=45,
+        ).invoke(mensajes)
+        contenido = _texto(getattr(respuesta, "content", respuesta))
+        plan = _validar_plan_llm(_leer_json_modelo(contenido))
+        if plan and plan[0] == ["directo"] and _requiere_plan_llm(pistas):
+            return None
+        return plan
+    except Exception:  # noqa: BLE001 - el fallback determinista es deliberado
+        return None
+
+
+def _requiere_plan_llm(pistas: dict[str, Any]) -> bool:
+    """El LLM solo entra cuando hay señales de más de un dominio."""
+    dominios = set(pistas.get("dominios") or [])
+    if len(dominios) < 2:
+        return False
+
+    # Un conteo de filas, registros o tablas puede ser solo Data Steward. No
+    # vale la pena pagar una llamada al planner por un "cuántas" genérico.
+    if (
+        dominios <= {"data_steward", "data_analyst"}
+        and pistas.get("metadata")
+        and pistas.get("analitica")
+        and not pistas.get("analitica_fuerte")
+    ):
+        return bool(_RE_CONECTOR_MULTI.search(str(pistas.get("texto") or "")))
+    return True
+
+
+def planear_rutas_hibrido(
+    consulta: str,
+    *,
+    ultimo_agente: str | None = None,
+    imagen_pendiente: str | None = None,
+    contexto_documentos: str = "",
+    modelo: str | None = None,
+) -> tuple[list[str], list[str], str, str]:
+    """Planifica con reglas y usa el LLM cuando la consulta es multi-intención.
+
+    Las reglas siguen siendo el fallback y el filtro de alcance. El LLM recibe
+    las señales léxicas como guía, nunca como una obligación.
+    """
+    if fuera_de_alcance(
+        consulta,
+        hay_contexto=bool(ultimo_agente or contexto_documentos),
+        imagen_pendiente=imagen_pendiente,
+    ):
+        return ["directo"], [], "reglas", "fuera de alcance"
+
+    texto = _normalizar(consulta or "")
+    if contexto_documentos and not _pide_otra_fuente(texto):
+        return ["directo"], [], "reglas", "documento activo"
+
+    pistas = _pistas_plan(
+        consulta,
+        ultimo_agente=ultimo_agente,
+        imagen_pendiente=imagen_pendiente,
+        contexto_documentos=contexto_documentos,
+    )
+    modo = os.getenv("ORCHESTRATION_PLANNER", "hybrid").strip().lower()
+    if modo not in {"rules", "llm", "hybrid"}:
+        modo = "hybrid"
+
+    if modo == "rules" or (modo == "hybrid" and not _requiere_plan_llm(pistas)):
+        plan = planear_rutas(
+            consulta,
+            ultimo_agente=ultimo_agente,
+            imagen_pendiente=imagen_pendiente,
+            contexto_documentos=contexto_documentos,
+        )
+        return plan, [], "reglas", "intención única"
+
+    plan_llm = _plan_llm(consulta, pistas, modelo=modelo)
+    if plan_llm:
+        plan, subpreguntas, razon = plan_llm
+        return plan, subpreguntas, "llm", razon
+
+    plan = planear_rutas(
+        consulta,
+        ultimo_agente=ultimo_agente,
+        imagen_pendiente=imagen_pendiente,
+        contexto_documentos=contexto_documentos,
+    )
+    return plan, [], "reglas (fallback)", "planificador LLM sin plan válido"
+
+
 def _traza(nombre: str, args: dict, salida: str, estado: str) -> dict:
     return {
         "name": nombre,
@@ -560,15 +844,19 @@ def _nodo_planear(estado: EstadoGrafo) -> dict:
         ]
         return {"pendientes": fallidos, "reintento": False}
 
-    rutas = planear_rutas(
+    rutas, subpreguntas, origen, razon = planear_rutas_hibrido(
         estado.get("consulta") or "",
         ultimo_agente=estado.get("ultimo_agente"),
         imagen_pendiente=estado.get("imagen_pendiente"),
         contexto_documentos=estado.get("contexto_documentos") or "",
+        modelo=estado.get("modelo"),
     )
     return {
         "rutas": rutas,
         "plan": rutas,
+        "subpreguntas": subpreguntas,
+        "plan_origen": origen,
+        "plan_razon": razon,
         "pendientes": rutas,
         "reintento": False,
     }
@@ -1127,6 +1415,95 @@ def _respuesta_documento(estado: EstadoGrafo, resultado: dict) -> str:
         )
 
 
+_PROMPT_SINTESIS = """
+Eres el orquestador de un sistema multiagente bancario. Varios especialistas
+ya respondieron partes de la consulta. Integra sus resultados en una sola
+respuesta coherente para el usuario.
+
+Reglas:
+- Responde en el idioma de la consulta.
+- No inventes cifras, leyes, tablas, fuentes ni datos que no estén en los
+  resultados.
+- Conserva las cifras, referencias y fuentes que aportaron los especialistas.
+- Si un especialista falló, dilo de forma breve; no presentes su error como
+  evidencia.
+- No repitas encabezados por especialista ni pegues bloques completos si una
+  explicación integrada es suficiente.
+- Si los resultados no alcanzan para responder una subpregunta, dilo.
+- No incluyas rutas locales ni imágenes Markdown.
+"""
+
+
+def _bloques_para_sintesis(
+    plan: list[str], resultados: dict[str, dict]
+) -> tuple[str, bool]:
+    bloques: list[str] = []
+    hay_ok = False
+    for agente in plan:
+        resultado = resultados.get(agente) or {}
+        etiqueta = _ETIQUETAS.get(agente, agente)
+        estado = str(resultado.get("estado") or "sin resultado")
+        if estado != "error":
+            hay_ok = True
+        respuesta = str(resultado.get("respuesta") or "").strip()
+        if len(respuesta) > 6000:
+            respuesta = respuesta[:6000].rstrip() + "\n[…resultado truncado…]"
+        bloque = [f"Especialista: {etiqueta}", f"Estado: {estado}"]
+        if respuesta:
+            bloque.append(f"Resultado:\n{respuesta}")
+        sql = str(resultado.get("sql") or "").strip()
+        if sql:
+            bloque.append(f"SQL ejecutado:\n{sql[:2000]}")
+        fuentes = resultado.get("fuentes") or []
+        if fuentes:
+            bloque.append("Fuentes: " + ", ".join(str(f) for f in fuentes))
+        bloques.append("\n".join(bloque))
+    return "\n\n---\n\n".join(bloques), hay_ok
+
+
+def _sintetizar_cooperativo(
+    estado: EstadoGrafo,
+    plan: list[str],
+    resultados: dict[str, dict],
+) -> str | None:
+    """Integra varios especialistas con el orquestador; None si no aplica."""
+    modo = os.getenv("ORCHESTRATION_SYNTHESIS", "auto").strip().lower()
+    if modo in {"rules", "reglas", "off", "none", "0"}:
+        return None
+    bloques, hay_ok = _bloques_para_sintesis(plan, resultados)
+    if not hay_ok or not bloques.strip():
+        return None
+
+    subpreguntas = [
+        str(pregunta).strip()
+        for pregunta in (estado.get("subpreguntas") or [])
+        if str(pregunta).strip()
+    ]
+    contenido_usuario = (
+        f"Consulta original:\n{estado.get('consulta') or ''}\n\n"
+        "Subpreguntas del plan:\n"
+        + ("\n".join(f"- {p}" for p in subpreguntas) or "(no especificadas)")
+        + "\n\nResultados de los especialistas:\n\n"
+        + bloques
+    )
+    try:
+        respuesta = ChatOllama(
+            model=estado.get("modelo") or modelo_de("orchestrator"),
+            temperature=0,
+            reasoning=False,
+            timeout=60,
+        ).invoke(
+            [
+                {"role": "system", "content": _PROMPT_SINTESIS},
+                {"role": "user", "content": contenido_usuario},
+            ]
+        )
+        texto = _texto(getattr(respuesta, "content", respuesta)).strip()
+        return texto or None
+    except Exception:  # noqa: BLE001 - se conserva la síntesis determinista
+        return None
+
+
 def _nodo_sintetizar(estado: EstadoGrafo) -> dict:
     plan = list(estado.get("plan") or [])
     resultados = estado.get("resultados") or {}
@@ -1138,6 +1515,11 @@ def _nodo_sintetizar(estado: EstadoGrafo) -> dict:
         resultado = resultados.get("document_intelligence") or {}
         if resultado.get("estado") != "error" and resultado.get("respuesta"):
             return {"respuesta": _respuesta_documento(estado, resultado)}
+
+    if len(plan) > 1:
+        respuesta_cooperativa = _sintetizar_cooperativo(estado, plan, resultados)
+        if respuesta_cooperativa:
+            return {"respuesta": respuesta_cooperativa}
 
     partes: list[str] = []
     for agente in plan:
@@ -1256,6 +1638,9 @@ def ejecutar_grafo(
         "ultimo_agente": ultimo_agente,
         "plan": [],
         "rutas": [],
+        "subpreguntas": [],
+        "plan_origen": "",
+        "plan_razon": "",
         "pendientes": [],
         "siguiente": "",
         "reintento": False,

@@ -311,7 +311,9 @@ planear -> despachar -> especialista -> despachar -> ... -> verificar
                                                         sintetizar
 ```
 
-- `planear` decide rutas con reglas deterministas y auditables.
+- `planear` usa un planner híbrido: las reglas léxicas son pistas y el LLM
+  decide cuando la consulta tiene más de un dominio. Si el LLM no devuelve un
+  plan válido, se usa el plan determinista como respaldo.
 - `despachar` ejecuta los especialistas en orden y comparte el estado.
 - `verificar` revisa si todos los especialistas respondieron; si alguno falló,
   reintenta una vez. El reintento es único: el fallo típico de un modelo pequeño
@@ -319,15 +321,26 @@ planear -> despachar -> especialista -> despachar -> ... -> verificar
   el reintento también falla, el sintetizador responde con lo que sí llegó y deja
   el error visible en la traza.
 - `sintetizar` compone la respuesta final. Si hay un solo especialista, conserva
-  su salida verificada; si hay varios, presenta cada bloque con su agente.
+  su salida verificada; si hay varios, el orquestador integra las respuestas y
+  las fuentes en una sola explicación. Si el modelo no está disponible, cae a la
+  presentación por bloques.
 - Antes de formatear, el nodo de Data Steward valida el contrato de las tools
   (tipos y rangos de los agregados). Una salida fuera de contrato se reporta como
   error y no se publica.
-- El estado guarda `plan`, `resultados`, `trazas`, `errores` e `intentos`.
+- El estado guarda `plan`, `subpreguntas`, `resultados`, `trazas`, `errores` e
+  `intentos`.
 - El modo se controla con `ORCHESTRATION_MODE`:
   - `graph` (por defecto): usa LangGraph.
   - `hub`: usa el orquestador anterior como respaldo.
   - Si el grafo falla, se intenta el hub para no dejar la interfaz sin respuesta.
+- `ORCHESTRATION_PLANNER` controla el planner:
+  - `hybrid` (por defecto): reglas para una intención y LLM para varias.
+  - `llm`: siempre intenta el planner LLM, con respaldo determinista.
+  - `rules`: conserva solo las reglas anteriores.
+- `ORCHESTRATION_SYNTHESIS` controla la respuesta multiagente:
+  - `auto` (por defecto): el orquestador integra varios resultados.
+  - `llm`: fuerza la síntesis con LLM.
+  - `rules`: concatena los bloques por especialista.
 
 La comunicación entre agentes es por estado compartido, no por llamadas directas
 entre servidores MCP. Así el verificador y el sintetizador pueden ver la evidencia
