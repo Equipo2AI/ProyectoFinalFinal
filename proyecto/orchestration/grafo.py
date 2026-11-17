@@ -41,6 +41,14 @@ from proyecto.orchestration.comun import (
     _llamar_mcp,
     _normalizar,
 )
+from proyecto.orchestration.perfil_respuesta import (
+    HERRAMIENTAS_LITERALES,
+    debe_redactar,
+    instrucciones_estilo,
+    perfil_desde_dict,
+    quitar_sql,
+    redactar_respuesta,
+)
 
 _ESPECIALISTAS = {
     "data_steward",
@@ -171,6 +179,8 @@ class EstadoGrafo(TypedDict, total=False):
     contexto_analista: str
     modelo: str
     perfil: dict
+    # Estilo de redacción: {"estilo", "mostrar_sql", "origen"} (perfil_respuesta.py).
+    perfil_respuesta: dict
     imagen_pendiente: str | None
     ultimo_agente: str | None
 
@@ -191,6 +201,8 @@ class EstadoGrafo(TypedDict, total=False):
     errores: Annotated[list[str], operator.add]
 
     respuesta: str
+    # True si la respuesta ya se generó con las instrucciones de estilo.
+    redactada: bool
 
 
 def _texto(content: Any) -> str:
@@ -1239,7 +1251,9 @@ def _respuesta_directa(estado: EstadoGrafo) -> str:
         historial = [{"role": "user", "content": estado.get("consulta") or ""}]
 
     contexto = str(estado.get("contexto_documentos") or "").strip()
-    system = PROMPT_DIRECTO
+    system = PROMPT_DIRECTO + instrucciones_estilo(
+        perfil_desde_dict(estado.get("perfil_respuesta"))
+    )
     if contexto:
         system += "\n\nContexto documental de la conversación:\n" + contexto
 
@@ -1378,7 +1392,13 @@ def _sintetizar_cooperativo(
             timeout=60,
         ).invoke(
             [
-                {"role": "system", "content": _PROMPT_SINTESIS},
+                {
+                    "role": "system",
+                    "content": _PROMPT_SINTESIS
+                    + instrucciones_estilo(
+                        perfil_desde_dict(estado.get("perfil_respuesta"))
+                    ),
+                },
                 {"role": "user", "content": contenido_usuario},
             ]
         )
@@ -1395,8 +1415,9 @@ def _nodo_sintetizar(estado: EstadoGrafo) -> dict:
     if not plan or plan == ["directo"]:
         consulta = _normalizar(estado.get("consulta") or "")
         if _RE_KYC_AML.search(consulta) and not estado.get("contexto_documentos"):
-            return {"respuesta": RESPUESTA_FUERA_DE_ALCANCE}
-        return {"respuesta": _respuesta_directa(estado)}
+            return {"respuesta": RESPUESTA_FUERA_DE_ALCANCE, "redactada": True}
+        # La respuesta directa ya se genera con el estilo del perfil.
+        return {"respuesta": _respuesta_directa(estado), "redactada": True}
 
     if plan == ["document_intelligence"]:
         resultado = resultados.get("document_intelligence") or {}
@@ -1406,7 +1427,8 @@ def _nodo_sintetizar(estado: EstadoGrafo) -> dict:
     if len(plan) > 1:
         respuesta_cooperativa = _sintetizar_cooperativo(estado, plan, resultados)
         if respuesta_cooperativa:
-            return {"respuesta": respuesta_cooperativa}
+            # La síntesis cooperativa ya usa el estilo del perfil.
+            return {"respuesta": respuesta_cooperativa, "redactada": True}
 
     partes: list[str] = []
     for agente in plan:
@@ -1439,6 +1461,39 @@ def _nodo_sintetizar(estado: EstadoGrafo) -> dict:
     return {"respuesta": respuesta}
 
 
+def _nodo_redactar(estado: EstadoGrafo) -> dict:
+    """Adapta la respuesta final al tipo de usuario (simple o técnico).
+
+    - Sin perfil: no cambia nada (compatibilidad con llamadas antiguas).
+    - Si la síntesis ya usó el estilo, solo se aplica el filtro determinista
+      de SQL.
+    - Si no, una llamada al modelo reescribe la respuesta. Si la reescritura
+      altera una cifra, se conserva la respuesta verificada.
+    """
+    perfil = perfil_desde_dict(estado.get("perfil_respuesta"))
+    respuesta = str(estado.get("respuesta") or "")
+    if perfil is None or respuesta == RESPUESTA_FUERA_DE_ALCANCE:
+        return {}
+
+    trazas = list(estado.get("trazas") or [])
+    resultados = estado.get("resultados") or {}
+    if estado.get("redactada") or not debe_redactar(respuesta, trazas, resultados):
+        if perfil.mostrar_sql or any(
+            str(t.get("name")) in HERRAMIENTAS_LITERALES for t in trazas
+        ):
+            return {}
+        return {"respuesta": quitar_sql(respuesta) or respuesta}
+
+    nueva = redactar_respuesta(
+        estado.get("consulta") or "",
+        respuesta,
+        perfil,
+        resultados,
+        estado.get("modelo") or modelo_de("orchestrator"),
+    )
+    return {"respuesta": nueva or respuesta, "redactada": True}
+
+
 _GRAFO = None
 
 
@@ -1453,6 +1508,7 @@ def _construir_grafo():
     grafo.add_node("document_intelligence", _nodo_documento)
     grafo.add_node("verificar", _nodo_verificar)
     grafo.add_node("sintetizar", _nodo_sintetizar)
+    grafo.add_node("redactar", _nodo_redactar)
 
     grafo.add_edge(START, "planear")
     grafo.add_edge("planear", "despachar")
@@ -1484,7 +1540,8 @@ def _construir_grafo():
             "sintetizar": "sintetizar",
         },
     )
-    grafo.add_edge("sintetizar", END)
+    grafo.add_edge("sintetizar", "redactar")
+    grafo.add_edge("redactar", END)
     return grafo.compile()
 
 
@@ -1505,8 +1562,13 @@ def ejecutar_grafo(
     imagen_pendiente: str | None = None,
     ultimo_agente: str | None = None,
     perfil: dict | None = None,
+    perfil_respuesta: dict | None = None,
 ) -> EstadoGrafo:
-    """Ejecuta el grafo para una consulta y devuelve el estado final."""
+    """Ejecuta el grafo para una consulta y devuelve el estado final.
+
+    ``perfil`` controla permisos (qué datos puede ver el usuario) y
+    ``perfil_respuesta`` controla el estilo de redacción (simple o técnico).
+    """
     estado_inicial: EstadoGrafo = {
         "consulta": consulta,
         "historial": list(historial or []),
@@ -1514,6 +1576,7 @@ def ejecutar_grafo(
         "contexto_analista": contexto_analista,
         "modelo": modelo or modelo_de("orchestrator"),
         "perfil": dict(perfil or {}),
+        "perfil_respuesta": dict(perfil_respuesta or {}),
         "imagen_pendiente": (
             str(Path(imagen_pendiente).expanduser().resolve())
             if imagen_pendiente
@@ -1534,6 +1597,7 @@ def ejecutar_grafo(
         "trazas": [],
         "errores": [],
         "respuesta": "",
+        "redactada": False,
     }
     return _get_grafo().invoke(
         estado_inicial,
