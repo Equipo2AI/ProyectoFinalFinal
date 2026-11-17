@@ -25,6 +25,9 @@ proyecto/data/document_context.db*
 proyecto/data/memory/
 proyecto/data/uploads/
 
+# Caché de chunking semántico: se regenera al indexar
+data_governance_files/.semantic_chunks_cache.json
+
 AGENTS.md
 
 # Documentación interna: no se publica en el repo
