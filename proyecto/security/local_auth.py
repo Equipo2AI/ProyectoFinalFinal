@@ -65,19 +65,11 @@ def auth_directory():
 ROOT = auth_directory()
 TOKEN = ContextVar('principal_token', default='')
 STATE = ROOT / 'identities.json'
-DEMO_SUBJECT = 'demo_superuser'
-DEMO_PERMISSIONS = ['aggregate', 'audit', 'governance', 'pii:nombre', 'pii:rfc']
 
 
 def auth_mode():
     """El modo visual demo no concede identidad ni permisos de datos."""
     return (os.environ.get('PROYECTO_AUTH_MODE', 'local').strip().lower() or 'local')
-
-
-def es_modo_demo():
-    return auth_mode() == 'demo' and not (
-        TOKEN.get() or os.environ.get('PROYECTO_AUTH_TOKEN', '')
-    )
 
 
 def _read():
@@ -128,11 +120,6 @@ def db_binding():
     if not path.is_file():
         raise PermissionError('Base autorizada no disponible.')
     return str(path), hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _demo_principal(permission=None):
-    """Compatibilidad: la vista demo nunca suplanta un auditor autenticado."""
-    raise PermissionError('Acceso denegado: inicia sesion con una identidad aprovisionada.')
 
 
 @_serialized

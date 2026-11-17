@@ -21,9 +21,9 @@ from sqlalchemy import inspect, text
 from proyecto.config.models import modelo_de
 
 from .database import (
-    DEFAULT_DB_NAME,
     create_readonly_engine,
     get_database_url,
+    nombre_base_datos,
     objetos_disponibles,
 )
 
@@ -69,13 +69,7 @@ def _get_engine():
     principal("governance")
     global _ENGINE
     if _ENGINE is None:
-        url_db = get_database_url()
-        if not url_db:
-            raise RuntimeError(
-                "No hay base configurada: define DATABASE_URL o genera "
-                "proyecto/bd/banamex.db con proyecto/bd/cargar_bd.py."
-            )
-        _ENGINE = create_readonly_engine(url_db)
+        _ENGINE = create_readonly_engine(get_database_url())
     return _ENGINE
 
 
@@ -229,7 +223,7 @@ def inspeccionar_dataset(tabla: str = "") -> str:
 
         return json.dumps(
             {
-                "base": DEFAULT_DB_NAME,
+                "base": nombre_base_datos(),
                 "motor": engine.dialect.name,
                 "tabla": nombre,
                 "es_vista": nombre in vistas,
@@ -501,7 +495,7 @@ def validar_calidad_datos(tabla: str = "") -> str:
 
         return json.dumps(
             {
-                "base": DEFAULT_DB_NAME,
+                "base": nombre_base_datos(),
                 "motor": engine.dialect.name,
                 "tabla": nombre,
                 "es_vista": nombre in vistas,
@@ -562,7 +556,7 @@ def evaluar_calidad(tabla: str = "") -> str:
         coinciden = sum(1 for evaluacion in evaluaciones if evaluacion["coincide"])
         return json.dumps(
             {
-                "base": DEFAULT_DB_NAME,
+                "base": nombre_base_datos(),
                 "motor": engine.dialect.name,
                 "tabla": nombre,
                 "es_vista": nombre in vistas,

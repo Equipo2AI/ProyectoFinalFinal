@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_DB = _PROJECT_ROOT / "data" / "document_context.db"
 _RE_ENCABEZADO = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$")
 _RE_TOKEN = re.compile(r"[a-z0-9_]{3,}")
@@ -235,7 +236,7 @@ def config_from_env() -> DocumentContextConfig:
     ruta = os.getenv("DOCUMENT_CONTEXT_DB", "").strip()
     db_path = Path(ruta).expanduser() if ruta else _DEFAULT_DB
     if not db_path.is_absolute():
-        db_path = _PROJECT_ROOT / db_path
+        db_path = _REPO_ROOT / db_path
     return DocumentContextConfig(
         db_path=db_path,
         ttl_days=_env_int("DOCUMENT_CONTEXT_TTL_DAYS", 7, 1),

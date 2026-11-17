@@ -1,6 +1,6 @@
 """Validación determinista de SQL para el Data Analyst.
 
-La generación de SQL sigue siendo responsabilidad del hub/LLM. Este módulo no
+La generación de SQL sigue siendo responsabilidad del orquestador/LLM. Este módulo no
 genera consultas: revisa una consulta candidata contra el catálogo real, las
 reglas de solo lectura y el alcance del perfil autenticado.
 
@@ -24,7 +24,7 @@ except ImportError:  # pragma: no cover - sqlglot es dependencia obligatoria
 
 
 class ResultadoValidacionSQL(BaseModel):
-    """Resultado estable para que el hub y la tool puedan iterar."""
+    """Resultado estable para que el orquestador y la tool puedan iterar."""
 
     ok: bool
     sql: str
@@ -418,7 +418,7 @@ def validar_sql(
     dialecto = _dialecto(engine)
     try:
         expresiones = sqlglot.parse(consulta, read=dialecto)
-    except Exception as error:  # noqa: BLE001 - se devuelve al hub para corregir
+    except Exception as error:  # noqa: BLE001 - se devuelve al orquestador para corregir
         resultado.errores.append(f"No se pudo interpretar el SQL: {error}")
         return resultado
 

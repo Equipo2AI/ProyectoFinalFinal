@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -14,53 +14,81 @@ logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _CONFIG_PATH = _PROJECT_ROOT / "config" / "memory.yaml"
-_MEMORY_DIR = _PROJECT_ROOT / "data" / "memory"
 
 
-def _as_bool(value: object, default: bool = False) -> bool:
+class ConfiguracionMemoriaError(RuntimeError):
+    """La configuración de memoria no existe o no cumple el contrato."""
+
+
+def _requerido(data: dict, clave: str):
+    if clave not in data:
+        raise ConfiguracionMemoriaError(
+            f"Falta '{clave}' en {_CONFIG_PATH.name}."
+        )
+    return data[clave]
+
+
+def _as_bool(value: object) -> bool:
     if isinstance(value, bool):
         return value
     if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "si", "sí", "yes", "on"}
-    return default
+        normalizado = value.strip().lower()
+        if normalizado in {"1", "true", "si", "sí", "yes", "on"}:
+            return True
+        if normalizado in {"0", "false", "no", "off"}:
+            return False
+    raise ConfiguracionMemoriaError(
+        f"'enabled' debe ser booleano en {_CONFIG_PATH.name}."
+    )
 
 
-def _as_int(value: object, default: int, minimum: int = 1) -> int:
+def _as_int(value: object, clave: str, minimum: int) -> int:
     try:
         return max(minimum, int(value))
-    except (TypeError, ValueError):
-        return default
+    except (TypeError, ValueError) as error:
+        raise ConfiguracionMemoriaError(
+            f"'{clave}' debe ser un entero en {_CONFIG_PATH.name}."
+        ) from error
 
 
 @dataclass(frozen=True)
 class MemoryConfig:
-    enabled: bool = False
-    user: str = "demo"
-    max_messages: int = 8
-    update_every: int = 4
-    max_chars: int = 1200
-    directory: Path = field(default_factory=lambda: _MEMORY_DIR)
+    enabled: bool
+    user: str
+    max_messages: int
+    update_every: int
+    max_chars: int
+    directory: Path
 
 
 def config_from_file(path: Path | None = None) -> MemoryConfig:
     config_path = path or _CONFIG_PATH
     try:
         data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-    except (FileNotFoundError, OSError, yaml.YAMLError):
-        data = {}
+    except (OSError, yaml.YAMLError) as error:
+        raise ConfiguracionMemoriaError(
+            f"No se pudo leer la configuración de memoria: {config_path}"
+        ) from error
     if not isinstance(data, dict):
-        data = {}
+        raise ConfiguracionMemoriaError(
+            f"La configuración de memoria debe ser un mapa: {config_path}"
+        )
 
-    directory = Path(str(data.get("directory") or "data/memory")).expanduser()
+    user = str(_requerido(data, "user")).strip()
+    if not user:
+        raise ConfiguracionMemoriaError(
+            f"'user' no puede estar vacío en {config_path.name}."
+        )
+    directory = Path(str(_requerido(data, "directory"))).expanduser()
     if not directory.is_absolute():
         directory = _PROJECT_ROOT / directory
 
     return MemoryConfig(
-        enabled=_as_bool(data.get("enabled")),
-        user=str(data.get("user") or "demo").strip() or "demo",
-        max_messages=_as_int(data.get("max_messages"), 8, 2),
-        update_every=_as_int(data.get("update_every"), 4, 1),
-        max_chars=_as_int(data.get("max_chars"), 1200, 200),
+        enabled=_as_bool(_requerido(data, "enabled")),
+        user=user,
+        max_messages=_as_int(_requerido(data, "max_messages"), "max_messages", 2),
+        update_every=_as_int(_requerido(data, "update_every"), "update_every", 1),
+        max_chars=_as_int(_requerido(data, "max_chars"), "max_chars", 200),
         directory=directory,
     )
 

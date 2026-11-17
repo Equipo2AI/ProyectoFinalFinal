@@ -41,8 +41,8 @@ Data Steward y Data Analyst se comunican por MCP `stdio` con
 Intelligence utiliza Ollama con Qwen2.5-VL sobre una imagen local. Streamlit
 presenta la respuesta y la traza de herramientas.
 
-`compliance` (KYC/AML) dispone de un servidor MCP de demostración y el grafo lo
-utiliza para rechazar ese tipo de consultas; las reglas reales quedan para fase 2.
+Las evaluaciones KYC/AML quedan fuera del alcance del MVP actual; el
+orquestador las rechaza sin emitir una evaluación regulatoria.
 
 ## Requisitos
 
@@ -75,8 +75,7 @@ Se respeta `OLLAMA_HOST` si está definido. Los mismos comandos funcionan en
 macOS, Linux y PowerShell con `uv` instalado.
 
 `.env.example` sirve como plantilla de `.env`. `DATABASE_URL` es opcional: si no
-se define, se usa la ruta de `proyecto/config/data_connection.yaml` y, en su
-defecto, `proyecto/bd/banamex.db`. `MCP_TIMEOUT` (segundos, 180 por defecto)
+se define, se usa la ruta de `proyecto/config/data_connection.yaml`. `MCP_TIMEOUT` (segundos, 180 por defecto)
 limita cada llamada MCP `stdio` para que una tool colgada no bloquee la UI. El
 valor por defecto cubre el arranque en frío de Ollama; si tu equipo es más lento,
 súbelo en `.env`. Las llamadas de documentos usan `MCP_DOCUMENT_TIMEOUT` (1,800
@@ -105,20 +104,21 @@ esperados y marca coincidencias y diferencias.
 
 ## Interfaz Streamlit
 
-Streamlit se instala al vuelo para no cargar el entorno base. Desde la raíz:
+Streamlit forma parte de las dependencias del proyecto. Desde la raíz:
 
 ```bash
-uv run --with streamlit streamlit run proyecto/ui/app.py
+uv run streamlit run proyecto/ui/app.py
 ```
 
 El panel de traza muestra, por turno, la herramienta MCP invocada, sus
 argumentos, el estado, la consulta SQL, la gráfica y las fuentes. La interfaz
-también admite imágenes para OCR o descripción y documentos locales (PDF, DOCX,
-XLSX, PPTX, CSV, HTML y texto) para convertirlos a Markdown.
+también admite imágenes para OCR o descripción y documentos adjuntos (PDF, DOCX,
+XLSX, PPTX, CSV, HTML y texto) para convertirlos a Markdown. Con una sesión
+autenticada, `document_intelligence` solo puede leer archivos dentro de
+`DOCUMENT_UPLOAD_ROOT` (por defecto `proyecto/data/uploads`), aislados por
+identidad; las rutas locales arbitrarias se rechazan.
 
-Ejemplo de una consulta de normatividad con evidencia y fuentes:
-
-![Consulta de normatividad en la interfaz, con la traza y las fuentes a la derecha](files/consulta.png)
+La interfaz muestra la respuesta, la traza de agentes y las fuentes recuperadas.
 
 ## Agentes, modelos y herramientas
 
@@ -129,7 +129,6 @@ Ejemplo de una consulta de normatividad con evidencia y fuentes:
 | `data_analyst` | Análisis cuantitativo sobre datos bancarios | `mimo-v2.6` | `analizar_datos`, `listar_tablas`, `describir_tabla`, `valores_columna`, `validar_sql`, `ejecutar_consulta`, `graficar_consulta`, `catalogo_metricas`, `consultar_metrica`, `resolver_periodo`, `resolver_valor`, `verificar_cifras` |
 | `normatividad_rag` | Búsqueda semántica sobre documentación | `llama3.1:latest` | `buscar_normatividad`, `buscar_evidencia`, `verificar_cita` |
 | `document_intelligence` | Lectura de imágenes y documentos | `qwen2.5vl:7b` | `extraer_texto_imagen`, `describir_imagen`, `convertir_documento_markdown` |
-| `compliance` | Reglas regulatorias: KYC, AML | `qwen2.5:7b-instruct` | `revisar_compliance_demo` (demostración, fase 2) |
 
 `convertir_documento_markdown` usa **MarkItDown** para DOCX, XLSX, PPTX, CSV,
 HTML y texto. Los PDF se procesan por página: si tienen capa de texto se extrae
@@ -147,7 +146,9 @@ directamente.
 
 El texto completo de cada documento se guarda en un SQLite local
 (`proyecto/data/document_context.db`), aislado por el usuario autenticado
-(`subject`). **No se indexa en Pinecone ni se comparte con otros usuarios.** El
+(`subject`). Los archivos originales se guardan bajo
+`DOCUMENT_UPLOAD_ROOT` y la UI los elimina al limpiar la conversación o cerrar sesión.
+**No se indexan en Pinecone ni se comparten con otros usuarios.** El
 orquestador recibe un contexto acotado: el documento activo completo si cabe, o
 un resumen extractivo más las secciones relevantes. La retención y los límites
 se configuran con `DOCUMENT_CONTEXT_TTL_DAYS`, `DOCUMENT_CONTEXT_MAX_DOCS`,
@@ -159,14 +160,18 @@ resuelve con las herramientas SQL (`listar_tablas`, `describir_tabla`,
 AST con `sqlglot`: una sola sentencia, catálogo real, solo lectura, PII y
 row-level security (`num_cte` del cliente o una `num_cta` que le pertenezca).
 Las tools auxiliares también aplican el alcance del perfil. El agente usa
-`mimo-v2.6`: en las pruebas, `qwen2.5-coder:7b` describió las tablas pero no
-ejecutó las herramientas SQL.
+`mimo-v2.6`: en la práctica, `qwen2.5-coder:7b` describió las tablas pero no
+ejecutó las herramientas SQL. Cuando `ejecutar_consulta` o `consultar_metrica`
+devuelve filas, el backend se detiene y presenta ese resultado; no sigue
+explorando otras dimensiones ni métricas. Si LangGraph alcanza su límite de
+pasos, devuelve un mensaje para reformular la pregunta en lugar de propagar el
+error de recursión.
 
 `graficar_consulta` no ejecuta código generado por el modelo: valida y ejecuta
 una consulta agregada y dibuja el PNG con matplotlib en el backend. Rechaza
 identificadores, datos personales, resultados truncados, ejes no numéricos y
-categorías repetidas. El grafo y el hub pueden generarla cuando el usuario pide
-una gráfica; la UI la muestra y permite descargarla desde `Respuesta.grafica`.
+categorías repetidas. El grafo la genera cuando el usuario pide una gráfica; la
+UI la muestra y permite descargarla desde `Respuesta.grafica`.
 
 Para evitar SQL libre en preguntas frecuentes, `catalogo_metricas` declara
 métricas cerradas (clientes, saldo, transacciones, importes) con sus dimensiones
@@ -175,17 +180,7 @@ expresiones como `2026-02`, `1T 2026` o `mes pasado` a claves de `dim_fecha`;
 `resolver_valor` normaliza una categoría antes del `WHERE`. `verificar_cifras`
 contrasta cifras y PII de la redacción contra la evidencia de la última consulta.
 
-El hub nuevo de Data Analyst vive en `proyecto/orchestration/hubs.py` y usa esas
-tools de bajo nivel, sin `analizar_datos`. Para compararlo con el flujo MCP
-anterior en el grafo:
-
-```bash
-DATA_ANALYST_HUB=1 uv run python -c \
-  "from proyecto.orchestration.grafo import ejecutar_grafo; print(ejecutar_grafo('¿Cuántos clientes hay?')['respuesta'])"
-```
-
-El orquestador usa `mimo-v2.6` para las respuestas directas; en modo `hub`
-también enruta cuando las reglas deterministas no alcanzan.
+El orquestador usa `mimo-v2.6` para la planificación y la síntesis.
 
 ## Integración MCP
 
@@ -198,7 +193,6 @@ Todos los especialistas se exponen como servidores MCP y el grafo los invoca por
 | Data Analyst | `proyecto/mcp_servers/data_analyst_server.py` |
 | Normatividad | `proyecto/mcp_servers/normatividad_rag_server.py` |
 | Document Intelligence | `proyecto/mcp_servers/document_intelligence_server.py` |
-| Compliance | `proyecto/mcp_servers/compliance_server.py` (demostración, fase 2) |
 
 El orquestador no describe la base en el prompt: solicita metadatos o ejecuta SQL
 y devuelve el resultado de la herramienta.
@@ -235,40 +229,15 @@ uv run python data_governance_files/upload_files.py
 El RAG cubre preguntas de un solo tema. La relación entre la normativa y los
 datos almacenados no está resuelta; se detalla en el diagnóstico.
 
-## Casos de prueba
-
-La tabla siguiente resume los resultados de la demo del 4 de noviembre. **Sí**
-indica respuesta correcta y **No**, fallo.
-
-### Casos que funcionan
-
-| Pregunta | Agente | Resultado |
-|---|---|---|
-| ¿Qué dice la Ley Federal de Protección de Datos Personales en Posesión de los Particulares? | Normatividad | Sí: cita artículos y fuente (archivo y página). |
-| ¿Qué dice la ley de protección de datos por privados? | Normatividad | Sí: el enrutamiento de alta confianza reconoce la variante y responde con la misma evidencia. |
-| ¿Qué dice el aviso de privacidad de Banamex sobre el tratamiento de datos personales? | Normatividad | Sí: recupera el aviso y responde con citas. |
-| ¿Cuál es el promedio de los sueldos? | Data Analyst | Sí: se enruta como agregado y responde. La base sintética no tiene columna `sueldo`; la respuesta debe declarar el proxy utilizado o la ausencia del dato. |
-| ¿Qué problemas de calidad tiene `raw_clientes`? | Data Steward | Sí: nombra la tabla y devuelve faltantes, duplicados y claves repetidas reales. |
-| Adjuntar una factura y pedir el texto | Document Intelligence | Sí: transcribe el contenido visible con OCR. |
-| ¿Y en enero? (después de una consulta de saldos) | Data Analyst | Sí: la memoria de corto plazo conserva el hilo y reutiliza el contexto. |
-
-### Casos que fallan
-
-| Pregunta | Agente | Síntoma | Causa |
-|---|---|---|---|
-| ¿Cuál es la estructura de las tablas? | Data Steward | No: alucina y agrega columnas que no existen, por ejemplo "puntaje de buró de crédito". | Sin tabla explícita, el verificador no contrasta la salida contra el esquema real y la síntesis rellena el hueco. |
-| ¿Qué relación tiene la ley de protección de datos con los datos almacenados? | Normatividad (solo) | No: no conecta los dos puntos; se queda en la fase de recuperación del RAG. | Falta un plan multiagente que cruce evidencia normativa con metadatos. El plan actual enruta a un solo especialista. |
-| Consultas SQL complejas (varios joins, condiciones o pasos) | Data Analyst | No: el ciclo no termina; se corta antes de verificar y sintetizar. | El orquestador de 9B no sostiene el plan; el verificador reintenta una sola vez y no hay descomposición en pasos. |
-| Preguntas donde el agente debe pedir una aclaración al usuario | Cualquiera | No: se interrumpe el turno. | No existe un nodo de aclaración: el grafo no puede suspender la ejecución para preguntar y retomar. |
-| Preguntas que exigen inferir entre dos ideas | Cualquiera | No: responde una parte o cambia de tema. | El sintetizador compone bloques, no razona sobre ellos; no hay contraste entre evidencias. |
+## Diagnóstico y formulación de consultas
 
 ### Diagnóstico
 
-El análisis de los casos anteriores señala que el origen principal de los fallos
-está en el orquestador, no en los especialistas:
+El análisis funcional señala que el origen principal de los fallos está en el
+orquestador, no en los especialistas:
 
-1. El plan es determinista y de un solo paso; cuando la pregunta necesita dos
-   fuentes, elige una y descarta la otra.
+1. El plan híbrido ya cubre consultas multi-intención; cuando el planner LLM
+   falla, cae a las reglas deterministas.
 2. El verificador comprueba que el especialista respondió, pero no que lo dicho
    exista en el esquema; de ahí que aparezcan columnas inventadas.
 3. No hay nodo de aclaración, por lo que una pregunta incompleta interrumpe el
@@ -276,8 +245,8 @@ está en el orquestador, no en los especialistas:
 4. Los modelos de 7-9B sostienen bien una herramienta aislada, pero pierden el
    hilo en consultas SQL largas o en inferencias.
 
-Las conclusiones son preliminares y se basan en los casos observados. La
-siguiente iteración abordará esta parte del orquestador.
+Las conclusiones son preliminares y se basan en la observación del flujo actual.
+La siguiente iteración abordará esta parte del orquestador.
 
 ### Formulación de consultas
 
@@ -294,11 +263,6 @@ En general, una consulta con una sola idea, la tabla nombrada y el agente o la
 herramienta explícitos produce mejores resultados.
 
 ## Orquestación en grafo
-
-El contrato de tareas, resultados y hubs de dominio vive en
-`proyecto/orchestration/tareas.py` y `proyecto/orchestration/hubs.py`. Es el
-diseño que permite que el orquestador delegue objetivos de alto nivel y cada hub
-decida qué herramientas usar.
 
 `proyecto/orchestration/grafo.py` implementa un `StateGraph` de LangGraph con
 estado compartido:
@@ -329,10 +293,6 @@ planear -> despachar -> especialista -> despachar -> ... -> verificar
   error y no se publica.
 - El estado guarda `plan`, `subpreguntas`, `resultados`, `trazas`, `errores` e
   `intentos`.
-- El modo se controla con `ORCHESTRATION_MODE`:
-  - `graph` (por defecto): usa LangGraph.
-  - `hub`: usa el orquestador anterior como respaldo.
-  - Si el grafo falla, se intenta el hub para no dejar la interfaz sin respuesta.
 - `ORCHESTRATION_PLANNER` controla el planner:
   - `hybrid` (por defecto): reglas para una intención y LLM para varias.
   - `llm`: siempre intenta el planner LLM, con respaldo determinista.
@@ -351,7 +311,7 @@ de todos los especialistas sin crear una malla de dependencias.
 ```text
 proyecto/
 ├── config/
-│   ├── models.yaml           # Modelo por agente (documentación; ver Configuración)
+│   ├── models.yaml           # Modelo por agente y OCR de PDF (fuente efectiva)
 │   ├── data_connection.yaml  # Fuente de datos (SQLite banamex.db)
 │   └── memory.yaml           # Memoria de largo plazo (desactivada)
 ├── bd/
@@ -362,56 +322,42 @@ proyecto/
 │   ├── normatividad_rag_agent.py
 │   ├── data_analyst_agent.py
 │   ├── document_intelligence_agent.py
-│   ├── pdf_reader.py         # Texto nativo + OCR por página de PDF
-│   └── compliance_agent.py
+│   └── pdf_reader.py         # Texto nativo + OCR por página de PDF
 ├── mcp_servers/              # Servidores MCP por especialista
 ├── orchestration/
+│   ├── comun.py              # Helpers compartidos (MCP, normalización)
 │   ├── grafo.py              # Grafo LangGraph
-│   └── orquestador.py        # Adaptador de modos y hub de respaldo
-├── ui/                       # Streamlit, estilos y panel de traza
+│   └── orquestador.py        # Adaptador entre UI y grafo
+├── ui/                       # Streamlit, estilos y delta del tema claro
 ├── servicio.py               # Contrato entre UI y orquestador
 └── main.py                   # CLI
 ```
 
-## Pruebas
-
-La suite automatizada se ejecuta con:
-
-```bash
-uv run pytest -q
-```
-
-Cubre el guard SQL, RLS por identidad, métricas, periodos, gráficas, hubs,
-tareas y autenticación local.
-
-Las pruebas manuales (`tests/probar_*.py`, `tests/rag_test.py` y la imagen de
-factura) no se publican en el repositorio; se conservan localmente para
-desarrollo. Los servidores MCP también pueden verificarse de forma aislada desde
-esos scripts locales.
-
 ## Configuración
 
-La conexión a datos se toma de `config/data_connection.yaml`, que apunta a
-`proyecto/bd/banamex.db`. Cuando `DATABASE_URL` está definida, tiene prioridad.
+La conexión a datos se toma de `proyecto/config/data_connection.yaml`, que apunta a
+`proyecto/bd/banamex.db`. Cuando `DATABASE_URL` está definida, tiene prioridad; si
+falta el YAML o `data_source.path`, el arranque falla con un mensaje claro.
 
-La memoria de largo plazo se configura en `config/memory.yaml` y está desactivada
-por defecto. Es independiente del contexto documental privado, que vive en
+La memoria de largo plazo se configura en `proyecto/config/memory.yaml`, que es la
+fuente de todos sus parámetros, y está desactivada por defecto. Es independiente
+del contexto documental privado, que vive en
 SQLite local y se recorta por presupuesto de caracteres antes de llegar al
 modelo. El historial de chat también tiene una ventana propia
 (`CHAT_HISTORY_MESSAGES`, `CHAT_HISTORY_CHARS`).
 
-El modelo de cada agente se toma de `config/models.yaml` al inicializar el agente.
-Si el archivo o la entrada faltan, se usa el valor por defecto de
-`proyecto/config/models.py`. `DOCUMENT_INTELLIGENCE_MODEL` sobrescribe el modelo
-de visión de imágenes y `DOCUMENT_PDF_MODEL` el de OCR de PDF (por defecto
-`qwen2.5vl:3b`).
+El modelo de cada agente y el de OCR de PDF se toman de
+`proyecto/config/models.yaml`; es la única fuente de nombres. Si falta el
+archivo o una entrada, el arranque falla con un mensaje claro.
+`DOCUMENT_INTELLIGENCE_MODEL` sobrescribe el modelo de visión de imágenes y
+`DOCUMENT_PDF_MODEL` el de OCR de PDF.
 
 ## Límites conocidos
 
-Estos límites corresponden a la arquitectura y a las pruebas con agentes:
+Estos límites corresponden a la arquitectura actual:
 
-- El plan es determinista y de un solo paso: ante preguntas que requieren dos
-  fuentes, prioriza una y descarta la otra.
+- El planner híbrido cubre consultas multi-intención; si el LLM no devuelve un
+  plan válido, se usa el plan determinista como respaldo.
 - El verificador valida que el especialista respondió, no que el contenido exista
   en el esquema; de ahí que puedan aparecer columnas inexistentes.
 - No existe un nodo de aclaración: una pregunta incompleta interrumpe el ciclo en
@@ -421,8 +367,6 @@ Estos límites corresponden a la arquitectura y a las pruebas con agentes:
 - El OCR de PDF está limitado a 20 páginas sin texto por archivo. Un PDF
   escaneado de 20 páginas puede tardar unos 15 minutos en un Mac de 16 GB; el
   texto nativo se extrae sin OCR y es mucho más rápido.
-- La suite automatizada cubre contratos y seguridad; las pruebas de calidad de
-  respuesta con LLM siguen siendo manuales y dependen de Ollama/Pinecone.
 
 ## Siguientes pasos
 
@@ -432,10 +376,8 @@ Estos límites corresponden a la arquitectura y a las pruebas con agentes:
    retome la ejecución.
 3. **Verificador contra esquema**: contrastar las tablas y columnas citadas con
    los metadatos antes de publicar la respuesta.
-4. **Suite de evaluación**: convertir los casos de evaluación en pruebas
-   repetibles por agente, con criterios de aceptación.
-5. **Comparación de modelos**: medir 14B y 32B con la misma suite para evaluar el
-   efecto en planificación e inferencia.
+4. **Comparación de modelos**: medir 14B y 32B con la misma arquitectura para
+   evaluar el efecto en planificación e inferencia.
 
 
 ## Acceso local y modo demo
@@ -488,7 +430,7 @@ Tras cambiar de ubicacion, reinicia Streamlit desde tu consola habitual.
 Ejecuta el servicio solo en localhost para desarrollo:
 
 ```bash
-uv run --with streamlit streamlit run proyecto/ui/app.py --server.address 127.0.0.1
+uv run streamlit run proyecto/ui/app.py --server.address 127.0.0.1
 ```
 
 Las consultas de Data Analyst usan una proyeccion SQLite efimera en memoria,
@@ -505,8 +447,7 @@ usuario de Windows. No es un proveedor de identidad de produccion: quien puede
 editar el registro o leer la base fuera de la aplicacion pertenece a esa frontera
 de confianza. Aprovisiona fuera de sesiones activas; para despliegues compartidos
 se necesita un IdP, gestion de secretos, almacenamiento transaccional de sesiones
-y controles de acceso del sistema operativo. No se ampliaron los permisos de
-Compliance ni sus capacidades de demostracion.
+y controles de acceso del sistema operativo.
 
 
 ### Respuestas verificadas de las preguntas bancarias
@@ -521,21 +462,15 @@ modelo oficial; sus llamadas tienen limite de espera.
 
 Normatividad intenta Pinecone con espera acotada. Si no esta disponible,
 recupera fragmentos literales de los PDF/TXT reales de `data_governance_files`,
-indicando archivo, pagina y modo local. El lector PDF usa `pypdf`, ya presente
-en el entorno; si falta, debe prepararse esa dependencia antes de leer PDF.
+indicando archivo, pagina y modo local. El fallback léxico usa `pypdf`, que es
+dependencia declarada del proyecto; el lector principal de PDF usa `pypdfium2`.
 Esto no certifica conectividad Pinecone ni vigencia legal externa del corpus.
 Las respuestas locales no usan conocimiento inventado del modelo.
 
-Las pruebas de gobierno de datos son adaptaciones explicitas a `raw_clientes`
-y `raw_saldos` de SQLite, no recreaciones de `clientes.csv`. Las herramientas
-reportan conteos de negativos y clasificacion PII por nombres del esquema,
-sin mostrar valores individuales.
-
-Pruebas focalizadas de autorizacion (fixture aislada, sin Ollama ni datos reales):
-
-```bash
-uv run python -m unittest discover -s tests -p test_local_authorization.py -v
-```
+El gobierno de datos se adapta explícitamente a `raw_clientes` y `raw_saldos`
+de SQLite, no a recreaciones de `clientes.csv`. Las herramientas reportan
+conteos de negativos y clasificación PII por nombres del esquema, sin mostrar
+valores individuales.
 
 
 ### Login visual y sesiones
@@ -573,17 +508,13 @@ La similitud de ese reporte con los registros locales no demuestra que sea
 la misma causa en este equipo.
 
 
-### Conciliacion local de autenticacion y hubs
+### Autenticación local
 
-Las mejoras de hubs, metricas y graficas se conservan con autenticacion
-obligatoria. El `perfil` recibido por API/MCP orienta el flujo pero no concede
-roles: el alcance y los permisos provienen de la sesion real de AppData. El hub
-opcional mantiene instancias separadas por sesion y conserva la ruta MCP para
-los planes bancarios verificados. No se habilita ningun auditor anonimo.
+Las métricas y gráficas se conservan con autenticación obligatoria. El `perfil`
+recibido por API/MCP orienta el flujo pero no concede roles: el alcance y los
+permisos provienen de la sesión real de AppData. No se habilita ningún auditor
+anónimo.
 
-La evidencia y los limites posteriores a la integracion se conservan fuera
-del repositorio. No se repitieron las 30 preguntas.
-La prueba manual existente `tests/probar_data_analyst_mcp.py` se conserva local
-(segun la exclusion del equipo) y ahora verifica MCP real y Streamlit sin
-guardar contrasenas ni alterar la base. Las pruebas unitarias del equipo usan
-identidades reales sobre fixtures aisladas; no requieren acceso anonimo.
+La evidencia y los límites posteriores a la integración se conservan fuera del
+repositorio. La autenticación usa identidades reales y no habilita acceso
+anónimo.

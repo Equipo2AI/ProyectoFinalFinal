@@ -13,6 +13,8 @@ import re
 import tempfile
 from pathlib import Path
 
+from proyecto.config.models import modelo_pdf
+
 _PREFIJO_ERROR = "No se pudo convertir el documento a Markdown:"
 _MAX_PDF_BYTES = 25 * 1024 * 1024
 _MAX_MARKDOWN_CHARS = 200_000
@@ -27,7 +29,7 @@ def _env_int(nombre: str, defecto: int, minimo: int = 1) -> int:
 
 
 def _modelo_pdf(modelo: str | None = None) -> str:
-    return modelo or os.getenv("DOCUMENT_PDF_MODEL", "").strip() or "qwen2.5vl:3b"
+    return modelo or modelo_pdf()
 
 
 def _error(detalle: str) -> str:

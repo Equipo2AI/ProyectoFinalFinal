@@ -24,6 +24,7 @@ from langchain_core.tools import tool
 from langchain_ollama import ChatOllama
 
 from proyecto.config.models import modelo_de
+from proyecto.security.file_access import authorize_file_access
 
 load_dotenv()
 
@@ -219,6 +220,7 @@ def _quiere_descripcion(consulta: str) -> bool:
 def ocr_image(image_path: str) -> str:
     """Extrae el texto visible de una imagen local (factura, recibo, comprobante)."""
     try:
+        authorize_file_access(image_path)
         return _vision(PROMPT_OCR, image_path, MODELO_VISION_POR_DEFECTO)
     except Exception as error:  # noqa: BLE001 - se devuelve al agente como texto
         return _error_legible(error)
@@ -228,6 +230,7 @@ def ocr_image(image_path: str) -> str:
 def describe_an_image(image_path: str) -> str:
     """Describe una imagen local y, si es un comprobante, resume sus datos visibles."""
     try:
+        authorize_file_access(image_path)
         return _vision(PROMPT_DESCRIPCION, image_path, MODELO_VISION_POR_DEFECTO)
     except Exception as error:  # noqa: BLE001 - se devuelve al agente como texto
         return _error_legible(error)
@@ -246,6 +249,7 @@ def document_to_markdown(
     ``ocr`` o ``describir``; ``paginas`` acepta rangos como ``1-5,8``.
     """
     try:
+        authorize_file_access(file_path)
         return _convertir_documento(
             _resolver_documento(file_path),
             modo=modo,
@@ -279,7 +283,7 @@ class DocumentIntelligenceAgent:
         if not ruta:
             return (
                 "Proporciona la ruta local de una imagen o documento "
-                "(por ejemplo: tests/modelo-factura-ex.png o "
+                "(por ejemplo: ruta/a/tu-imagen.png o "
                 "data_governance_files/archivo.pdf)."
             )
         if _quiere_descripcion(consulta):

@@ -9,27 +9,11 @@ import unicodedata
 
 from dotenv import load_dotenv
 from langchain_core.tools import tool
-from langchain_ollama import ChatOllama
 from langchain_pinecone import PineconeEmbeddings, PineconeVectorStore
 
 from proyecto.config.models import modelo_de
 
 load_dotenv()
-
-SYSTEM_PROMPT = """
-Eres un especialista en normatividad: políticas, manuales, reglas de negocio
-y lineamientos internos.
-
-Recibirás una pregunta y la evidencia recuperada del corpus. La evidencia es
-la única fuente válida: no uses conocimiento previo ni inventes artículos,
-requisitos, plazos o excepciones.
-
-Responde en español, de forma directa, citando textualmente los artículos o
-fragmentos que respondan la pregunta y conservando el archivo y la página de
-las fuentes. Si la evidencia no alcanza para responder, dilo explícitamente.
-No sustituyas la respuesta por una lista de derechos o artículos que no
-aparezcan en la evidencia.
-"""
 
 
 class NormatividadRAGAgent:
@@ -43,7 +27,6 @@ class NormatividadRAGAgent:
         # Los componentes pesados se crean al primer uso, para que importar
         # este módulo dentro de la arquitectura mayor no requiera Pinecone/Ollama.
         self._retriever = None
-        self._llm = None
         self._cache_evidencia: dict[str, dict] = {}
         # Una sola recuperación por consulta: buscar_normatividad,
         # buscar_evidencia y verificar_cita comparten estos fragmentos.
@@ -225,11 +208,6 @@ class NormatividadRAGAgent:
             )
 
         return buscar_normatividad, buscar_evidencia, verificar_cita
-
-    def _get_llm(self):
-        if self._llm is None:
-            self._llm = ChatOllama(model=self.modelo, temperature=0)
-        return self._llm
 
     # Interfaz pública
 

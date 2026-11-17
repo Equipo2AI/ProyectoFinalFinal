@@ -1,6 +1,6 @@
 """Orquestación explícita en grafo con LangGraph.
 
-El grafo reemplaza el enrutamiento opaco del hub por un flujo con estado
+El grafo reemplaza el enrutamiento opaco anterior por un flujo con estado
 compartido:
 
     planear -> despachar -> especialista -> despachar -> ... -> verificar
@@ -13,16 +13,11 @@ Cada especialista lee el estado común y deja allí su resultado. El verificador
 puede pedir un reintento de los especialistas que fallaron, y el sintetizador
 compone la respuesta final sin inventar datos.
 
-El modo se controla con ``ORCHESTRATION_MODE``:
-- ``graph`` (por defecto): usa este grafo.
-- ``hub``: usa el orquestador anterior como respaldo.
 """
 
 from __future__ import annotations
 
 import base64
-import hashlib
-from functools import lru_cache
 import json
 import operator
 import os
@@ -30,29 +25,21 @@ import re
 from pathlib import Path
 from typing import Annotated, Any, TypedDict
 
-from proyecto.config.ollama_runtime import ChatOllama
 from langgraph.graph import END, START, StateGraph
 
 from proyecto.agents import data_steward_agent
-from proyecto.guardrails import limpiar_base64
 from proyecto.agents.document_intelligence_agent import (
     PALABRAS_DESCRIPCION,
     PATRON_RUTA_DOCUMENTO,
     PATRON_RUTA_IMAGEN,
 )
 from proyecto.config.models import modelo_de
-from proyecto.orchestration.hubs import HubDataAnalyst
-from proyecto.orchestration.orquestador import (
+from proyecto.config.ollama_runtime import ChatOllama
+from proyecto.guardrails import limpiar_base64
+from proyecto.orchestration.comun import (
     _es_consulta_normativa,
     _llamar_mcp,
     _normalizar,
-)
-from proyecto.orchestration.tareas import (
-    ContextoHub,
-    DominioTarea,
-    EstadoResultado,
-    ResultadoTarea,
-    Tarea,
 )
 
 _ESPECIALISTAS = {
@@ -60,7 +47,6 @@ _ESPECIALISTAS = {
     "data_analyst",
     "normatividad_rag",
     "document_intelligence",
-    "compliance",
 }
 
 _ETIQUETAS = {
@@ -68,7 +54,6 @@ _ETIQUETAS = {
     "data_analyst": "Data Analyst",
     "normatividad_rag": "Normatividad",
     "document_intelligence": "Document Intelligence",
-    "compliance": "Compliance",
 }
 
 _RE_TABLA = re.compile(
@@ -106,9 +91,8 @@ _RE_CALIDAD = re.compile(
     r"inconsistencias?)\b",
     re.IGNORECASE,
 )
-_RE_COMPLIANCE = re.compile(
-    r"\b(?:kyc|aml|lavado|compliance|regulatori[oa]|"
-    r"reportes?\s+regulatori[oa]s?|sanciones?)\b",
+_RE_KYC_AML = re.compile(
+    r"\b(?:kyc|aml|lavado(?:\s+de\s+dinero)?|prevencion\s+de\s+lavado)\b",
     re.IGNORECASE,
 )
 _RE_DOCUMENTO = re.compile(
@@ -135,7 +119,7 @@ _RE_BANCARIA = re.compile(
 _RE_OTRA_FUENTE = re.compile(
     r"\b(?:base\s+de\s+datos|sql|dataset|datasets|csv|raw_|dim_|fact_|vw_|"
     r"normativa|normatividad|politica|politicas|manual|manuales|ley|leyes|"
-    r"kyc|aml|lavado|compliance|regulatori[oa])\b",
+    r"regulatori[oa])\b",
     re.IGNORECASE,
 )
 
@@ -144,8 +128,8 @@ Eres el nodo de respuesta directa de un sistema multi-agente bancario.
 
 Responde en español, de forma breve y clara. Solo atiende saludos,
 aclaraciones generales o preguntas que no correspondan a un especialista.
-Si la consulta requiere datos, normativa, imágenes o compliance, dilo y pide
-que se reformule para enviarla al especialista adecuado.
+Si la consulta requiere datos, normativa o imágenes, dilo y pide que se
+reformule para enviarla al especialista adecuado.
 
 Si recibes contexto documental de un archivo ya procesado, úsalo como
 evidencia y responde con él; no pidas reformular la consulta ni vuelvas a
@@ -288,9 +272,9 @@ def _es_inventario_sql(texto: str) -> bool:
 
 
 RESPUESTA_FUERA_DE_ALCANCE = (
-    "Esa consulta queda fuera de mi especialidad. Puedo ayudarte con servicios "
-    "financieros, cuentas y movimientos, análisis y calidad de datos bancarios, "
-    "normatividad y cumplimiento."
+    "Esa consulta queda fuera del alcance del asistente. Puedo ayudarte con "
+    "servicios financieros, cuentas y movimientos, análisis y calidad de datos "
+    "bancarios, normatividad, documentos e imágenes."
 )
 
 
@@ -312,11 +296,12 @@ def fuera_de_alcance(
         or _tiene_ruta_documento(consulta)
     ):
         return False
+    if _RE_KYC_AML.search(texto) and not hay_contexto:
+        return True
     if (
         _tabla_mencionada(consulta)
         or _es_consulta_normativa(consulta)
         or _RE_BANCARIA.search(texto)
-        or _RE_COMPLIANCE.search(texto)
         or _RE_DOCUMENTO.search(texto)
     ):
         return False
@@ -394,7 +379,6 @@ def planear_rutas(
     metadata = bool(_RE_METADATA.search(texto))
     analitica = bool(_RE_ANALITICA.search(texto))
     normativa = _es_consulta_normativa(consulta) or bool(re.search(r'\b(?:portal|terminos|historial crediticio)\b', texto))
-    compliance = bool(_RE_COMPLIANCE.search(texto))
     inventario_sql = _es_inventario_sql(texto)
 
     if normativa:
@@ -414,9 +398,6 @@ def planear_rutas(
     # correcto; no hace falta mandarla también al Data Analyst.
     if inventario_sql or (analitica and not (metadata and tabla)):
         rutas.append("data_analyst")
-
-    if compliance and not rutas:
-        rutas.append("compliance")
 
     if not rutas and ultimo_agente and _es_seguimiento(consulta):
         if ultimo_agente in _ESPECIALISTAS:
@@ -439,7 +420,6 @@ Especialistas:
   normativa.
 - document_intelligence: imágenes, facturas, recibos, OCR y documentos locales
   (PDF, DOCX, XLSX, PPTX, CSV, HTML).
-- compliance: KYC, AML, lavado, sanciones y reportes regulatorios (fase 2).
 - directo: saludos, aclaraciones o preguntas que no requieren especialista.
 
 Las pistas léxicas son sugerencias calculadas por reglas. Úsalas como guía,
@@ -471,7 +451,6 @@ _ALIAS_AGENTES = {
     "document_intelligence": "document_intelligence",
     "documento": "document_intelligence",
     "documentos": "document_intelligence",
-    "compliance": "compliance",
     "directo": "directo",
     "direct": "directo",
 }
@@ -495,7 +474,6 @@ def _pistas_plan(
     analitica = bool(_RE_ANALITICA.search(texto))
     analitica_fuerte = bool(_RE_ANALITICA_FUERTE.search(texto))
     bancaria = bool(_RE_BANCARIA.search(texto))
-    compliance = bool(_RE_COMPLIANCE.search(texto))
     documento = bool(
         imagen_pendiente
         or _tiene_ruta_imagen(consulta)
@@ -512,8 +490,6 @@ def _pistas_plan(
         dominios.append("normatividad_rag")
     if documento:
         dominios.append("document_intelligence")
-    if compliance:
-        dominios.append("compliance")
 
     return {
         "texto": texto,
@@ -523,7 +499,6 @@ def _pistas_plan(
         "analitica_fuerte": analitica_fuerte,
         "bancaria": bancaria,
         "normativa": normativa,
-        "compliance": compliance,
         "documento": documento,
         "dominios": list(dict.fromkeys(dominios)),
         "ultimo_agente": ultimo_agente,
@@ -984,79 +959,7 @@ def _contexto_previo(estado: EstadoGrafo) -> str:
     return "\n\n".join(partes)
 
 
-@lru_cache(maxsize=32)
-def _hub_por_sesion(clave: str) -> HubDataAnalyst:
-    return HubDataAnalyst()
-
-
-def _get_hub_data_analyst() -> HubDataAnalyst:
-    from proyecto.security.local_auth import principal, TOKEN
-    principal()
-    token = TOKEN.get() or os.environ.get('PROYECTO_AUTH_TOKEN', '')
-    return _hub_por_sesion(hashlib.sha256(token.encode()).hexdigest())
-
-
-def _nodo_data_analyst_con_hub(estado: EstadoGrafo) -> dict:
-    """Ruta alternativa para comparar el hub con el flujo MCP anterior.
-
-    Se activa con ``DATA_ANALYST_HUB=1``. El hub usa las tools SQL de bajo
-    nivel y contrasta el SQL/datos declarados con la ejecución real.
-    """
-    consulta = estado.get("consulta") or ""
-    tarea = Tarea(
-        id="data_analyst",
-        dominio=DominioTarea.DATA_ANALYST,
-        instruccion=consulta,
-        objetivo="Responder la consulta cuantitativa con evidencia SQL.",
-        resultado_esperado=(
-            "Respuesta con cifras verificables, SQL ejecutado y datos tabulares."
-        ),
-        contexto=estado.get("contexto_analista") or "",
-        restricciones=[
-            "No inventes cifras, tablas ni columnas.",
-            "Aplica el alcance del perfil autenticado.",
-        ],
-        evidencia_requerida=["consulta SQL ejecutada", "resultado de la consulta"],
-    )
-    contexto = ContextoHub(
-        session_id="grafo",
-        perfil=estado.get("perfil") or {},
-        slots={"consulta": consulta},
-        ultima_intencion=estado.get("ultimo_agente"),
-    )
-    resultado: ResultadoTarea = _get_hub_data_analyst().ejecutar(tarea, contexto)
-
-    ok = resultado.estado is EstadoResultado.OK
-    detalle = resultado.respuesta if ok else (
-        resultado.error or resultado.respuesta or "El hub no pudo completar la tarea."
-    )
-    return {
-        "resultados": {
-            "data_analyst": {
-                "agente": "data_analyst",
-                "respuesta": detalle,
-                "estado": "ok" if ok else "error",
-                "sql": resultado.sql,
-                "datos": resultado.datos,
-                "grafica": resultado.grafica,
-                "grafica_especificacion": resultado.grafica_especificacion,
-                "evidencia": resultado.evidencia,
-                "duracion": resultado.duracion,
-            }
-        },
-        "trazas": resultado.trazas,
-        "errores": [] if ok else [f"data_analyst: {detalle}"],
-    }
-
-
 def _nodo_data_analyst(estado: EstadoGrafo) -> dict:
-    if os.environ.get("DATA_ANALYST_HUB") == "1":
-        from proyecto.agents.banking_queries import plan_query
-        from proyecto.mcp_servers.data_analyst_backend import nombre_buscado
-        consulta = estado.get("consulta") or ""
-        if not plan_query(consulta) and not nombre_buscado(consulta):
-            return _nodo_data_analyst_con_hub(estado)
-
     if _es_inventario_sql(_normalizar(estado.get("consulta") or "")):
         salida, traza, estado_llamada = _ejecutar_mcp(
             "data_analyst_server", "listar_tablas", {}, "mcp_listar_tablas"
@@ -1220,7 +1123,7 @@ def _nodo_documento(estado: EstadoGrafo) -> dict:
 
         respuesta = (
             "Proporciona la ruta local de una imagen o documento "
-            "(por ejemplo: tests/modelo-factura-ex.png o "
+            "(por ejemplo: ruta/a/tu-imagen.png o "
             "data_governance_files/archivo.pdf)."
         )
         return {
@@ -1282,25 +1185,6 @@ def _nodo_documento(estado: EstadoGrafo) -> dict:
             if estado_llamada == "error"
             else []
         ),
-    }
-
-
-def _nodo_compliance(estado: EstadoGrafo) -> dict:
-    respuesta = (
-        "El módulo de compliance, KYC y AML está fuera del alcance del MVP "
-        "actual (fase 2). No puedo emitir una evaluación regulatoria ni "
-        "confirmar cumplimiento con esa normativa."
-    )
-    return {
-        "resultados": {
-            "compliance": {
-                "agente": "compliance",
-                "respuesta": respuesta,
-                "estado": "ok",
-            }
-        },
-        "trazas": [],
-        "errores": [],
     }
 
 
@@ -1509,6 +1393,9 @@ def _nodo_sintetizar(estado: EstadoGrafo) -> dict:
     resultados = estado.get("resultados") or {}
 
     if not plan or plan == ["directo"]:
+        consulta = _normalizar(estado.get("consulta") or "")
+        if _RE_KYC_AML.search(consulta) and not estado.get("contexto_documentos"):
+            return {"respuesta": RESPUESTA_FUERA_DE_ALCANCE}
         return {"respuesta": _respuesta_directa(estado)}
 
     if plan == ["document_intelligence"]:
@@ -1564,7 +1451,6 @@ def _construir_grafo():
     grafo.add_node("data_analyst", _nodo_data_analyst)
     grafo.add_node("normatividad_rag", _nodo_normatividad)
     grafo.add_node("document_intelligence", _nodo_documento)
-    grafo.add_node("compliance", _nodo_compliance)
     grafo.add_node("verificar", _nodo_verificar)
     grafo.add_node("sintetizar", _nodo_sintetizar)
 
@@ -1578,7 +1464,6 @@ def _construir_grafo():
             "data_analyst": "data_analyst",
             "normatividad_rag": "normatividad_rag",
             "document_intelligence": "document_intelligence",
-            "compliance": "compliance",
             "verificar": "verificar",
         },
     )
@@ -1588,7 +1473,6 @@ def _construir_grafo():
         "data_analyst",
         "normatividad_rag",
         "document_intelligence",
-        "compliance",
     ):
         grafo.add_edge(especialista, "despachar")
 

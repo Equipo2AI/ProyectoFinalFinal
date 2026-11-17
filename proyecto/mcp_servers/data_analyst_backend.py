@@ -22,7 +22,7 @@ from proyecto.metrics import Metrica
 from proyecto.metrics import catalogo_metricas as listar_catalogo_metricas
 from proyecto.metrics import obtener_metrica
 from proyecto.periods import resolver_periodo as resolver_periodo_determinista
-from proyecto.security.local_auth import audit, es_modo_demo, principal
+from proyecto.security.local_auth import audit, principal
 
 load_dotenv()
 
@@ -69,7 +69,10 @@ Proceso:
    contra los datos. No publiques cifras que no aparezcan en la evidencia.
 10. Si la herramienta devuelve un error, corrige la consulta y reintenta
     (máximo 3 intentos).
-11. Responde en español: la conclusión, los números que la respaldan y la
+11. En cuanto ejecutar_consulta o consultar_metrica devuelva filas, responde
+    con ese resultado. No sigas explorando otras dimensiones, métricas o
+    tablas; si el resultado no responde exactamente, explica la limitación.
+12. Responde en español: la conclusión, los números que la respaldan y la
     consulta SQL que usaste.
 
 Reglas:
@@ -189,6 +192,28 @@ def _respuesta_terminal(nombre: str, contenido: str) -> str | None:
     return None
 
 
+def _datos_de_tool(nombre: str, contenido: str) -> dict | None:
+    """Devuelve los datos si una tool de consulta produjo un resultado válido.
+
+    El agente puede seguir explorando dimensiones aunque ya tenga una respuesta
+    válida. Detenerse en la primera consulta exitosa evita ciclos largos y el
+    límite de recursión de LangGraph.
+    """
+    if nombre not in {"ejecutar_consulta", "consultar_metrica"}:
+        return None
+    if not isinstance(contenido, str):
+        return None
+    try:
+        datos = json.loads(contenido)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(datos, dict) or datos.get("error"):
+        return None
+    if not isinstance(datos.get("columnas"), list) or not isinstance(datos.get("filas"), list):
+        return None
+    return datos
+
+
 class DataAnalystSQLBackend:
     def __init__(self, url_db: str | None = None):
         self.nombre = "data_analyst"
@@ -239,7 +264,7 @@ class DataAnalystSQLBackend:
         self._rol_actual, self._cliente_actual = _normalizar_perfil(perfil)
 
     def _perfil_actual(self) -> dict[str, object]:
-        """El perfil orienta al hub; solo la sesion real concede permisos."""
+        """El perfil orienta al orquestador; solo la sesion real concede permisos."""
         user = principal()
         customers = user['customers']
         return {'rol': 'superusuario' if user['role'] == 'auditor' else 'usuario',
@@ -279,7 +304,7 @@ class DataAnalystSQLBackend:
         )
         try:
             validacion = self.validar_sql(sql, perfil=perfil_validacion)
-        except Exception as error:  # noqa: BLE001 - se devuelve al hub
+        except Exception as error:  # noqa: BLE001 - se devuelve al orquestador
             self._auditar("sql_validation", False, sql)
             return {"error": f"{type(error).__name__}: {error}"}
         if not validacion.ok:
@@ -342,7 +367,7 @@ class DataAnalystSQLBackend:
                 reasoning=False,
                 timeout=45,
             )
-            # La gráfica la genera el orquestador o el hub con una tool
+            # La gráfica la genera el orquestador con una tool
             # determinista. El agente interno no debe recibir el PNG en base64
             # ni incrustarlo en su respuesta.
             herramientas = [
@@ -363,6 +388,26 @@ class DataAnalystSQLBackend:
                 system_prompt=prompt,
             )
         return self._agentes[clave]
+
+    def _respuesta_con_datos(self, datos: dict, nombre_tool: str) -> str:
+        """Presenta el primer resultado exitoso sin esperar otra vuelta del LLM."""
+        from proyecto.agents.banking_queries import format_result
+
+        if nombre_tool == "consultar_metrica":
+            metrica = str(datos.get("metrica") or "").strip()
+            descripcion = str(datos.get("descripcion") or "").strip()
+            titulo = f"Métrica: {metrica}" if metrica else "Resultado de la consulta"
+            if descripcion:
+                titulo += f" — {descripcion}"
+        else:
+            titulo = "Resultado de la consulta"
+
+        sql = str(datos.get("sql") or self._ultimo_sql or "").strip()
+        respuesta = format_result(titulo, datos, sql or "SQL no disponible.")
+        unidad = str(datos.get("unidad") or "").strip()
+        if unidad:
+            respuesta += f"\n\nUnidad: {unidad}."
+        return respuesta
 
     def procesar(self, consulta: str, contexto: str = "", perfil: dict | None = None) -> str:
         from proyecto.security.local_auth import authorize_request
@@ -422,27 +467,45 @@ class DataAnalystSQLBackend:
             )
         from contextlib import closing
         from langchain_core.messages import ToolMessage
+        from langgraph.errors import GraphRecursionError
         from langsmith import tracing_context
-        with tracing_context(enabled=False):
-            # Revisar la salida del nodo tools antes de volver al modelo. Una
-            # denegacion o un SELECT vacio ya concluyen la consulta; no son SQL
-            # defectuoso que deba reformularse o reintentarse.
-            with closing(self._get_agente(rol, cliente_id).stream(
-                {"messages": [{"role": "user", "content": contenido}]},
-                config={"recursion_limit": 25},
-                stream_mode="values",
-            )) as estados:
-                for resultado in estados:
-                    terminales = []
-                    for mensaje in reversed(resultado["messages"]):
-                        if not isinstance(mensaje, ToolMessage):
-                            break
-                        terminal = _respuesta_terminal(mensaje.name, mensaje.content)
-                        if terminal:
-                            terminales.append(terminal)
-                    if terminales:
-                        return next((t for t in terminales if t.startswith("Acceso denegado:")), terminales[0])
-        return resultado["messages"][-1].content
+
+        ultimo_estado = None
+        try:
+            with tracing_context(enabled=False):
+                # Revisar la salida del nodo tools antes de volver al modelo.
+                # Una denegacion, un SELECT vacio o una consulta con filas ya
+                # concluyen la consulta; no son SQL defectuoso que deba
+                # reformularse o seguirse explorando.
+                with closing(self._get_agente(rol, cliente_id).stream(
+                    {"messages": [{"role": "user", "content": contenido}]},
+                    config={"recursion_limit": 25},
+                    stream_mode="values",
+                )) as estados:
+                    for resultado in estados:
+                        ultimo_estado = resultado
+                        terminales = []
+                        for mensaje in reversed(resultado["messages"]):
+                            if not isinstance(mensaje, ToolMessage):
+                                break
+                            terminal = _respuesta_terminal(mensaje.name, mensaje.content)
+                            if terminal:
+                                terminales.append(terminal)
+                                continue
+                            datos = _datos_de_tool(mensaje.name, mensaje.content)
+                            if datos is not None:
+                                return self._respuesta_con_datos(datos, mensaje.name)
+                        if terminales:
+                            return next((t for t in terminales if t.startswith("Acceso denegado:")), terminales[0])
+        except GraphRecursionError:
+            return (
+                "No pude completar la consulta dentro del límite de pasos. "
+                "Reformula la pregunta con una métrica, un periodo o una tabla "
+                "más específicos."
+            )
+        if ultimo_estado is None:
+            return "No pude completar la consulta. Reformula la pregunta con más detalle."
+        return ultimo_estado["messages"][-1].content
 
     @staticmethod
     def _misma_base(url_db: str | None, user: dict) -> bool:
@@ -765,7 +828,7 @@ class DataAnalystSQLBackend:
                     titulo=titulo,
                     orden=orden,
                 )
-            except Exception as error:  # noqa: BLE001 - se devuelve al hub
+            except Exception as error:  # noqa: BLE001 - se devuelve al orquestador
                 return _json({"error": f"{type(error).__name__}: {error}"})
 
             return _json({
@@ -809,7 +872,7 @@ class DataAnalystSQLBackend:
                     limite=limite,
                     orden=str(orden or "desc").strip().lower(),
                 )
-            except Exception as error:  # noqa: BLE001 - se devuelve al hub
+            except Exception as error:  # noqa: BLE001 - se devuelve al orquestador
                 return _json({"error": f"{type(error).__name__}: {error}"})
 
             datos = self._consultar(sql)
@@ -836,7 +899,7 @@ class DataAnalystSQLBackend:
                     expresion, hoy=hoy or None
                 )
                 return _json(periodo.model_dump())
-            except Exception as error:  # noqa: BLE001 - se devuelve al hub
+            except Exception as error:  # noqa: BLE001 - se devuelve al orquestador
                 return _json({"error": f"{type(error).__name__}: {error}"})
 
         @tool
