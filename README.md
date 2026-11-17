@@ -207,13 +207,27 @@ El agente `normatividad_rag` responde únicamente con evidencia recuperada:
   Información Crediticia, Circular Única de Bancos, Aviso de Privacidad Integral
   de Banamex, Aviso legal y Términos y condiciones Citibanamex.
 - **Índice**: Pinecone (`INDEX_NAME`), embeddings `llama-text-embed-v2`,
-  fragmentos de 1200 caracteres con 150 de traslape y `k = 3` documentos.
+  fragmentos de 1200 caracteres con 150 de traslape y 3 documentos finales.
+- **Recuperación híbrida**: recupera hasta `RAG_CANDIDATES` candidatos (12 por
+  defecto), combina el score semántico con cobertura léxica y coincidencia de
+  fuente, deduplica fragmentos y exige `RAG_MIN_SCORE`/`RAG_MIN_COVERAGE`/
+  `RAG_MIN_SOURCE_MATCH`. Si un término distintivo no aparece en el corpus,
+  devuelve `sin_evidencia` en lugar de evidencia tangencial. Los scores quedan
+  en la traza, no en la respuesta final.
+- **Respuesta final**: si el RAG aporta evidencia, el orquestador agrega una
+  sección `Evidencia normativa recuperada` con los fragmentos literales y sus
+  fuentes, aunque la síntesis multiagente los haya resumido. Los scores quedan
+  en la traza; si no hay evidencia, la respuesta lo declara.
 - **Prompt**: la evidencia es la única fuente válida; prohíbe usar conocimiento
   previo, inventar artículos o plazos, y obliga a citar archivo y página. Si la
   evidencia no alcanza, la respuesta lo declara.
 - **Enrutamiento**: las preguntas normativas de alta confianza (leyes, privacidad,
-  avisos, políticas) se envían directo al servidor de normatividad con el texto
-  original, para que el modelo no reformule la pregunta y pierda artículos.
+  avisos, políticas) se envían directo al servidor de normatividad con la
+  subpregunta normativa, para que el modelo no reformule la pregunta y pierda
+  artículos. Las preguntas informativas sobre Banamex/Citibanamex también van a
+  RAG; si además piden datos (conteos, saldos, transacciones), se conserva la
+  ruta analítica. Una pregunta general sobre una afore sin marca no se fuerza a
+  RAG.
 - **Evidencia cruda**: `buscar_evidencia` devuelve fragmentos con `fuente`,
   `pagina`/`fila` y `cita_id` sin sintetizar. `verificar_cita` comprueba que una
   cita textual exista en la evidencia recuperada; `buscar_normatividad` se
