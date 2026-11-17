@@ -98,6 +98,8 @@ def format_result(title, result, sql):
     def cell(value):
         if value is None:
             return 'Sin dato disponible'
+        if isinstance(value, float):
+            value = round(value, 2)
         return str(value).replace('|', '\\|').replace('\n', ' ')
     labels = {'num_cta':'Cuenta','num_cte':'Cliente','saldo_mes':'Saldo de cierre','fec_corte':'Fecha de corte','fec_txn':'Fecha','desc_txn':'Movimiento','saldo_txn':'Importe','importe_firmado':'Importe con signo'}
     text = '**'+title+'**\n\n'
