@@ -8,6 +8,10 @@ otro agente pueda procesarlos.
 Los PDF se procesan por página: si tienen capa de texto se extrae directamente;
 si una página está escaneada o tiene poco texto, se rasteriza y se aplica OCR
 local con Qwen2.5-VL. El OCR nunca sale de la máquina.
+
+Las tools de este módulo solo convierten. El filtro de relevancia (archivos
+ajenos a banca o finanzas) vive en ``document_relevance`` y se aplica en el
+servidor MCP, en el respaldo local de ``servicio`` y en ``procesar``.
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 from langchain_ollama import ChatOllama
 
+from proyecto.agents.document_relevance import filtrar_documento
 from proyecto.config.models import modelo_de
 from proyecto.security.file_access import authorize_file_access
 
@@ -265,7 +270,8 @@ class DocumentIntelligenceAgent:
         self.descripcion = (
             "Lee imágenes (facturas, recibos, comprobantes) con OCR y visión, "
             "y convierte documentos locales (PDF, DOCX, XLSX, PPTX) a Markdown; "
-            "en PDF usa texto nativo y OCR local de páginas escaneadas."
+            "en PDF usa texto nativo y OCR local de páginas escaneadas. Solo "
+            "acepta archivos relacionados con banca o finanzas."
         )
         # Qwen2.5-VL no soporta tool calling en Ollama. En vez de cargar un
         # segundo LLM solo para enrutar, `procesar` despacha a la tool adecuada.
@@ -276,9 +282,8 @@ class DocumentIntelligenceAgent:
     def procesar(self, consulta: str) -> str:
         ruta_documento = _extraer_ruta_documento(consulta)
         if ruta_documento:
-            return document_to_markdown.invoke(
-                {"file_path": ruta_documento}
-            )
+            texto = document_to_markdown.invoke({"file_path": ruta_documento})
+            return filtrar_documento(texto, Path(ruta_documento).name)
         ruta = _extraer_ruta_imagen(consulta)
         if not ruta:
             return (
@@ -287,13 +292,15 @@ class DocumentIntelligenceAgent:
                 "data_governance_files/archivo.pdf)."
             )
         if _quiere_descripcion(consulta):
-            return describe_an_image.invoke({"image_path": ruta})
-        return ocr_image.invoke({"image_path": ruta})
+            texto = describe_an_image.invoke({"image_path": ruta})
+        else:
+            texto = ocr_image.invoke({"image_path": ruta})
+        return filtrar_documento(texto, Path(ruta).name)
 
     def __repr__(self) -> str:
         return (
             f"<Agente {self.nombre} | visión: {self.modelo} | "
-            "documentos: MarkItDown + PDF OCR>"
+            "documentos: MarkItDown + PDF OCR | filtro de relevancia>"
         )
 
 

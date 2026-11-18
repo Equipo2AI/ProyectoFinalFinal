@@ -19,6 +19,7 @@ from proyecto.agents import (
     document_intelligence_agent,
     normatividad_rag_agent,
 )
+from proyecto.agents.document_relevance import es_rechazo
 from proyecto.config.models import modelo_de
 from proyecto.memory.document_context import DocumentContextStore
 from proyecto.memory.long_term import LongTermMemory, config_from_file
@@ -140,12 +141,20 @@ class Orquestador:
         texto: str,
         nombre: str | None = None,
     ) -> str | None:
-        """Guarda el texto de un documento o imagen en el contexto del usuario."""
+        """Guarda el texto de un documento o imagen en el contexto del usuario.
+
+        Los archivos rechazados por el filtro de relevancia no se guardan: su
+        contenido no debe llegar al contexto de preguntas posteriores.
+        """
         texto = (texto or "").strip()
         if not texto or texto.startswith("No se pudo procesar la imagen:"):
             return None
 
         ruta_resuelta = str(Path(ruta).expanduser().resolve())
+        if es_rechazo(texto):
+            if self._imagen_pendiente == ruta_resuelta:
+                self._imagen_pendiente = None
+            return None
         etiqueta = (nombre or Path(ruta_resuelta).name).strip()
         try:
             doc_id = self.document_store.save(
@@ -178,6 +187,53 @@ class Orquestador:
         if self._imagen_pendiente == ruta_resuelta:
             self._imagen_pendiente = None
         return doc_id
+
+    def registrar_documento_rechazado(
+        self,
+        ruta: str,
+        mensaje: str,
+        consulta: str = "",
+    ) -> None:
+        """Deja constancia del rechazo en el hilo sin guardar el archivo.
+
+        Así una pregunta de seguimiento ("¿por qué no lo leíste?") tiene
+        contexto, pero el contenido del archivo nunca entra al historial.
+        """
+        ruta_resuelta = str(Path(ruta).expanduser().resolve())
+        if self._imagen_pendiente == ruta_resuelta:
+            self._imagen_pendiente = None
+
+        mensaje = (mensaje or "").strip()
+        if not mensaje:
+            return
+        ultimo = self._mensajes[-1] if self._mensajes else None
+        if (
+            ultimo is not None
+            and getattr(ultimo, "type", "") == "ai"
+            and es_rechazo(self._extraer_texto(ultimo))
+        ):
+            # El grafo ya registró este turno; solo se actualiza el texto
+            # (por ejemplo, con el nombre original del archivo).
+            self._mensajes = [*self._mensajes[:-1], AIMessage(content=mensaje)]
+        else:
+            peticion = (consulta or "").strip() or "Adjunté un archivo."
+            self._mensajes = [
+                *self._mensajes,
+                HumanMessage(content=peticion),
+                AIMessage(content=mensaje),
+            ]
+        self.agentes_invocados = []
+        self.memory.update(self._mensajes)
+        self._limitar_historial()
+
+    @staticmethod
+    def _rechazo_en_trazas(trazas: list[dict]) -> str | None:
+        """Devuelve el primer rechazo por relevancia de las tools del turno."""
+        for traza in trazas or []:
+            salida = str(traza.get("salida") or "").strip()
+            if es_rechazo(salida):
+                return salida
+        return None
 
     def _contexto_documentos(self, consulta: str = "") -> str:
         partes: list[str] = []
@@ -318,6 +374,14 @@ class Orquestador:
             for traza in trazas
             if traza.get("name")
         ]
+
+        # Si el filtro de relevancia rechazó un archivo, la respuesta es el
+        # rechazo literal. No se deja al LLM sintetizar: podría describir el
+        # archivo o contestar la pregunta con conocimiento general.
+        rechazo = self._rechazo_en_trazas(trazas)
+        if rechazo:
+            respuesta = rechazo
+            estado["respuesta"] = rechazo
 
         # Si el grafo procesó una imagen, guardamos el resultado para las
         # preguntas de seguimiento y limpiamos la imagen pendiente.

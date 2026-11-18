@@ -2,6 +2,7 @@
 # al inicializar cada agente y falla si falta una entrada.
 # DOCUMENT_INTELLIGENCE_MODEL puede sobrescribir el modelo de visión.
 # DOCUMENT_PDF_MODEL puede sobrescribir el modelo de OCR de PDF.
+# DOCUMENT_RELEVANCE_MODEL puede sobrescribir el filtro de relevancia.
 
 agents:
   orchestrator:
@@ -23,6 +24,12 @@ agents:
   document_intelligence:
     provider: ollama
     model: "qwen2.5vl:7b"
+
+  # Filtro de relevancia de archivos adjuntos: decide si un documento ambiguo
+  # está relacionado con banca o finanzas.
+  document_relevance:
+    provider: ollama
+    model: "qwen2.5:7b-instruct"
 
 # OCR de PDF: no es un agente, pero comparte la misma configuración de modelos.
 document_pdf:

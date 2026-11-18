@@ -30,6 +30,7 @@ from proyecto.agents.document_intelligence_agent import (
     document_to_markdown,
     ocr_image,
 )
+from proyecto.agents.document_relevance import es_rechazo, filtrar_documento
 from proyecto.guardrails import limpiar_base64, redactar_pii
 from proyecto.security.file_access import authorize_file_access
 
@@ -233,6 +234,9 @@ def procesar_imagen(ruta: str, operacion: str = "ocr") -> Respuesta:
                     texto = herramienta_local.invoke({"image_path": str(ruta_path)})
             else:
                 texto = herramienta_local.invoke({"image_path": str(ruta_path)})
+            # El servidor MCP ya filtra por relevancia; el respaldo local
+            # debe aplicar el mismo filtro.
+            texto = filtrar_documento(texto, ruta_path.name)
             via = f"Fallback local ({type(exc).__name__})"
         except Exception as exc_local:  # noqa: BLE001
             texto = (
@@ -244,6 +248,7 @@ def procesar_imagen(ruta: str, operacion: str = "ocr") -> Respuesta:
 
     if texto.startswith("No se pudo procesar la imagen:"):
         error = texto
+    rechazado = es_rechazo(texto)
 
     duracion = round(time.perf_counter() - inicio, 2)
     return {
@@ -254,7 +259,7 @@ def procesar_imagen(ruta: str, operacion: str = "ocr") -> Respuesta:
                 "accion": f"{etiqueta} de imagen",
                 "detalle": f"{ruta_path.name} · vía {via}",
                 "duracion": duracion,
-                "estado": "error" if error else "ok",
+                "estado": "error" if error else ("alerta" if rechazado else "ok"),
             }
         ],
         "agentes": ["document_intelligence"],
@@ -346,6 +351,9 @@ def procesar_documento(
                 texto = document_to_markdown.invoke(
                     {"file_path": str(ruta_path), **extra}
                 )
+            # El servidor MCP ya filtra por relevancia; el respaldo local
+            # debe aplicar el mismo filtro.
+            texto = filtrar_documento(texto, ruta_path.name)
             via = f"Fallback local ({type(exc).__name__})"
         except Exception as exc_local:  # noqa: BLE001
             texto = (
@@ -598,6 +606,55 @@ def _registrar_documento_en_orquestador(
         pass
 
 
+def _respuesta_rechazo(
+    consulta: str,
+    ruta: str,
+    etiqueta: str,
+    texto: str,
+    pasos_previos: list[Paso] | None = None,
+    herramientas: list[str] | None = None,
+) -> Respuesta:
+    """Respuesta determinista para un archivo ajeno a banca o finanzas.
+
+    No se llama al orquestador ni se guarda el archivo en el contexto
+    documental: así su contenido no puede influir en la conversación.
+    """
+    # Las rutas de la UI son temporales (documento_<uuid>.pdf); el usuario
+    # reconoce el nombre original.
+    nombre_temporal = Path(ruta).name
+    mensaje = texto.strip()
+    if etiqueta and nombre_temporal and nombre_temporal != etiqueta:
+        mensaje = mensaje.replace(f"«{nombre_temporal}»", f"«{etiqueta}»")
+
+    try:
+        _get_orquestador().registrar_documento_rechazado(ruta, mensaje, consulta)
+    except Exception:  # noqa: BLE001 - el rechazo no debe romper la respuesta
+        pass
+
+    pasos: list[Paso] = [
+        *(pasos_previos or []),
+        {
+            "agente": "document_intelligence",
+            "accion": "Archivo rechazado por relevancia",
+            "detalle": f"{etiqueta} · no relacionado con banca o finanzas",
+            "estado": "alerta",
+        },
+    ]
+    return {
+        "respuesta": mensaje,
+        "pasos": pasos,
+        "agentes": ["document_intelligence"],
+        "herramientas": list(dict.fromkeys(herramientas or [])),
+        "alertas": [
+            f"{etiqueta}: archivo fuera del alcance bancario; no se guardó "
+            "ni se usó en la conversación."
+        ],
+        "fuentes": [],
+        "nota": "Filtro de relevancia documental",
+        "formato": "markdown",
+    }
+
+
 def _responder_con_archivo(
     consulta: str,
     ruta: str,
@@ -609,6 +666,11 @@ def _responder_con_archivo(
     herramientas: list[str],
 ) -> Respuesta:
     """Entrega el resultado del subagente al orquestador para la respuesta final."""
+    if es_rechazo(texto):
+        return _respuesta_rechazo(
+            consulta, ruta, etiqueta, texto, pasos_previos, herramientas
+        )
+
     try:
         _registrar_documento_en_orquestador(
             _get_orquestador(),
@@ -982,14 +1044,24 @@ def procesar_imagen_auto(
         f"{indicacion}\n\n"
         f"Adjunté una imagen en {ruta_path}. Decide si necesitas extraer el "
         "texto (OCR) o describir la imagen. Si parece una factura, recibo o "
-        "comprobante, prefiere OCR; si es una foto general, descríbela. Usa la "
-        "herramienta MCP adecuada. Si la intención no es clara, pregúntame qué "
-        "quiero hacer."
+        "comprobante, prefiere OCR; en otro caso, descríbela. Usa la "
+        "herramienta MCP adecuada. Si la herramienta responde que el archivo "
+        "está fuera de alcance, comunícalo sin describir su contenido. Si la "
+        "intención no es clara, pregúntame qué quiero hacer."
     )
 
     resultado = preguntar_orquestador(prompt)
     if resultado.get("error"):
         alterno = procesar_imagen(str(ruta_path), "ocr")
+        if es_rechazo(alterno.get("respuesta")):
+            return _respuesta_rechazo(
+                indicacion,
+                str(ruta_path),
+                etiqueta,
+                str(alterno.get("respuesta") or ""),
+                alterno.get("pasos") or [],
+                alterno.get("herramientas") or [],
+            )
         if not alterno.get("error"):
             try:
                 _registrar_documento_en_orquestador(
@@ -1013,6 +1085,20 @@ def procesar_imagen_auto(
         alterno["fuentes"] = [etiqueta]
         alterno["nota"] = "MCP directo (fallback)"
         return alterno
+
+    # Si el filtro de relevancia rechazó la imagen, la respuesta es el
+    # rechazo y no se guarda nada en el contexto documental.
+    for herramienta in resultado.get("resultados") or []:
+        salida = str(herramienta.get("salida") or "")
+        if es_rechazo(salida):
+            return _respuesta_rechazo(
+                indicacion,
+                str(ruta_path),
+                etiqueta,
+                salida,
+                resultado.get("pasos") or [],
+                resultado.get("herramientas") or [],
+            )
 
     # Guarda el resultado documental que haya usado el orquestador para que
     # las consultas de seguimiento no dependan de que el LLM recuerde el path.
