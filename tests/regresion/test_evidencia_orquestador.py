@@ -147,3 +147,38 @@ def test_nodo_sintetizar_aplica_evidencia_en_flujo_multiagente(monkeypatch):
     assert "FUENTE: ley.pdf, página 22" in salida
     assert "Artículo 65" in salida
     assert "score" not in salida
+
+
+def test_redactar_conserva_la_evidencia_normativa(monkeypatch):
+    evidencia = (
+        "Evidencia documental recuperada mediante Pinecone:\n\n"
+        "FUENTE: ley.pdf, página 22 (score híbrido 0.6673, semántico 0.5339)\n"
+        "Artículo 65. Las reclamaciones deberán presentarse dentro del término "
+        "de dos años."
+    )
+    monkeypatch.setattr(
+        grafo,
+        "redactar_respuesta",
+        lambda *args, **kwargs: "Respuesta simple sin fuentes.",
+    )
+
+    salida = grafo._nodo_redactar(
+        {
+            "consulta": "¿Qué dice la ley sobre reclamaciones?",
+            "respuesta": "La ley fija un plazo de dos años.",
+            "perfil_respuesta": {
+                "estilo": "simple",
+                "mostrar_sql": False,
+                "origen": "rol",
+            },
+            "trazas": [],
+            "resultados": _resultado(evidencia),
+            "redactada": False,
+        }
+    )["respuesta"]
+
+    assert "Respuesta simple sin fuentes." in salida
+    assert "## Evidencia normativa recuperada" in salida
+    assert "FUENTE: ley.pdf, página 22" in salida
+    assert "Artículo 65" in salida
+    assert "score" not in salida

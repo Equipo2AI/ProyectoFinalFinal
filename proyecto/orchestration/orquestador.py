@@ -26,6 +26,7 @@ from proyecto.orchestration.comun import (
     _ruta_documento_de_consulta,
     _ruta_imagen_de_consulta,
 )
+from proyecto.orchestration.perfil_respuesta import detectar_perfil
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,7 @@ class Orquestador:
         self.agentes_invocados: list[str] = []  # trazas de la última consulta
         self.ultimas_herramientas: list[dict] = []  # nombre, args, salida, estado
         self.ultimo_estado_grafo: dict = {}  # resultados estructurados del turno
+        self.ultimo_perfil_respuesta = None  # estilo usado en la última respuesta
         self.modo_efectivo = "grafo"
         self._mensajes: list = []  # historial de la conversación
         self._documentos: list[dict] = []  # caché de la sesión actual
@@ -274,11 +276,20 @@ class Orquestador:
             "rol": "superusuario" if user["role"] == "auditor" else "usuario",
             "cliente_id": user["customers"][0] if user["role"] == "normal" else None,
         }
+        # Estilo de redacción: rol del login + lo que pide la consulta.
+        self.ultimo_perfil_respuesta = detectar_perfil(user["role"], consulta)
         self.ultimo_estado_grafo = {}
-        return self._procesar_grafo(consulta, perfil=perfil)
+        return self._procesar_grafo(
+            consulta,
+            perfil=perfil,
+            perfil_respuesta=self.ultimo_perfil_respuesta.a_dict(),
+        )
 
     def _procesar_grafo(
-        self, consulta: str, perfil: dict | None = None
+        self,
+        consulta: str,
+        perfil: dict | None = None,
+        perfil_respuesta: dict | None = None,
     ) -> str:
         from proyecto.orchestration.grafo import ejecutar_grafo
 
@@ -292,6 +303,7 @@ class Orquestador:
             imagen_pendiente=self._imagen_pendiente,
             ultimo_agente=self._ultimo_agente,
             perfil=perfil,
+            perfil_respuesta=perfil_respuesta,
         )
 
         respuesta = str(estado.get("respuesta") or "").strip()
