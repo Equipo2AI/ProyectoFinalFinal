@@ -144,7 +144,9 @@ defecto). Si el PDF excede el límite, se puede indicar un rango en el mensaje d
 carga, por ejemplo «lee las páginas 21-30». El resultado de OCR, descripción o
 Markdown se entrega al orquestador,
 que decide qué responder al cliente en lugar de mostrar el texto crudo
-directamente.
+directamente. Los formatos no soportados y los archivos que exceden el límite
+(10 MB en imágenes, 25 MB en documentos) se rechazan con un mensaje legible
+que lista los formatos permitidos; el servicio no propaga el traceback a la UI.
 
 El texto completo de cada documento se guarda en un SQLite local
 (`proyecto/data/document_context.db`), aislado por el usuario autenticado

@@ -24,7 +24,9 @@ if str(_RAIZ) not in sys.path:
 
 from proyecto.agents.document_intelligence_agent import (
     EXTENSIONES_DOCUMENTO,
+    EXTENSIONES_IMAGEN,
     MAX_DOCUMENT_BYTES,
+    MAX_IMAGE_BYTES,
     MODELO_VISION_POR_DEFECTO,
     describe_an_image,
     document_to_markdown,
@@ -169,6 +171,43 @@ def _paginas_solicitadas(consulta: str) -> str:
     return fragmento.strip(" ,-")
 
 
+def _mensaje_formato(sufijo: str, permitidas: set[str]) -> str:
+    """Mensaje público y estable para un formato de archivo no soportado."""
+    return (
+        f"Formato no soportado: {sufijo or 'sin extensión'}. "
+        f"Usa: {', '.join(sorted(permitidas))}."
+    )
+
+
+def _respuesta_error_archivo(
+    mensaje: str,
+    *,
+    detalle: str,
+    accion: str,
+    duracion: float,
+    fuente: str,
+) -> Respuesta:
+    """Respuesta de error común para archivos rechazados por el servicio."""
+    return {
+        "respuesta": mensaje,
+        "pasos": [
+            {
+                "agente": "document_intelligence",
+                "accion": accion,
+                "detalle": detalle,
+                "duracion": duracion,
+                "estado": "error",
+            }
+        ],
+        "agentes": ["document_intelligence"],
+        "herramientas": [],
+        "fuentes": [fuente],
+        "duracion": duracion,
+        "error": mensaje,
+        "formato": "markdown",
+    }
+
+
 def procesar_imagen(ruta: str, operacion: str = "ocr") -> Respuesta:
     """Procesa una imagen local mediante el servidor MCP, con respaldo local."""
     inicio = time.perf_counter()
@@ -182,43 +221,41 @@ def procesar_imagen(ruta: str, operacion: str = "ocr") -> Respuesta:
         authorize_file_access(ruta_path, token=_token_actual())
     except PermissionError as exc:
         mensaje = f"Acceso denegado: {exc}"
-        duracion = round(time.perf_counter() - inicio, 2)
-        return {
-            "respuesta": mensaje,
-            "pasos": [
-                {
-                    "agente": "document_intelligence",
-                    "accion": f"{etiqueta} de imagen",
-                    "detalle": ruta_path.name,
-                    "duracion": duracion,
-                    "estado": "error",
-                }
-            ],
-            "agentes": ["document_intelligence"],
-            "herramientas": [],
-            "fuentes": [ruta_path.name],
-            "duracion": duracion,
-            "error": mensaje,
-            "formato": "markdown",
-        }
+        return _respuesta_error_archivo(
+            mensaje,
+            detalle=ruta_path.name,
+            accion=f"{etiqueta} de imagen",
+            duracion=round(time.perf_counter() - inicio, 2),
+            fuente=ruta_path.name,
+        )
 
     if not ruta_path.is_file():
-        mensaje = f"No existe la imagen: {ruta}"
-        return {
-            "respuesta": mensaje,
-            "pasos": [
-                {
-                    "agente": "document_intelligence",
-                    "accion": f"{etiqueta} de imagen",
-                    "detalle": mensaje,
-                    "estado": "error",
-                }
-            ],
-            "agentes": ["document_intelligence"],
-            "herramientas": [],
-            "error": mensaje,
-            "formato": "markdown",
-        }
+        return _respuesta_error_archivo(
+            f"No existe la imagen: {ruta}",
+            detalle=ruta_path.name,
+            accion=f"{etiqueta} de imagen",
+            duracion=round(time.perf_counter() - inicio, 2),
+            fuente=ruta_path.name,
+        )
+
+    sufijo = ruta_path.suffix.lower()
+    if sufijo not in EXTENSIONES_IMAGEN:
+        return _respuesta_error_archivo(
+            _mensaje_formato(sufijo, EXTENSIONES_IMAGEN),
+            detalle=ruta_path.name,
+            accion=f"{etiqueta} de imagen",
+            duracion=round(time.perf_counter() - inicio, 2),
+            fuente=ruta_path.name,
+        )
+
+    if ruta_path.stat().st_size > MAX_IMAGE_BYTES:
+        return _respuesta_error_archivo(
+            "La imagen supera el límite de 10 MB.",
+            detalle=ruta_path.name,
+            accion=f"{etiqueta} de imagen",
+            duracion=round(time.perf_counter() - inicio, 2),
+            fuente=ruta_path.name,
+        )
 
     via = "MCP"
     error: str | None = None
@@ -293,34 +330,18 @@ def procesar_documento(
         if not ruta_path.is_file():
             mensaje_error = f"No existe el documento: {ruta}"
         elif sufijo not in EXTENSIONES_DOCUMENTO:
-            permitidos = ", ".join(sorted(EXTENSIONES_DOCUMENTO))
-            mensaje_error = (
-                f"Formato no soportado: {sufijo or 'sin extensión'}. "
-                f"Usa: {permitidos}."
-            )
+            mensaje_error = _mensaje_formato(sufijo, EXTENSIONES_DOCUMENTO)
         elif ruta_path.stat().st_size > MAX_DOCUMENT_BYTES:
             mensaje_error = "El documento supera el límite de 25 MB."
 
     if mensaje_error:
-        duracion = round(time.perf_counter() - inicio, 2)
-        return {
-            "respuesta": mensaje_error,
-            "pasos": [
-                {
-                    "agente": "document_intelligence",
-                    "accion": "No se pudo convertir el documento",
-                    "detalle": etiqueta,
-                    "duracion": duracion,
-                    "estado": "error",
-                }
-            ],
-            "agentes": ["document_intelligence"],
-            "herramientas": [],
-            "fuentes": [etiqueta],
-            "duracion": duracion,
-            "error": mensaje_error,
-            "formato": "markdown",
-        }
+        return _respuesta_error_archivo(
+            mensaje_error,
+            detalle=etiqueta,
+            accion="No se pudo convertir el documento",
+            duracion=round(time.perf_counter() - inicio, 2),
+            fuente=etiqueta,
+        )
 
     via = "MCP"
     error: str | None = None
@@ -980,6 +1001,7 @@ def procesar_imagen_auto(
     nombre: str | None = None,
 ) -> Respuesta:
     """Pregunta OCR/descripción o deja que el orquestador decida."""
+    inicio = time.perf_counter()
     ruta_path = Path(ruta).expanduser().resolve()
     etiqueta = (nombre or ruta_path.name).strip() or ruta_path.name
 
@@ -987,25 +1009,35 @@ def procesar_imagen_auto(
         authorize_file_access(ruta_path, token=_token_actual())
     except PermissionError as exc:
         mensaje = f"Acceso denegado: {exc}"
-        return {
-            "respuesta": mensaje,
-            "pasos": [
-                {
-                    "agente": "document_intelligence",
-                    "accion": "Imagen rechazada",
-                    "detalle": etiqueta,
-                    "estado": "error",
-                }
-            ],
-            "agentes": ["document_intelligence"],
-            "herramientas": [],
-            "fuentes": [etiqueta],
-            "error": mensaje,
-            "formato": "markdown",
-        }
+        return _respuesta_error_archivo(
+            mensaje,
+            detalle=etiqueta,
+            accion="Imagen rechazada",
+            duracion=round(time.perf_counter() - inicio, 2),
+            fuente=etiqueta,
+        )
 
     if not ruta_path.is_file():
         return procesar_imagen(str(ruta_path), "ocr")
+
+    sufijo = ruta_path.suffix.lower()
+    if sufijo not in EXTENSIONES_IMAGEN:
+        return _respuesta_error_archivo(
+            _mensaje_formato(sufijo, EXTENSIONES_IMAGEN),
+            detalle=etiqueta,
+            accion="Imagen rechazada",
+            duracion=round(time.perf_counter() - inicio, 2),
+            fuente=etiqueta,
+        )
+
+    if ruta_path.stat().st_size > MAX_IMAGE_BYTES:
+        return _respuesta_error_archivo(
+            "La imagen supera el límite de 10 MB.",
+            detalle=etiqueta,
+            accion="Imagen rechazada",
+            duracion=round(time.perf_counter() - inicio, 2),
+            fuente=etiqueta,
+        )
 
     indicacion = (consulta or "").strip().rstrip(" .!?")
     if indicacion.casefold() in _CONSULTAS_IMAGEN_GENERICAS:

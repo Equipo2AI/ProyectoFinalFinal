@@ -155,14 +155,21 @@ def _vision(prompt: str, ruta: str, modelo: str) -> str:
     return _extraer_texto(respuesta.content).strip()
 
 
+def _detalle_error(error: Exception) -> str:
+    """Conserva el mensaje de validación sin exponer la clase de excepción."""
+    if isinstance(error, (ValueError, FileNotFoundError)):
+        return str(error)
+    return f"{type(error).__name__}: {error}"
+
+
 def _error_legible(error: Exception) -> str:
-    return f"No se pudo procesar la imagen: {type(error).__name__}: {error}"
+    return f"No se pudo procesar la imagen: {_detalle_error(error)}"
 
 
 def _error_documento(error: Exception) -> str:
     return (
-        f"No se pudo convertir el documento a Markdown: "
-        f"{type(error).__name__}: {error}"
+        "No se pudo convertir el documento a Markdown: "
+        f"{_detalle_error(error)}"
     )
 
 
