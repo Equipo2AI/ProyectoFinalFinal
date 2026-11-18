@@ -100,7 +100,9 @@ detectados y cantidades agregadas. Un identificador repetido se reporta para
 revisión, no como instrucción para borrar datos. La clave de duplicados sale de
 la PK/restricción única o de `calidad_hallazgos_esperados`, no de una heurística
 por nombre. `evaluar_calidad` compara lo encontrado contra esos hallazgos
-esperados y marca coincidencias y diferencias.
+esperados y marca coincidencias y diferencias. Si una consulta clara de otro
+dominio llega al Data Steward, responde con su alcance y redirige al especialista
+adecuado; el enrutamiento principal sigue en el orquestador.
 
 ## Interfaz Streamlit
 
@@ -166,6 +168,18 @@ devuelve filas, el backend se detiene y presenta ese resultado; no sigue
 explorando otras dimensiones ni métricas. Si LangGraph alcanza su límite de
 pasos, devuelve un mensaje para reformular la pregunta en lugar de propagar el
 error de recursión.
+
+El backend del Data Analyst cachea el esquema (`listar_tablas`, `describir_tabla`)
+y el catálogo de métricas en `proyecto/data/data_analyst_metadata_cache.json`.
+Como cada llamada MCP arranca un subproceso nuevo, el caché vive en disco y se
+comparte entre consultas; la clave incluye la versión de esquema de SQLite y los
+permisos PII de la sesión. No se cachean filas, valores ni conteos: el número de
+filas de `describir_tabla` se recalcula con el alcance actual. El TTL se controla
+con `DATA_ANALYST_METADATA_CACHE_TTL` (3,600 segundos por defecto) y el caché se
+desactiva con `DATA_ANALYST_METADATA_CACHE=0`. El backend inyecta un resumen
+compacto de tablas, columnas y métricas en el prompt para que el agente no tenga
+que pedir `listar_tablas`, `describir_tabla` ni `catalogo_metricas` en cada
+consulta; se puede desactivar con `DATA_ANALYST_PROMPT_CATALOG=0`.
 
 `graficar_consulta` no ejecuta código generado por el modelo: valida y ejecuta
 una consulta agregada y dibuja el PNG con matplotlib en el backend. Rechaza

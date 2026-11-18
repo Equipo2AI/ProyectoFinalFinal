@@ -28,6 +28,7 @@ from typing import Annotated, Any, TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from proyecto.agents import data_steward_agent
+from proyecto.agents.data_steward_agent import evaluar_alcance_data_steward
 from proyecto.agents.document_intelligence_agent import (
     PALABRAS_DESCRIPCION,
     PATRON_RUTA_DOCUMENTO,
@@ -875,6 +876,37 @@ def _siguiente_despacho(estado: EstadoGrafo) -> str:
 
 def _nodo_data_steward(estado: EstadoGrafo) -> dict:
     consulta = estado.get("consulta") or ""
+    # El orquestador es el dueño del enrutamiento. Este guard cubre la
+    # invocación directa y los desvíos claros del planificador.
+    alcance = evaluar_alcance_data_steward(consulta)
+    if alcance.get("estado") == "fuera_de_dominio":
+        mensaje = str(
+            alcance.get("mensaje")
+            or "Esa consulta no corresponde al Data Steward."
+        )
+        return {
+            "resultados": {
+                "data_steward": {
+                    "agente": "data_steward",
+                    "respuesta": mensaje,
+                    "estado": "fuera_de_alcance",
+                }
+            },
+            "trazas": [
+                _traza(
+                    "alcance_data_steward",
+                    {
+                        "consulta": consulta,
+                        "destino": alcance.get("destino"),
+                        "motivo": alcance.get("motivo"),
+                    },
+                    mensaje,
+                    "ok",
+                )
+            ],
+            "errores": [],
+        }
+
     tabla = _tabla_mencionada(consulta)
     pide_calidad = bool(_RE_CALIDAD.search(_normalizar(consulta)))
 

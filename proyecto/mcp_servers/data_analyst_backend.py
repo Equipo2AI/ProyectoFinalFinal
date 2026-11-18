@@ -5,15 +5,19 @@ import difflib
 import json
 import os
 import re
+import sqlite3
 import unicodedata
+from pathlib import Path
 
 from dotenv import load_dotenv
 from langchain_core.tools import tool
 from sqlalchemy import create_engine, event, inspect
+from sqlalchemy.engine import make_url
 
 from proyecto.charts import generar_grafica
 from proyecto.config.models import modelo_de
 from proyecto.guardrails import redactar_pii, verificar_cifras as verificar_cifras_texto
+from proyecto.mcp_servers.metadata_cache import MetadataCache
 from proyecto.mcp_servers.sql_guard import (
     ResultadoValidacionSQL,
     validar_sql as validar_sql_guard,
@@ -50,9 +54,11 @@ Eres un Data Analyst bancario. Respondes preguntas con datos consultando
 una base de datos SQL de solo lectura.
 
 Proceso:
-1. Si no conoces las tablas, usa listar_tablas (también te dice el motor SQL).
-2. Antes de escribir SQL, usa describir_tabla en cada tabla o vista que vayas
-   a usar. Usa solo columnas y relaciones que existan.
+1. Si el prompt ya incluye el catálogo de metadatos, úsalo. Si no, usa
+   listar_tablas (también te dice el motor SQL).
+2. Si el catálogo ya incluye las columnas, no llames describir_tabla; úsala
+   solo si necesitas relaciones, el conteo de filas o una tabla que no
+   aparezca. Usa solo columnas y relaciones que existan.
 3. Prefiere las vistas (vw_*) cuando existan: ya traen los JOIN resueltos.
 4. Antes de filtrar por texto (WHERE tipo = ...), usa valores_columna para
    conocer los valores exactos de esa columna.
@@ -60,9 +66,10 @@ Proceso:
    catálogo, solo lectura, PII y el filtro del cliente autenticado.
 6. Ejecuta una sola consulta SELECT con ejecutar_consulta. Prefiere
    agregaciones (COUNT, SUM, AVG, GROUP BY) y usa LIMIT al listar filas.
-7. Si la pregunta coincide con una métrica certificada, usa catalogo_metricas
-   y consultar_metrica antes de escribir SQL libre. Usa resolver_periodo para
-   fechas y resolver_valor para categorías ambiguas.
+7. Si la pregunta coincide con una métrica certificada, usa consultar_metrica
+   antes de escribir SQL libre. Si el prompt no trae las métricas, consulta
+   catalogo_metricas primero. Usa resolver_periodo para fechas y
+   resolver_valor para categorías ambiguas.
 8. No generes imágenes ni código de gráficas: entrega el SQL y los datos; el
    orquestador se encarga de dibujar si el usuario lo pidió.
 9. Antes de cerrar, usa verificar_cifras si quieres contrastar tu redacción
@@ -309,6 +316,7 @@ class DataAnalystSQLBackend:
         self._cliente_actual: int | None = None
         self._ultimo_resultado: dict | None = None
         self._ultimo_sql: str | None = None
+        self._metadata_cache = MetadataCache()
         self._tools = self._crear_herramientas()
         self.herramientas = [t.name for t in self._tools]
 
@@ -433,6 +441,31 @@ class DataAnalystSQLBackend:
         self._auditar("sql_execute", True, sql)
         return resultado
 
+    def _prompt_agente(
+        self, rol: str = "", cliente_id: int | None = None
+    ) -> str:
+        prompt = _prompt_sesion(rol, cliente_id) + (
+            "\nLa base ya está limitada al alcance autenticado; 'mi' se "
+            "refiere a ese alcance, no a un ID escrito en el chat. No pidas "
+            "más identidad. Solo un auditor con permiso explícito de un campo "
+            "personal puede usarlo si la herramienta se lo entrega para su "
+            "auditoría."
+        )
+        if os.getenv(
+            "DATA_ANALYST_PROMPT_CATALOG", "1"
+        ).strip().lower() not in {"0", "off", "false", "no"}:
+            resumen = self._resumen_metadatos()
+            if resumen:
+                prompt += (
+                    "\n\n"
+                    + resumen
+                    + "\n\nEl catálogo anterior ya está cargado y autorizado. "
+                    "No llames listar_tablas ni catalogo_metricas. Usa "
+                    "describir_tabla solo si necesitas relaciones, el conteo "
+                    "de filas o una tabla que no aparezca en el catálogo."
+                )
+        return prompt
+
     def _get_agente(self, rol: str = "", cliente_id: int | None = None):
         clave = f"{rol}:{cliente_id}" if rol else "normal"
         if clave not in self._agentes:
@@ -453,13 +486,7 @@ class DataAnalystSQLBackend:
                 for herramienta in self._tools
                 if herramienta.name != "graficar_consulta"
             ]
-            prompt = _prompt_sesion(rol, cliente_id) + (
-                "\nLa base ya está limitada al alcance autenticado; 'mi' se "
-                "refiere a ese alcance, no a un ID escrito en el chat. No pidas "
-                "más identidad. Solo un auditor con permiso explícito de un campo "
-                "personal puede usarlo si la herramienta se lo entrega para su "
-                "auditoría."
-            )
+            prompt = self._prompt_agente(rol, cliente_id)
             self._agentes[clave] = create_agent(
                 model=llm,
                 tools=herramientas,
@@ -645,6 +672,198 @@ class DataAnalystSQLBackend:
         vistas = [v for v in inspector.get_view_names() if v not in excluidas]
         return tablas, vistas
 
+    def _permitir_pii(self) -> bool:
+        return "dim_cliente_persona" not in self._excluidas()
+
+    @staticmethod
+    def _cache_permissions_key() -> str:
+        """Incluye los campos PII que cambian las columnas de la proyección."""
+        user = principal()
+        permisos = sorted(
+            str(permiso)
+            for permiso in (user.get("permissions") or [])
+            if str(permiso) == "audit" or str(permiso).startswith("pii:")
+        )
+        return ",".join(permisos)
+
+    def _cache_db_key(self) -> str:
+        """Identifica la base y su versión de esquema sin depender de los datos."""
+        if not self.url_db:
+            return "sin-db"
+        try:
+            url = make_url(self.url_db)
+        except Exception:  # noqa: BLE001 - una URL inválida no debe romper la tool
+            return f"url:{self.url_db}"
+        if url.drivername == "sqlite" and url.database:
+            ruta = Path(url.database).expanduser()
+            try:
+                ruta = ruta.resolve()
+                stat = ruta.stat()
+                # schema_version cambia con DDL, no con INSERT/UPDATE. Así el
+                # esquema se reutiliza aunque los datos cambien.
+                conexion = sqlite3.connect(f"{ruta.as_uri()}?mode=ro", uri=True)
+                try:
+                    version = conexion.execute(
+                        "PRAGMA schema_version"
+                    ).fetchone()[0]
+                finally:
+                    conexion.close()
+                return f"sqlite:{ruta}:inode={stat.st_ino}:schema={version}"
+            except (OSError, sqlite3.Error):
+                try:
+                    stat = ruta.stat()
+                    return (
+                        f"sqlite:{ruta}:inode={stat.st_ino}:"
+                        f"mtime={stat.st_mtime_ns}:size={stat.st_size}"
+                    )
+                except OSError:
+                    return f"sqlite:{ruta}"
+        return f"{url.drivername}:{url}"
+
+    def _metadata_key(self, tipo: str, **partes: object) -> str:
+        extras = "|".join(
+            f"{clave}={valor}" for clave, valor in sorted(partes.items())
+        )
+        return f"{tipo}|{self._cache_db_key()}|{extras}"
+
+    @staticmethod
+    def _catalogo_key() -> str:
+        """Cambia cuando cambia el código que define el catálogo."""
+        try:
+            ruta = Path(listar_catalogo_metricas.__code__.co_filename)
+            stat = ruta.stat()
+            version = f"{stat.st_mtime_ns}:{stat.st_size}"
+        except Exception:  # noqa: BLE001 - sin metadatos, se usa una versión fija
+            version = "v1"
+        return f"catalogo_metricas|{version}"
+
+    def _listar_tablas_cache(self, engine) -> dict:
+        """Tablas/vistas desde caché; solo inspecciona la base si no existe."""
+        clave = self._metadata_key(
+            "listar_tablas", pii=int(self._permitir_pii())
+        )
+        cacheado = self._metadata_cache.get(clave)
+        if (
+            isinstance(cacheado, dict)
+            and isinstance(cacheado.get("tablas"), list)
+            and isinstance(cacheado.get("vistas"), list)
+        ):
+            return cacheado
+        tablas, vistas = self._objetos_disponibles(inspect(engine))
+        datos = {
+            "motor": engine.dialect.name,
+            "tablas": tablas,
+            "vistas": vistas,
+        }
+        self._metadata_cache.set(clave, datos)
+        return datos
+
+    def _esquema_tabla(
+        self,
+        engine,
+        tabla: str,
+        *,
+        inspector=None,
+        tablas: list[str] | None = None,
+        vistas: list[str] | None = None,
+        permisos: str | None = None,
+    ) -> dict | None:
+        """Esquema cacheado de una tabla; no incluye el conteo de filas."""
+        permisos = (
+            permisos if permisos is not None else self._cache_permissions_key()
+        )
+        clave = self._metadata_key(
+            "describir_tabla", tabla=tabla, permisos=permisos
+        )
+        cacheado = self._metadata_cache.get(clave)
+        if isinstance(cacheado, dict) and isinstance(
+            cacheado.get("columnas"), list
+        ):
+            return cacheado
+
+        inspector = inspector or inspect(engine)
+        if tablas is None or vistas is None:
+            tablas, vistas = self._objetos_disponibles(inspector)
+        if tabla not in tablas + vistas:
+            return None
+
+        columnas = inspector.get_columns(tabla)
+        esquema = {
+            "tabla": tabla,
+            "es_vista": tabla in vistas,
+            "columnas": [
+                {"nombre": c["name"], "tipo": str(c["type"])}
+                for c in columnas
+            ],
+            "relaciones": [
+                {
+                    "columnas": fk["constrained_columns"],
+                    "referencia": f"{fk['referred_table']}({', '.join(fk['referred_columns'])})",
+                }
+                for fk in inspector.get_foreign_keys(tabla)
+            ],
+        }
+        self._metadata_cache.set(clave, esquema)
+        return esquema
+
+    def _catalogo_metricas_cache(self) -> list[dict]:
+        clave = self._catalogo_key()
+        cacheado = self._metadata_cache.get(clave)
+        if isinstance(cacheado, dict) and isinstance(
+            cacheado.get("metricas"), list
+        ):
+            return cacheado["metricas"]
+        datos = {"metricas": listar_catalogo_metricas()}
+        self._metadata_cache.set(clave, datos)
+        return datos["metricas"]
+
+    def _resumen_metadatos(self) -> str:
+        """Catálogo compacto para que el LLM no tenga que pedirlo por tools."""
+        try:
+            engine = self._get_engine()
+            datos = self._listar_tablas_cache(engine)
+            permisos = self._cache_permissions_key()
+            lineas = [
+                "Catálogo de metadatos ya cargado y autorizado para esta sesión:"
+            ]
+            for tipo, nombres in (
+                ("TABLA", datos.get("tablas", [])),
+                ("VISTA", datos.get("vistas", [])),
+            ):
+                for tabla in nombres:
+                    esquema = self._esquema_tabla(
+                        engine, tabla, permisos=permisos
+                    )
+                    if not esquema:
+                        continue
+                    columnas = ", ".join(
+                        str(columna.get("nombre"))
+                        for columna in esquema.get("columnas", [])
+                        if isinstance(columna, dict) and columna.get("nombre")
+                    )
+                    lineas.append(f"- {tipo} `{tabla}`: {columnas}")
+
+            metricas = self._catalogo_metricas_cache()
+            if metricas:
+                lineas.append("Métricas certificadas:")
+                for metrica in metricas:
+                    if not isinstance(metrica, dict):
+                        continue
+                    nombre = metrica.get("nombre")
+                    if not nombre:
+                        continue
+                    unidad = metrica.get("unidad") or ""
+                    dimensiones = metrica.get("dimensiones") or []
+                    dims = (
+                        ": " + ", ".join(str(d) for d in dimensiones)
+                        if dimensiones
+                        else ""
+                    )
+                    lineas.append(f"- {nombre} ({unidad}){dims}")
+            return "\n".join(lineas) if len(lineas) > 1 else ""
+        except Exception:  # noqa: BLE001 - sin catálogo se conserva el flujo normal
+            return ""
+
     def _filtro_sesion(
         self, tabla: str, columnas: list[str]
     ) -> tuple[str, dict[str, int]]:
@@ -772,12 +991,7 @@ class DataAnalystSQLBackend:
             """Lista las tablas y vistas de la base de datos y el motor SQL (sqlite, postgresql...)."""
             try:
                 engine = self._get_engine()
-                tablas, vistas = self._objetos_disponibles(inspect(engine))
-                return _json({
-                    "motor": engine.dialect.name,
-                    "tablas": tablas,
-                    "vistas": vistas,
-                })
+                return _json(self._listar_tablas_cache(engine))
             except Exception as error:
                 return _json({"error": f"{type(error).__name__}: {error}"})
 
@@ -786,19 +1000,29 @@ class DataAnalystSQLBackend:
             """Devuelve columnas, tipos, número de filas y relaciones de una tabla o vista. Úsala antes de escribir SQL."""
             try:
                 engine = self._get_engine()
-                inspector = inspect(engine)
-                tablas, vistas = self._objetos_disponibles(inspector)
-                if tabla not in tablas + vistas:
+                esquema = self._esquema_tabla(
+                    engine,
+                    tabla,
+                    permisos=self._cache_permissions_key(),
+                )
+                if esquema is None:
+                    datos = self._listar_tablas_cache(engine)
                     return _json({
                         "error": f"La tabla '{tabla}' no existe o no está disponible.",
-                        "tablas": tablas,
-                        "vistas": vistas,
+                        "tablas": datos.get("tablas", []),
+                        "vistas": datos.get("vistas", []),
                     })
 
-                columnas = inspector.get_columns(tabla)
+                # El conteo de filas no se cachea: cambia con los datos y con
+                # el alcance de la sesión. El esquema sí es reutilizable.
+                columnas_nombres = [
+                    str(columna.get("nombre"))
+                    for columna in esquema.get("columnas", [])
+                    if isinstance(columna, dict) and columna.get("nombre")
+                ]
                 nombre_seguro = engine.dialect.identifier_preparer.quote(tabla)
                 filtro, parametros = self._filtro_sesion(
-                    tabla, [c["name"] for c in columnas]
+                    tabla, columnas_nombres
                 )
                 with engine.connect() as conexion:
                     filas = conexion.exec_driver_sql(
@@ -806,22 +1030,7 @@ class DataAnalystSQLBackend:
                         parametros,
                     ).scalar()
 
-                return _json({
-                    "tabla": tabla,
-                    "es_vista": tabla in vistas,
-                    "filas": filas,
-                    "columnas": [
-                        {"nombre": c["name"], "tipo": str(c["type"])}
-                        for c in columnas
-                    ],
-                    "relaciones": [
-                        {
-                            "columnas": fk["constrained_columns"],
-                            "referencia": f"{fk['referred_table']}({', '.join(fk['referred_columns'])})",
-                        }
-                        for fk in inspector.get_foreign_keys(tabla)
-                    ],
-                })
+                return _json({**esquema, "filas": filas})
             except Exception as error:
                 return _json({"error": f"{type(error).__name__}: {error}"})
 
@@ -923,7 +1132,7 @@ class DataAnalystSQLBackend:
         @tool
         def catalogo_metricas() -> str:
             """Lista métricas certificadas, su unidad y las dimensiones permitidas."""
-            return _json({"metricas": listar_catalogo_metricas()})
+            return _json({"metricas": self._catalogo_metricas_cache()})
 
         @tool
         def consultar_metrica(

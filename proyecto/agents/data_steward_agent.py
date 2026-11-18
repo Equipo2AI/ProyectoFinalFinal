@@ -54,6 +54,13 @@ usa `evaluar_calidad` para comparar lo encontrado contra
 Nunca muestres nombres, correos, teléfonos, CURP, RFC, direcciones ni valores
 de registros individuales. Trabaja con agregados y metadatos. No modifiques la
 base ni afirmes haberlo hecho.
+
+Si la consulta no es de estructura o calidad de datos de esta base, no uses
+herramientas: di en una frase que tu alcance es tablas, columnas, faltantes,
+duplicados, claves y relaciones, y menciona el especialista adecuado (Data
+Analyst para saldos, promedios o métricas; Normatividad para leyes, políticas
+o avisos; Document Intelligence para facturas, imágenes o documentos). No
+respondas temas ajenos ni intentes cubrirlos con metadatos.
 """
 
 # El Data Steward sí puede revisar la capa cruda porque ahí están los defectos
@@ -99,6 +106,103 @@ _SOLICITA_CALIDAD = re.compile(
     r"inconsistencias?)\b",
     re.IGNORECASE,
 )
+
+# Señales para separar el dominio del Data Steward de los demás especialistas.
+# Son deliberadamente conservadoras: solo rechazan casos claros; lo ambiguo
+# sigue al LLM para no convertir este guard en un segundo planificador.
+_RE_METADATA_STEWARD = re.compile(
+    r"\b(?:tabla|tablas|columna|columnas|esquema|esquemas|estructura|"
+    r"campos?|variables?|atributos?|metadatos?|catalogo|filas?|registros?|"
+    r"faltantes?|nulos?|"
+    r"duplicad\w*|calidad|relacion\w*|foreign\s+keys?|primary\s+keys?|"
+    r"claves?|indices?|restriccion\w*|integridad|outliers?|"
+    r"tipos?\s+de\s+datos?|"
+    r"valores\s+(?:faltantes|nulos|negativos|duplicados))\b",
+    re.IGNORECASE,
+)
+_RE_METADATA_GENERICA_STEWARD = re.compile(
+    r"\b(?:dataset|datasets|base\s+de\s+datos)\b",
+    re.IGNORECASE,
+)
+_RE_ANALITICA_STEWARD = re.compile(
+    r"\b(?:saldo|saldos|monto|montos|promedio|media|total|suma|"
+    r"transaccion\w*|movimientos?|ranking|top|porcentaje|"
+    r"distribucion|distribuyen|tendencia|comparacion|comparar|"
+    r"metricas?|tasa|tasas|interes|intereses|comision|comisiones)\b",
+    re.IGNORECASE,
+)
+_RE_CONTEO_NEGOCIO_STEWARD = re.compile(
+    r"\b(?:cuantos?|cuantas?|numero\s+de)\b.{0,40}\b(?:clientes?|cuentas?|"
+    r"transacciones?|movimientos?|productos?|sucursales?|promotores?)\b",
+    re.IGNORECASE,
+)
+_RE_NORMATIVA_STEWARD = re.compile(
+    r"\b(?:ley|leyes|normativ\w*|reglamento|regulacion|politica|politicas|"
+    r"manual|manuales|lineamiento|aviso\s+de\s+privacidad|"
+    r"proteccion\s+de\s+datos|datos\s+personales|privacidad|"
+    r"derechos\s+arco|obligacion|sancion|consentimiento|terminos|"
+    r"condiciones|cnbv|banxico|condusef|circular|disposicion\w*)\b",
+    re.IGNORECASE,
+)
+_RE_BANAMEX_STEWARD = re.compile(r"\b(?:banamex|citibanamex)\b", re.IGNORECASE)
+_RE_DOCUMENTO_STEWARD = re.compile(
+    r"\b(?:factura|facturas|recibo|recibos|comprobante|comprobantes|"
+    r"imagen|imagenes|ocr|pdf|documento|documentos|archivo|archivos|"
+    r"foto|fotos|captura|capturas|escaneo|escaneos|docx|xlsx|pptx)\b",
+    re.IGNORECASE,
+)
+_RE_FUERA_MVP_STEWARD = re.compile(
+    r"\b(?:kyc|aml|lavado(?:\s+de\s+dinero)?|prevencion\s+de\s+lavado|"
+    r"reporte\s+regulatorio|reportes\s+regulatorios|sar)\b",
+    re.IGNORECASE,
+)
+_RE_GENERAL_AJENO_STEWARD = re.compile(
+    r"\b(?:capital\s+de\s+(?:francia|italia|japon|alemania)|"
+    r"pizza|receta|cocinar|poema|cuento|cancion|chiste|"
+    r"futbol|partido|clima|planetas?|dinosaurios?|astronomia|"
+    r"fotosintesis)\b",
+    re.IGNORECASE,
+)
+_RE_DEFINICION_STEWARD = re.compile(
+    r"\b(?:que\s+es|que\s+son|definicion|define|explica(?:me)?|"
+    r"que\s+significa)\b",
+    re.IGNORECASE,
+)
+
+_MENSAJE_PRIVACIDAD = (
+    "No puedo mostrar ni inferir datos personales de clientes ni valores de "
+    "registros individuales. Sí puedo ayudar con estructura, faltantes, "
+    "duplicados y otros agregados de la base sintética."
+)
+_MENSAJE_BASE_ALCANCE = (
+    "Esa consulta no corresponde al Data Steward. Mi alcance es la estructura "
+    "y la calidad de la base sintética: tablas, columnas, faltantes, "
+    "duplicados, claves y relaciones."
+)
+_MENSAJES_DESTINO = {
+    "data_analyst": (
+        "Para saldos, promedios, conteos de negocio, transacciones o métricas, "
+        "la consulta corresponde al Data Analyst."
+    ),
+    "normatividad_rag": (
+        "Para leyes, políticas, manuales, avisos o normativa, la consulta "
+        "corresponde a Normatividad."
+    ),
+    "document_intelligence": (
+        "Para facturas, recibos, imágenes, OCR o documentos, la consulta "
+        "corresponde a Document Intelligence."
+    ),
+    "directo": (
+        "Para definiciones generales o temas fuera del dominio bancario, "
+        "reformula la pregunta o consulta al orquestador."
+    ),
+    "fuera_mvp": (
+        "KYC, AML y los reportes regulatorios están fuera del MVP actual."
+    ),
+}
+_MENSAJE_CIERRE_ALCANCE = (
+    " Si quieres revisar estructura o calidad, indica la tabla o vista."
+)
 _MENSAJE_SIN_HERRAMIENTA = (
     "No consulté las herramientas de metadatos en este turno, así que no "
     "tengo datos verificados para responder. Para evitar inventar tablas, "
@@ -121,11 +225,18 @@ def _parece_respuesta_sin_herramienta(texto: str) -> bool:
 def _solicita_registros_personales(consulta: str) -> bool:
     """Bloquea solicitudes de valores personales o registros individuales."""
     texto = _normalizar(consulta)
+    # "Nombres de columnas/tablas" es metadatos, no valores de personas.
+    texto_sin_metadatos = re.sub(
+        r"\bnombres?\s+de\s+(?:l[oa]s?\s+)?"
+        r"(?:columnas?|tablas?|vistas?|campos?|variables?|atributos?)\b",
+        " ",
+        texto,
+    )
     campos_personales = re.search(
         r"\b(?:nombres?|correos?|emails?|telefonos?|celulares?|"
         r"direcciones?|domicilios?|curp|rfc|datos personales|"
         r"registros? personales|informacion personal)\b",
-        texto,
+        texto_sin_metadatos,
     )
     accion_de_revelar = re.search(
         r"\b(?:muestr\w*|mostr\w*|dame|give|show|list\w*|enumera\w*|"
@@ -139,6 +250,97 @@ def _solicita_registros_personales(consulta: str) -> bool:
         texto,
     )
     return bool(campos_personales and (accion_de_revelar or pregunta_por_valores))
+
+
+def _resultado_fuera_de_dominio(destino: str, motivo: str) -> dict:
+    detalle = _MENSAJES_DESTINO.get(destino, "")
+    mensaje = " ".join(
+        parte
+        for parte in (
+            _MENSAJE_BASE_ALCANCE,
+            detalle,
+            _MENSAJE_CIERRE_ALCANCE.strip(),
+        )
+        if parte
+    )
+    return {
+        "estado": "fuera_de_dominio",
+        "destino": destino,
+        "motivo": motivo,
+        "mensaje": mensaje,
+    }
+
+
+def evaluar_alcance_data_steward(consulta: str) -> dict:
+    """Clasifica solo los casos claros; lo ambiguo sigue al LLM.
+
+    El orquestador sigue siendo el dueño del enrutamiento entre especialistas.
+    Este guard evita que una invocación directa o un desvío del planificador
+    haga que Data Steward responda un tema que no le corresponde.
+    """
+    texto = _normalizar(consulta or "")
+
+    if _solicita_registros_personales(consulta):
+        return {
+            "estado": "fuera_de_dominio",
+            "destino": "privacidad",
+            "motivo": "solicitud de datos personales",
+            "mensaje": _MENSAJE_PRIVACIDAD,
+        }
+
+    if _RE_METADATA_STEWARD.search(texto):
+        return {
+            "estado": "en_dominio",
+            "destino": None,
+            "motivo": "metadatos o calidad de datos",
+            "mensaje": "",
+        }
+
+    if _RE_FUERA_MVP_STEWARD.search(texto):
+        return _resultado_fuera_de_dominio(
+            "fuera_mvp", "tema fuera del MVP"
+        )
+    if _RE_NORMATIVA_STEWARD.search(texto):
+        return _resultado_fuera_de_dominio(
+            "normatividad_rag", "consulta normativa"
+        )
+    if _RE_DOCUMENTO_STEWARD.search(texto):
+        return _resultado_fuera_de_dominio(
+            "document_intelligence", "consulta documental"
+        )
+    if (
+        _RE_ANALITICA_STEWARD.search(texto)
+        or _RE_CONTEO_NEGOCIO_STEWARD.search(texto)
+    ):
+        return _resultado_fuera_de_dominio(
+            "data_analyst", "consulta analítica o de negocio"
+        )
+    if _RE_METADATA_GENERICA_STEWARD.search(texto):
+        return {
+            "estado": "en_dominio",
+            "destino": None,
+            "motivo": "catálogo general de datos",
+            "mensaje": "",
+        }
+    if _RE_BANAMEX_STEWARD.search(texto):
+        return _resultado_fuera_de_dominio(
+            "normatividad_rag", "consulta informativa de Banamex"
+        )
+    if _RE_GENERAL_AJENO_STEWARD.search(texto):
+        return _resultado_fuera_de_dominio(
+            "directo", "tema general ajeno al dominio"
+        )
+    if _RE_DEFINICION_STEWARD.search(texto):
+        return _resultado_fuera_de_dominio(
+            "directo", "definición general"
+        )
+
+    return {
+        "estado": "ambiguo",
+        "destino": None,
+        "motivo": "sin señal suficiente",
+        "mensaje": "",
+    }
 
 
 def _resolver_tabla(tabla: str):
@@ -845,13 +1047,9 @@ class DataStewardAgent:
         return formatear_resultados_verificados(resultados)
 
     def procesar(self, consulta: str) -> str:
-        if _solicita_registros_personales(consulta):
-            return (
-                "No puedo mostrar ni inferir datos personales de clientes "
-                "ni valores de registros individuales. Sí puedo ayudar con "
-                "estructura, faltantes, duplicados y otros agregados de la "
-                "base sintética."
-            )
+        alcance = evaluar_alcance_data_steward(consulta)
+        if alcance["estado"] == "fuera_de_dominio":
+            return str(alcance["mensaje"])
 
         resultado = self._get_agent().invoke(
             {"messages": [{"role": "user", "content": consulta}]}
