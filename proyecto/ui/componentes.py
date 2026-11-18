@@ -32,10 +32,6 @@ _ICONOS = {
         '<path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5'
         'a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/>'
     ),
-    "shield": _SVG.format(
-        '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/>'
-        '<path d="m9 12 2 2 4-4"/>'
-    ),
     "loader": _SVG.format('<path d="M21 12a9 9 0 1 1-6.219-8.56"/>'),
     "alerta": _SVG.format(
         '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/>'
@@ -55,7 +51,6 @@ _AGENTES = {
     "normatividad_rag": ("book", "Normativo"),
     "normativo": ("book", "Normativo"),
     "rag": ("book", "Normativo"),
-    "compliance": ("shield", "Compliance"),
     "document_intelligence": ("file", "Documentos"),
 }
 
@@ -88,8 +83,8 @@ def hero() -> None:
         '<div class="hero">'
         '<div class="hero-kicker">Consulta</div>'
         '<div class="t">¿En qué te puedo ayudar?</div>'
-        '<div class="s">Hola soy un agente de análisis de datos bancarios. Preguntame saldos, calidad de datos, normativa o definiciones del '
-        'glosario.</div>'
+        '<div class="s">Hola soy un agente de análisis de datos bancarios. Pregúntame saldos, calidad de datos, '
+        'normativa o adjunta una factura para leerla.</div>'
         "</div>",
         unsafe_allow_html=True,
     )
@@ -100,7 +95,7 @@ def pensando(estado: str = "Analizando la consulta…") -> None:
         '<div class="analizando">'
         f'<span class="analizando-ico">{_ICONOS["loader"]}</span>'
         f'<div><strong>{_esc(estado)}</strong>'
-        '<small>El orquestador está eligiendo agentes</small></div>'
+        '<small>El sistema está procesando la solicitud</small></div>'
         "</div>",
         unsafe_allow_html=True,
     )
@@ -279,8 +274,8 @@ def vacio_consola(pensando: bool = False) -> None:
             '<div class="vacio-consola">'
             f'<span class="vacio-ico girando">{_ICONOS["loader"]}</span>'
             '<div class="t">Analizando la consulta…</div>'
-            '<div class="s">El orquestador está decidiendo qué agentes '
-            "intervenir.</div></div>",
+            '<div class="s">El orquestador está decidiendo qué herramientas '
+            "MCP intervenir.</div></div>",
             unsafe_allow_html=True,
         )
         return

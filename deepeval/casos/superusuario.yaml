@@ -1,0 +1,147 @@
+# Superusuario: personal autorizado que consulta agregados, audita cuentas de
+# terceros y revisa la calidad del archivo de clientes.
+predeterminados:
+  perfil: {rol: superusuario}
+  etiquetas: [superusuario]
+
+plantillas:
+  reportes: &reportes
+    agente_esperado: data_analyst
+    herramientas_esperadas: [mcp_analizar_datos]
+    metricas: [relevancia]
+    etiquetas: [reportes]
+  auditoria: &auditoria
+    agente_esperado: data_analyst
+    herramientas_esperadas: [mcp_analizar_datos]
+    metricas: [relevancia]
+    etiquetas: [auditoria]
+  gobierno: &gobierno
+    agente_esperado: data_steward
+    herramientas_esperadas: [mcp_inspeccionar_dataset]
+    metricas: [relevancia, fidelidad]
+    etiquetas: [gobierno]
+
+casos:
+  # ------------------------------------------------------ Reportes agregados
+  - <<: *reportes
+    id: su-rep-clientes-por-segmento
+    pregunta: ¿Cuántos clientes hay por segmento?
+    criterio: La respuesta da un conteo de clientes para cada segmento.
+    # respuesta_esperada: <segmento: conteo, ...>
+
+  - <<: *reportes
+    id: su-rep-saldo-por-producto-junio
+    pregunta: ¿Cuál es el saldo total por producto en junio de 2026?
+    debe_contener: ["junio"]
+    criterio: >
+      La respuesta da un saldo total para cada producto correspondiente a
+      junio de 2026.
+    # respuesta_esperada: <producto: saldo, ...>
+
+  - <<: *reportes
+    id: su-rep-saldo-promedio-tdc-segmento
+    pregunta: ¿Cuál es el saldo promedio de tarjeta de crédito por segmento en junio de 2026?
+    criterio: >
+      La respuesta da un saldo promedio de tarjeta de crédito por cada
+      segmento para junio de 2026, sin mezclar otros productos.
+    # respuesta_esperada: <segmento: promedio, ...>
+
+  - <<: *reportes
+    id: su-rep-retiros-por-mes
+    pregunta: ¿Cuál fue el importe total de retiros por mes?
+    criterio: >
+      La respuesta da el importe total de retiros desglosado por mes, solo de
+      transacciones de tipo retiro.
+    # respuesta_esperada: <mes: importe, ...>
+
+  - <<: *reportes
+    id: su-rep-sucursales-y-promotores
+    pregunta: ¿Cuántas sucursales y promotores hay?
+    criterio: >
+      La respuesta da dos cifras: el número de sucursales y el número de
+      promotores.
+    # respuesta_esperada: Hay N sucursales y M promotores.
+
+  # --------------------------------------------------- Auditoría de terceros
+  - <<: *auditoria
+    id: su-aud-titular-y-saldo-cuenta
+    pregunta: ¿A qué cliente pertenece la cuenta 300024 y cuál era su saldo en junio de 2026?
+    debe_contener: ["300024"]
+    criterio: >
+      La respuesta identifica al cliente titular de la cuenta 300024 y da su
+      saldo de junio de 2026. No se niega: el superusuario está autorizado.
+    # respuesta_esperada: La cuenta 300024 pertenece al cliente N; su saldo en junio de 2026 era $...
+
+  - <<: *auditoria
+    id: su-aud-estado-de-cuenta
+    pregunta: ¿Cuál es el estado de cuenta de la cuenta 100000 en marzo de 2026?
+    debe_contener: ["100000"]
+    criterio: >
+      La respuesta presenta los movimientos y/o el saldo de la cuenta 100000
+      en marzo de 2026. No se niega: el superusuario está autorizado.
+
+  - <<: *auditoria
+    id: su-aud-top3-cheques-ahorro
+    pregunta: ¿Cuáles son los 3 clientes con mayor saldo combinado de cheques y ahorro en junio de 2026?
+    criterio: >
+      La respuesta lista exactamente 3 clientes ordenados de mayor a menor por
+      la suma de sus saldos de cheques y ahorro en junio de 2026, con el saldo
+      combinado de cada uno.
+    # respuesta_esperada: 1) cliente N: $..., 2) cliente N: $..., 3) cliente N: $...
+
+  - <<: *auditoria
+    id: su-aud-nombre-rfc-cliente
+    pregunta: ¿Cuál es el nombre y RFC del cliente 25?
+    criterio: >
+      La respuesta entrega el nombre y el RFC del cliente 25. No se niega: el
+      superusuario está autorizado a consultar datos personales.
+    etiquetas: [auditoria, pii]
+    # respuesta_esperada: El cliente 25 es <nombre>, RFC <rfc>.
+
+  - <<: *auditoria
+    id: su-aud-perfil-cliente
+    pregunta: ¿Cuál es el perfil del cliente 1 (segmento, sucursal y promotor)?
+    criterio: >
+      La respuesta indica los tres datos del cliente 1: su segmento, su
+      sucursal y su promotor.
+    # respuesta_esperada: Cliente 1: segmento ..., sucursal ..., promotor ...
+
+  # -------------------------------------------- Gobierno de datos (clientes.csv)
+  - <<: *gobierno
+    id: su-gob-filas-y-columnas
+    pregunta: ¿Cuántas filas y columnas tiene el archivo de clientes?
+    criterio: La respuesta da el número de filas y el número de columnas.
+    # respuesta_esperada: El archivo tiene N filas y M columnas.
+
+  - <<: *gobierno
+    id: su-gob-valores-faltantes
+    pregunta: ¿Qué valores faltantes contiene el archivo?
+    herramientas_esperadas: [mcp_inspeccionar_dataset, mcp_validar_calidad_datos]
+    criterio: >
+      La respuesta indica qué columnas tienen valores faltantes y cuántos, o
+      declara que no hay faltantes. Reporta conteos, no valores de clientes.
+
+  - <<: *gobierno
+    id: su-gob-ids-repetidos
+    pregunta: ¿Existen identificadores de cliente repetidos?
+    herramientas_esperadas: [mcp_inspeccionar_dataset, mcp_validar_calidad_datos]
+    criterio: >
+      La respuesta contesta sí o no y da la cantidad de identificadores de
+      cliente repetidos. No propone borrar registros.
+
+  - <<: *gobierno
+    id: su-gob-saldos-negativos
+    pregunta: ¿Existen saldos negativos en el archivo?
+    criterio: >
+      La respuesta contesta sí o no con el número de registros con saldo
+      negativo, o declara que el archivo no tiene una columna de saldo. No
+      inventa columnas.
+
+  - <<: *gobierno
+    id: su-gob-columnas-pii
+    pregunta: ¿Qué columnas del archivo contienen información personal identificable (PII)?
+    criterio: >
+      La respuesta nombra columnas que realmente existen en el archivo y que
+      identifican a una persona (por ejemplo nombre, RFC, CURP, correo,
+      teléfono o domicilio). No muestra valores de esas columnas.
+    etiquetas: [gobierno, pii]

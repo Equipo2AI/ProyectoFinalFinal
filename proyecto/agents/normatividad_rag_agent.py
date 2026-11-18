@@ -1,49 +1,38 @@
 # Normatividad / RAG Agent — Semantic search in documents.
 # Domain: policies, manuals, business rules, semantic memory.
 
+import hashlib
+import json
 import os
+import re
+import unicodedata
 
 from dotenv import load_dotenv
-from langchain.agents import create_agent
 from langchain_core.tools import tool
-from langchain_ollama import ChatOllama
 from langchain_pinecone import PineconeEmbeddings, PineconeVectorStore
 
+from proyecto.config.models import modelo_de
+
 load_dotenv()
-
-SYSTEM_PROMPT = """
-Eres un especialista en normatividad: políticas, manuales, reglas de negocio
-y lineamientos internos.
-
-Usa la herramienta de búsqueda normativa siempre que la pregunta dependa de:
-- políticas o lineamientos
-- procedimientos y manuales
-- reglas de negocio
-- requisitos, restricciones o excepciones
-- responsables, plazos o vigencias
-
-Basa tus afirmaciones normativas únicamente en la evidencia recuperada.
-Si la evidencia es insuficiente, contradictoria o no autoriza lo consultado,
-dilo explícitamente. No inventes permisos ni requisitos.
-
-Cuando sea posible, menciona el nombre del archivo fuente que respalda
-la respuesta. Responde en el idioma de la consulta.
-"""
 
 
 class NormatividadRAGAgent:
     def __init__(self, k: int = 3):
         self.nombre = "normatividad_rag"
         self.descripcion = "Búsqueda semántica sobre documentación normativa (RAG)."
-        self.modelo = "llama3.1:latest"
+        self.modelo = modelo_de("normatividad_rag")
         self.modelo_embeddings = "llama-text-embed-v2"  # debe coincidir con el usado al indexar
         self.k = k
 
         # Los componentes pesados se crean al primer uso, para que importar
         # este módulo dentro de la arquitectura mayor no requiera Pinecone/Ollama.
         self._retriever = None
-        self._agente = None
-        self.herramientas = [self._crear_herramienta_busqueda()]
+        self._cache_evidencia: dict[str, dict] = {}
+        # Una sola recuperación por consulta: buscar_normatividad,
+        # buscar_evidencia y verificar_cita comparten estos fragmentos.
+        self._cache_consultas: dict[str, list[str]] = {}
+        self._tools = list(self._crear_herramientas_busqueda())
+        self.herramientas = [herramienta.name for herramienta in self._tools]
 
     def _get_retriever(self):
         if self._retriever is None:
@@ -57,64 +46,199 @@ class NormatividadRAGAgent:
             )
         return self._retriever
 
-    def _crear_herramienta_busqueda(self):
+    def _fragmento(self, doc, indice: int) -> dict:
+        fuente = doc.metadata.get("source", "desconocida")
+        pagina = doc.metadata.get("page")
+        fila = doc.metadata.get("row")
+        if isinstance(pagina, float) and pagina.is_integer():
+            pagina = int(pagina)
+        texto = str(doc.page_content or "")
+        semilla = f"{fuente}|{pagina}|{fila}|{indice}|{texto[:200]}"
+        cita_id = hashlib.sha256(semilla.encode("utf-8")).hexdigest()[:16]
+        fragmento = {
+            "cita_id": cita_id,
+            "fuente": fuente,
+            "pagina": pagina,
+            "fila": fila,
+            "texto": texto,
+        }
+        self._cache_evidencia[cita_id] = fragmento
+        return fragmento
+
+    def _recuperar(self, query: str) -> list[dict]:
+        clave = (query or "").strip()
+        if clave in self._cache_consultas:
+            return [
+                self._cache_evidencia[cita_id]
+                for cita_id in self._cache_consultas[clave]
+            ]
+        docs = self._get_retriever().invoke(query)
+        fragmentos = [
+            self._fragmento(doc, indice)
+            for indice, doc in enumerate(docs or [])
+        ]
+        self._cache_consultas[clave] = [
+            fragmento["cita_id"] for fragmento in fragmentos
+        ]
+        return fragmentos
+
+    def _formatear_fragmentos(self, fragmentos: list[dict]) -> str:
+        return "\n\n---\n\n".join(
+            f"FUENTE: {self._ubicacion(fragmento)}\n{fragmento['texto']}"
+            for fragmento in fragmentos
+        )
+
+    @staticmethod
+    def _ubicacion(fragmento: dict) -> str:
+        ubicacion = str(fragmento.get("fuente") or "desconocida")
+        pagina = fragmento.get("pagina")
+        fila = fragmento.get("fila")
+        if pagina is not None:
+            ubicacion += f", página {pagina}"
+        if fila is not None:
+            ubicacion += f", fila {fila}"
+        return ubicacion
+
+    @staticmethod
+    def _normalizar_cita(texto: str) -> str:
+        normalizado = unicodedata.normalize("NFKC", texto or "").casefold()
+        return re.sub(r"\s+", " ", normalizado).strip()
+
+    def _crear_herramientas_busqueda(self):
         @tool
         def buscar_normatividad(query: str) -> str:
-            """Busca en la documentación normativa: políticas, manuales, reglas de negocio y lineamientos."""
-
-            docs = self._get_retriever().invoke(query)
-
-            if not docs:
+            """Busca y devuelve evidencia normativa formateada; conserva compatibilidad."""
+            fragmentos = self._recuperar(query)
+            if not fragmentos:
                 return "No se encontró evidencia normativa relevante."
+            return self._formatear_fragmentos(fragmentos)
 
-            evidencia = []
-            for doc in docs:
-                fuente = doc.metadata.get("source", "desconocida")
-                pagina = doc.metadata.get("page")
-                fila = doc.metadata.get("row")
-
-                ubicacion = fuente
-                if pagina is not None:
-                    ubicacion += f", página {pagina}"
-                if fila is not None:
-                    ubicacion += f", fila {fila}"
-
-                evidencia.append(f"FUENTE: {ubicacion}\n{doc.page_content}")
-
-            return "\n\n---\n\n".join(evidencia)
-
-        return buscar_normatividad
-
-    def _get_agente(self):
-        if self._agente is None:
-            llm = ChatOllama(model=self.modelo, temperature=0)
-            self._agente = create_agent(
-                model=llm,
-                tools=self.herramientas,
-                system_prompt=SYSTEM_PROMPT,
+        @tool
+        def buscar_evidencia(query: str) -> str:
+            """Recupera fragmentos crudos con fuente, página/fila y cita_id, sin sintetizar."""
+            fragmentos = self._recuperar(query)
+            return json.dumps(
+                {
+                    "consulta": query,
+                    "total": len(fragmentos),
+                    "fragmentos": fragmentos,
+                    "nota": (
+                        "La evidencia es la única fuente válida; usa cita_id y "
+                        "verificar_cita antes de afirmar una cita textual."
+                    ),
+                },
+                ensure_ascii=False,
+                default=str,
             )
-        return self._agente
+
+        @tool
+        def verificar_cita(cita: str, query: str = "", cita_id: str = "") -> str:
+            """Verifica que una cita textual aparezca en la evidencia recuperada.
+
+            Args:
+                cita: Texto que se quiere verificar.
+                query: Consulta original para recuperar la misma evidencia.
+                cita_id: Identificador devuelto por buscar_evidencia.
+            """
+            consulta_usada = query or "(cache)"
+            if cita_id:
+                # La verificación no vuelve a consultar el índice: solo puede
+                # validar evidencia que ya fue recuperada en esta sesión.
+                fragmento = self._cache_evidencia.get(cita_id)
+                if fragmento is None:
+                    return json.dumps(
+                        {
+                            "existe": False,
+                            "coincide": False,
+                            "consulta_usada": consulta_usada,
+                            "cita_id": cita_id,
+                            "fragmentos_revisados": 0,
+                            "error": "cita_id_no_en_cache",
+                            "nota": (
+                                "El cita_id no corresponde a evidencia recuperada "
+                                "en esta sesión. Usa buscar_evidencia y verifica "
+                                "contra el cita_id devuelto."
+                            ),
+                        },
+                        ensure_ascii=False,
+                        default=str,
+                    )
+                fragmentos = [fragmento]
+            elif query and query.strip() in self._cache_consultas:
+                # Reutiliza exactamente la recuperación ya hecha por
+                # buscar_normatividad o buscar_evidencia.
+                fragmentos = [
+                    self._cache_evidencia[cita]
+                    for cita in self._cache_consultas[query.strip()]
+                ]
+            elif query:
+                fragmentos = self._recuperar(query)
+            else:
+                fragmentos = []
+
+            buscada = self._normalizar_cita(cita)
+            for fragmento in fragmentos:
+                if buscada and buscada in self._normalizar_cita(fragmento["texto"]):
+                    return json.dumps(
+                        {
+                            "existe": True,
+                            "coincide": True,
+                            "consulta_usada": consulta_usada,
+                            **fragmento,
+                        },
+                        ensure_ascii=False,
+                        default=str,
+                    )
+
+            return json.dumps(
+                {
+                    "existe": False,
+                    "coincide": False,
+                    "consulta_usada": consulta_usada,
+                    "cita": cita,
+                    "fragmentos_revisados": len(fragmentos),
+                    "nota": (
+                        "La cita no aparece literalmente en la evidencia "
+                        "recuperada. Reformula la búsqueda o no la presentes "
+                        "como cita textual."
+                    ),
+                },
+                ensure_ascii=False,
+                default=str,
+            )
+
+        return buscar_normatividad, buscar_evidencia, verificar_cita
 
     # Interfaz pública
 
-    @staticmethod
-    def _extraer_texto(resultado) -> str:
-        mensaje = resultado["messages"][-1]
-
-        if isinstance(mensaje.content, str):
-            return mensaje.content
-
-        return "".join(
-            bloque.get("text", "")
-            for bloque in mensaje.content
-            if isinstance(bloque, dict) and bloque.get("type") == "text"
-        )
-
     def procesar(self, consulta: str) -> str:
-        resultado = self._get_agente().invoke(
-            {"messages": [{"role": "user", "content": consulta}]}
-        )
-        return self._extraer_texto(resultado)
+        """Recupera evidencia y la devuelve con fuentes, sin inventar una síntesis."""
+        from queue import Queue, Empty
+        from threading import Thread
+        import socket
+        from proyecto.agents.local_documents import retrieve
+        result = Queue()
+        def remote():
+            try:
+                with socket.create_connection(('api.pinecone.io',443),timeout=3):
+                    pass
+                result.put(('pinecone', self._tools[0].invoke({'query': consulta})))
+            except Exception as error:
+                result.put(('error', type(error).__name__))
+        Thread(target=remote,daemon=True).start()
+        try:
+            mode, evidence = result.get(timeout=12)
+        except Empty:
+            mode, evidence = 'error', 'Tiempo de recuperacion remota agotado'
+        if mode == 'pinecone' and evidence and not evidence.startswith('No se encontr'):
+            return 'Evidencia documental recuperada mediante Pinecone:\n\n' + evidence
+        docs = retrieve(consulta,self.k)
+        if not docs:
+            return 'No se encontro evidencia documental suficiente. Recuperacion remota no disponible; no se inventa una respuesta.'
+        answer = 'Respuesta basada en fragmentos literales del corpus local (Pinecone no disponible).\n\n'
+        for doc in docs:
+            answer += f"FUENTE: {doc['source']}, pagina {doc['page']}\n\n> {doc['text']}\n\n"
+        return answer.strip()
 
     def __repr__(self) -> str:
         return f"<Agente {self.nombre} | modelo: {self.modelo}>"
