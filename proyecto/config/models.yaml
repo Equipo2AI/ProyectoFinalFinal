@@ -1,30 +1,27 @@
-# Modelos por agente. Es la única fuente efectiva: el código lee este archivo
-# al inicializar cada agente y falla si falta una entrada.
-# DOCUMENT_INTELLIGENCE_MODEL puede sobrescribir el modelo de visión.
-# DOCUMENT_PDF_MODEL puede sobrescribir el modelo de OCR de PDF.
+# Agent model configuration.
+# Change here the model for each agent without touching Python code.
 
 agents:
   orchestrator:
     provider: ollama
-    model: "mimo-v2.6"
+    model: "llama3.1:latest"
 
   data_steward:
     provider: ollama
-    model: "qwen2.5:7b-instruct"
+    model: "llama3.1:latest"
 
   normatividad_rag:
     provider: ollama
-    model: "llama3.1:latest"
+    model: "qwen2.5:7b-instruct"
 
   data_analyst:
     provider: ollama
-    model: "mimo-v2.6"
+    model: "llama3.1:latest"
 
   document_intelligence:
     provider: ollama
-    model: "qwen2.5vl:7b"
+    model: "llama3.1:latest"
 
-# OCR de PDF: no es un agente, pero comparte la misma configuración de modelos.
-document_pdf:
-  provider: ollama
-  model: "qwen2.5vl:3b"
+  compliance:
+    provider: ollama
+    model: "llama3.1:latest"

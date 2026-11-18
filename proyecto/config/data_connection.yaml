@@ -1,6 +1,9 @@
 # Data connection configuration.
-# `path` is relative to the `proyecto/` directory. DATABASE_URL overrides it.
+# Change here the data source (CSV, SQLite, PostgreSQL, etc.).
 
 data_source:
-  type: "sqlite"
-  path: "./bd/banamex.db"
+  type: "csv"
+  path: "./data/clientes.csv"
+
+metadata:
+  path: "./data/bank_metadata_simple.json"

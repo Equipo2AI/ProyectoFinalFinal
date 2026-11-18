@@ -1,33 +1,29 @@
-"""Servidor MCP del Data Steward sobre la base sintética."""
 
 from fastmcp import FastMCP
 
 from proyecto.agents.data_steward_agent import (
-    evaluar_calidad as evaluar_calidad_tool,
-    inspeccionar_dataset as inspeccionar_dataset_tool,
-    validar_calidad_datos as validar_calidad_datos_tool,
+    inspect_customer_dataset,
+    detect_customer_data_quality_issues,
 )
 
+# Creamos el servidor MCP
 mcp = FastMCP("Data Steward MCP")
 
 
+# Primera herramienta
 @mcp.tool()
-def inspeccionar_dataset(tabla: str = "") -> str:
-    """Consulta tablas, columnas, tipos y faltantes sin revelar registros."""
-    return inspeccionar_dataset_tool.invoke({"tabla": tabla})
+def inspeccionar_dataset() -> str:
+    """Consulta la estructura del CSV sin revelar registros personales."""
+    return inspect_customer_dataset.invoke({})
 
 
+# Segunda herramienta
 @mcp.tool()
-def validar_calidad_datos(tabla: str = "") -> str:
+def validar_calidad_datos() -> str:
     """Detecta faltantes, duplicados e identificadores repetidos."""
-    return validar_calidad_datos_tool.invoke({"tabla": tabla})
+    return detect_customer_data_quality_issues.invoke({})
 
 
-@mcp.tool()
-def evaluar_calidad(tabla: str = "") -> str:
-    """Compara la tabla contra los hallazgos esperados declarados."""
-    return evaluar_calidad_tool.invoke({"tabla": tabla})
-
-
+# Iniciamos el servidor local
 if __name__ == "__main__":
     mcp.run()

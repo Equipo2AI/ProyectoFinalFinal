@@ -2,93 +2,63 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from proyecto.config.models import modelo_de
-
 logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _CONFIG_PATH = _PROJECT_ROOT / "config" / "memory.yaml"
+_MEMORY_DIR = _PROJECT_ROOT / "data" / "memory"
 
 
-class ConfiguracionMemoriaError(RuntimeError):
-    """La configuración de memoria no existe o no cumple el contrato."""
-
-
-def _requerido(data: dict, clave: str):
-    if clave not in data:
-        raise ConfiguracionMemoriaError(
-            f"Falta '{clave}' en {_CONFIG_PATH.name}."
-        )
-    return data[clave]
-
-
-def _as_bool(value: object) -> bool:
+def _as_bool(value: object, default: bool = False) -> bool:
     if isinstance(value, bool):
         return value
     if isinstance(value, str):
-        normalizado = value.strip().lower()
-        if normalizado in {"1", "true", "si", "sí", "yes", "on"}:
-            return True
-        if normalizado in {"0", "false", "no", "off"}:
-            return False
-    raise ConfiguracionMemoriaError(
-        f"'enabled' debe ser booleano en {_CONFIG_PATH.name}."
-    )
+        return value.strip().lower() in {"1", "true", "si", "sí", "yes", "on"}
+    return default
 
 
-def _as_int(value: object, clave: str, minimum: int) -> int:
+def _as_int(value: object, default: int, minimum: int = 1) -> int:
     try:
         return max(minimum, int(value))
-    except (TypeError, ValueError) as error:
-        raise ConfiguracionMemoriaError(
-            f"'{clave}' debe ser un entero en {_CONFIG_PATH.name}."
-        ) from error
+    except (TypeError, ValueError):
+        return default
 
 
 @dataclass(frozen=True)
 class MemoryConfig:
-    enabled: bool
-    user: str
-    max_messages: int
-    update_every: int
-    max_chars: int
-    directory: Path
+    enabled: bool = False
+    user: str = "demo"
+    max_messages: int = 8
+    update_every: int = 4
+    max_chars: int = 1200
+    directory: Path = field(default_factory=lambda: _MEMORY_DIR)
 
 
 def config_from_file(path: Path | None = None) -> MemoryConfig:
     config_path = path or _CONFIG_PATH
     try:
         data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-    except (OSError, yaml.YAMLError) as error:
-        raise ConfiguracionMemoriaError(
-            f"No se pudo leer la configuración de memoria: {config_path}"
-        ) from error
+    except (FileNotFoundError, OSError, yaml.YAMLError):
+        data = {}
     if not isinstance(data, dict):
-        raise ConfiguracionMemoriaError(
-            f"La configuración de memoria debe ser un mapa: {config_path}"
-        )
+        data = {}
 
-    user = str(_requerido(data, "user")).strip()
-    if not user:
-        raise ConfiguracionMemoriaError(
-            f"'user' no puede estar vacío en {config_path.name}."
-        )
-    directory = Path(str(_requerido(data, "directory"))).expanduser()
+    directory = Path(str(data.get("directory") or "data/memory")).expanduser()
     if not directory.is_absolute():
         directory = _PROJECT_ROOT / directory
 
     return MemoryConfig(
-        enabled=_as_bool(_requerido(data, "enabled")),
-        user=user,
-        max_messages=_as_int(_requerido(data, "max_messages"), "max_messages", 2),
-        update_every=_as_int(_requerido(data, "update_every"), "update_every", 1),
-        max_chars=_as_int(_requerido(data, "max_chars"), "max_chars", 200),
+        enabled=_as_bool(data.get("enabled")),
+        user=str(data.get("user") or "demo").strip() or "demo",
+        max_messages=_as_int(data.get("max_messages"), 8, 2),
+        update_every=_as_int(data.get("update_every"), 4, 1),
+        max_chars=_as_int(data.get("max_chars"), 1200, 200),
         directory=directory,
     )
 
@@ -96,10 +66,10 @@ def config_from_file(path: Path | None = None) -> MemoryConfig:
 class LongTermMemory:
     def __init__(
         self,
-        model: str | None = None,
+        model: str = "gemma4:e4b",
         config: MemoryConfig | None = None,
     ) -> None:
-        self.model = model or modelo_de("orchestrator")
+        self.model = model
         self.config = config or config_from_file()
         self._turns = 0
         self._llm = None
