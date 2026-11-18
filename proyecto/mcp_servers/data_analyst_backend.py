@@ -68,7 +68,9 @@ Proceso:
 9. Antes de cerrar, usa verificar_cifras si quieres contrastar tu redacción
    contra los datos. No publiques cifras que no aparezcan en la evidencia.
 10. Si la herramienta devuelve un error, corrige la consulta y reintenta
-    (máximo 3 intentos).
+    (máximo 3 intentos). Si el error es `alcance_corregible`, agrega el
+    filtro `num_cte = <cliente>` o explica que el agregado global no está
+    disponible; no respondas "Acceso denegado".
 11. En cuanto ejecutar_consulta o consultar_metrica devuelva filas, responde
     con ese resultado. No sigas explorando otras dimensiones, métricas o
     tablas; si el resultado no responde exactamente, explica la limitación.
@@ -166,6 +168,71 @@ def nombre_buscado(consulta: str) -> str | None:
 def _normalizar(texto: str) -> str:
     normalizado = unicodedata.normalize("NFKD", texto.casefold())
     return "".join(c for c in normalizado if not unicodedata.combining(c))
+
+
+_TERMINOS_CAMPOS_SALARIALES = (
+    ("sueldo", ("sueldo", "sueldos")),
+    ("salario", ("salario", "salarios")),
+    ("ingreso", ("ingreso", "ingresos")),
+    ("nomina", ("nomina", "nominas")),
+)
+
+
+def _campos_salariales_mencionados(consulta: str) -> list[str]:
+    """Detecta campos que la base sintética no tiene, sin esperar al LLM."""
+    texto = _normalizar(consulta)
+    return [
+        campo
+        for campo, variantes in _TERMINOS_CAMPOS_SALARIALES
+        if any(
+            re.search(rf"\b{re.escape(variante)}\b", texto)
+            for variante in variantes
+        )
+    ]
+
+
+def _columnas_esquema(engine) -> set[str]:
+    """Nombres normalizados de todas las columnas disponibles."""
+    inspector = inspect(engine)
+    columnas: set[str] = set()
+    for tabla in [*inspector.get_table_names(), *inspector.get_view_names()]:
+        for columna in inspector.get_columns(tabla):
+            columnas.add(_normalizar(str(columna["name"])))
+    return columnas
+
+
+def _respuesta_campos_inexistentes(
+    campos: list[str], columnas: set[str]
+) -> str | None:
+    """Explica que el campo pedido no existe y ofrece los proxies reales."""
+    if not campos:
+        return None
+    existentes = [
+        campo
+        for campo in campos
+        if any(campo in columna for columna in columnas)
+    ]
+    if existentes:
+        return None
+
+    proxies = [
+        proxy
+        for proxy in ("saldo_mes", "saldo_txn", "importe_firmado")
+        if proxy in columnas
+    ]
+    proxy_texto = ""
+    if proxies:
+        proxy_texto = (
+            " Puedo usar "
+            + ", ".join(f"`{proxy}`" for proxy in proxies)
+            + " para saldos o importes de movimientos, pero no representan "
+            "un sueldo."
+        )
+    return (
+        f"La base sintética no tiene columnas de {', '.join(campos)}, así que "
+        "no puedo calcular esa métrica ni presentarla como sueldo."
+        f"{proxy_texto} Si buscas otra métrica, indícala."
+    )
 
 
 def _sqlite_solo_lectura(conexion_dbapi, _registro) -> None:
@@ -269,6 +336,17 @@ class DataAnalystSQLBackend:
         customers = user['customers']
         return {'rol': 'superusuario' if user['role'] == 'auditor' else 'usuario',
                 'cliente_id': customers[0] if user['role'] == 'normal' and len(customers) == 1 else None}
+
+    def _respuesta_campo_inexistente(self, consulta: str) -> str | None:
+        """Evita que el LLM convierta salarios en saldos por deriva semántica."""
+        campos = _campos_salariales_mencionados(consulta)
+        if not campos:
+            return None
+        try:
+            columnas = _columnas_esquema(self._get_engine())
+        except Exception:  # noqa: BLE001 - sin catálogo se conserva el flujo normal
+            return None
+        return _respuesta_campos_inexistentes(campos, columnas)
 
     @staticmethod
     def _auditar(action: str, allowed: bool, sql: str | None = None) -> None:
@@ -429,6 +507,9 @@ class DataAnalystSQLBackend:
         sesion = self._perfil_actual()
         rol, cliente_id = sesion['rol'], sesion['cliente_id']
         audit('analizar_datos', True, user['subject'])
+        respuesta_campo = self._respuesta_campo_inexistente(consulta)
+        if respuesta_campo:
+            return respuesta_campo
         if nombre:
             # La relacion num_cte/nombre debe provenir de la tabla de personas
             # dentro del alcance autenticado. No consultar ni mostrar perfiles.

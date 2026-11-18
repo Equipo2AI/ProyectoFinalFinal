@@ -122,6 +122,10 @@ _RE_BANCARIA = re.compile(
     r"perfil|rfc|promotores|sucursales)\b",
     re.IGNORECASE,
 )
+# Banamex/Citibanamex es una fuente documental del corpus. Las preguntas
+# informativas sobre la marca van a RAG; las consultas analíticas siguen su
+# ruta de datos para no perder filtros, saldos o conteos.
+_RE_BANAMEX = re.compile(r"\b(?:banamex|citibanamex)\b", re.IGNORECASE)
 # Fuentes que compiten con el documento activo. Si el usuario las pide de
 # forma explícita, se respeta el especialista; si no, manda el documento.
 _RE_OTRA_FUENTE = re.compile(
@@ -390,18 +394,20 @@ def planear_rutas(
     tabla = _tabla_mencionada(consulta)
     metadata = bool(_RE_METADATA.search(texto))
     analitica = bool(_RE_ANALITICA.search(texto))
+    bancaria = bool(_RE_BANCARIA.search(texto))
+    banamex = bool(_RE_BANAMEX.search(texto))
     normativa = _es_consulta_normativa(consulta) or bool(re.search(r'\b(?:portal|terminos|historial crediticio)\b', texto))
     inventario_sql = _es_inventario_sql(texto)
 
-    if normativa:
+    # Banamex/Citibanamex es una fuente del corpus normativo. Las preguntas
+    # informativas sobre la marca se resuelven con RAG; si la consulta también
+    # pide datos, se conserva la ruta analítica para no perder filtros.
+    if normativa or (banamex and not (analitica or bancaria)):
         return ['normatividad_rag']
-    bancaria = bool(_RE_BANCARIA.search(texto))
     dataset = bool(tabla or re.search(r'\b(?:csv|archivo|dataset|pii|calidad|faltantes|nulos|duplicados|columnas)\b', texto))
     if bancaria and not dataset:
         return ['data_analyst']
     rutas: list[str] = []
-    if normativa:
-        rutas.append("normatividad_rag")
     if metadata and not inventario_sql:
         rutas.append("data_steward")
 
@@ -478,14 +484,16 @@ def _pistas_plan(
     """Señales léxicas para el planificador; no son la decisión final."""
     texto = _normalizar(consulta or "")
     tabla = _tabla_mencionada(consulta)
-    normativa = bool(
-        _es_consulta_normativa(consulta)
-        or re.search(r"\b(?:portal|terminos|historial crediticio)\b", texto)
-    )
     metadata = bool(_RE_METADATA.search(texto) or tabla)
     analitica = bool(_RE_ANALITICA.search(texto))
     analitica_fuerte = bool(_RE_ANALITICA_FUERTE.search(texto))
     bancaria = bool(_RE_BANCARIA.search(texto))
+    banamex = bool(_RE_BANAMEX.search(texto))
+    normativa = bool(
+        _es_consulta_normativa(consulta)
+        or re.search(r"\b(?:portal|terminos|historial crediticio)\b", texto)
+        or (banamex and not (analitica or bancaria))
+    )
     documento = bool(
         imagen_pendiente
         or _tiene_ruta_imagen(consulta)
@@ -510,6 +518,7 @@ def _pistas_plan(
         "analitica": analitica,
         "analitica_fuerte": analitica_fuerte,
         "bancaria": bancaria,
+        "banamex": banamex,
         "normativa": normativa,
         "documento": documento,
         "dominios": list(dict.fromkeys(dominios)),
@@ -1077,8 +1086,26 @@ def _nodo_data_analyst(estado: EstadoGrafo) -> dict:
     }
 
 
+def _subpregunta_normativa(estado: EstadoGrafo) -> str:
+    """Usa la subpregunta normativa, no la consulta mixta completa.
+
+    En una consulta como "¿qué dice la ley X y cuántos clientes hay?", pasar
+    el texto completo al RAG contamina la recuperación con términos
+    analíticos. El planner ya separó las subpreguntas; aquí se reutilizan.
+    """
+    subpreguntas = [
+        str(pregunta).strip()
+        for pregunta in (estado.get("subpreguntas") or [])
+        if str(pregunta).strip()
+    ]
+    for subpregunta in subpreguntas:
+        if _es_consulta_normativa(subpregunta):
+            return subpregunta
+    return str(estado.get("consulta") or "")
+
+
 def _nodo_normatividad(estado: EstadoGrafo) -> dict:
-    argumentos = {"query": estado.get("consulta") or ""}
+    argumentos = {"query": _subpregunta_normativa(estado)}
     salida, traza, estado_llamada = _ejecutar_mcp(
         "normatividad_rag_server",
         "buscar_normatividad",
@@ -1323,6 +1350,8 @@ Reglas:
 - No inventes cifras, leyes, tablas, fuentes ni datos que no estén en los
   resultados.
 - Conserva las cifras, referencias y fuentes que aportaron los especialistas.
+- Si hay evidencia normativa, conserva los fragmentos literales y sus fuentes;
+  no los sustituyas por un resumen sin fuente.
 - Si un especialista falló, dilo de forma breve; no presentes su error como
   evidencia.
 - No repitas encabezados por especialista ni pegues bloques completos si una
@@ -1408,6 +1437,73 @@ def _sintetizar_cooperativo(
         return None
 
 
+def _bloques_evidencia_normativa(respuesta: str) -> list[str]:
+    """Extrae los bloques ``FUENTE: ...`` de una respuesta del RAG.
+
+    El texto de cada fragmento se conserva; solo se retira el score de la
+    línea de fuente porque ese dato pertenece a la traza, no a la respuesta.
+    """
+    bloques: list[str] = []
+    for parte in re.split(r"\n\s*---\s*\n", respuesta or ""):
+        if "FUENTE:" not in parte:
+            continue
+        bloque = parte[parte.find("FUENTE:") :].strip()
+        bloque = re.sub(
+            r"(?m)^(\s*FUENTE:\s*.+?)\s*\(score[^)]*\)\s*$",
+            r"\1",
+            bloque,
+        )
+        if bloque:
+            bloques.append(bloque)
+    return bloques
+
+
+def _agregar_evidencia_normativa(
+    respuesta: str, resultados: dict[str, dict]
+) -> str:
+    """Garantiza que la respuesta final muestre la evidencia del RAG.
+
+    La síntesis multiagente puede resumir y perder los fragmentos. Esta
+    función los agrega de forma determinista; si la respuesta ya es la salida
+    directa del RAG, no la duplica.
+    """
+    texto = str(respuesta or "").strip()
+    resultado = (resultados or {}).get("normatividad_rag") or {}
+    if not resultado or resultado.get("estado") == "error":
+        return texto
+
+    evidencia = str(resultado.get("respuesta") or "").strip()
+    if not evidencia:
+        return texto
+
+    if "## Evidencia normativa recuperada" in texto:
+        return texto
+    if texto.startswith(
+        (
+            "Evidencia documental recuperada",
+            "Respuesta basada en fragmentos literales del corpus local",
+            "FUENTE:",
+        )
+    ):
+        return texto
+
+    bloques = _bloques_evidencia_normativa(evidencia)
+    if bloques:
+        return (
+            texto.rstrip()
+            + "\n\n## Evidencia normativa recuperada\n\n"
+            + "\n\n".join(bloques)
+        ).strip()
+
+    if evidencia.startswith("Sin evidencia") and "Sin evidencia" not in texto:
+        return (
+            texto.rstrip()
+            + "\n\n## Evidencia normativa recuperada\n\n"
+            "No se recuperó evidencia suficiente en el corpus."
+        ).strip()
+    return texto
+
+
 def _nodo_sintetizar(estado: EstadoGrafo) -> dict:
     plan = list(estado.get("plan") or [])
     resultados = estado.get("resultados") or {}
@@ -1417,18 +1513,33 @@ def _nodo_sintetizar(estado: EstadoGrafo) -> dict:
         if _RE_KYC_AML.search(consulta) and not estado.get("contexto_documentos"):
             return {"respuesta": RESPUESTA_FUERA_DE_ALCANCE, "redactada": True}
         # La respuesta directa ya se genera con el estilo del perfil.
-        return {"respuesta": _respuesta_directa(estado), "redactada": True}
+        return {
+            "respuesta": _agregar_evidencia_normativa(
+                _respuesta_directa(estado), resultados
+            ),
+            "redactada": True,
+        }
 
     if plan == ["document_intelligence"]:
         resultado = resultados.get("document_intelligence") or {}
         if resultado.get("estado") != "error" and resultado.get("respuesta"):
-            return {"respuesta": _respuesta_documento(estado, resultado)}
+            return {
+                "respuesta": _agregar_evidencia_normativa(
+                    _respuesta_documento(estado, resultado), resultados
+                )
+            }
 
     if len(plan) > 1:
         respuesta_cooperativa = _sintetizar_cooperativo(estado, plan, resultados)
         if respuesta_cooperativa:
-            # La síntesis cooperativa ya usa el estilo del perfil.
-            return {"respuesta": respuesta_cooperativa, "redactada": True}
+            # La síntesis cooperativa ya usa el estilo del perfil; la evidencia
+            # normativa se agrega de forma determinista.
+            return {
+                "respuesta": _agregar_evidencia_normativa(
+                    respuesta_cooperativa, resultados
+                ),
+                "redactada": True,
+            }
 
     partes: list[str] = []
     for agente in plan:
@@ -1458,7 +1569,9 @@ def _nodo_sintetizar(estado: EstadoGrafo) -> dict:
             "El grafo no obtuvo una respuesta de los especialistas. "
             "Revisa la traza para ver el error."
         )
-    return {"respuesta": respuesta}
+    return {
+        "respuesta": _agregar_evidencia_normativa(respuesta, resultados)
+    }
 
 
 def _nodo_redactar(estado: EstadoGrafo) -> dict:
@@ -1477,12 +1590,18 @@ def _nodo_redactar(estado: EstadoGrafo) -> dict:
 
     trazas = list(estado.get("trazas") or [])
     resultados = estado.get("resultados") or {}
+
+    def _con_evidencia(texto: str) -> str:
+        # La redacción puede resumir y perder las fuentes; la evidencia
+        # aceptada se vuelve a anexar de forma determinista.
+        return _agregar_evidencia_normativa(texto, resultados)
+
     if estado.get("redactada") or not debe_redactar(respuesta, trazas, resultados):
         if perfil.mostrar_sql or any(
             str(t.get("name")) in HERRAMIENTAS_LITERALES for t in trazas
         ):
             return {}
-        return {"respuesta": quitar_sql(respuesta) or respuesta}
+        return {"respuesta": _con_evidencia(quitar_sql(respuesta) or respuesta)}
 
     nueva = redactar_respuesta(
         estado.get("consulta") or "",
@@ -1491,7 +1610,7 @@ def _nodo_redactar(estado: EstadoGrafo) -> dict:
         resultados,
         estado.get("modelo") or modelo_de("orchestrator"),
     )
-    return {"respuesta": nueva or respuesta, "redactada": True}
+    return {"respuesta": _con_evidencia(nueva or respuesta), "redactada": True}
 
 
 _GRAFO = None
