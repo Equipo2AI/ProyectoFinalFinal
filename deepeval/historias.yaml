@@ -1,0 +1,117 @@
+# Catálogo de historias de usuario y criterios de aceptación (KEI GPT).
+#
+# La suite valida que cada `cubre:` de los casos exista aquí y genera la matriz
+# de cobertura en resultados/rendimiento_<fecha>.md. `pruebas_deterministas`
+# indica qué criterios también verifica `tests/historias/` sin LLM.
+
+historias:
+  US-01:
+    titulo: Configurar identidades y permisos
+    prioridad: P0
+    criterios:
+      CA-01: El operador registra/actualiza rol, cliente y permisos.
+      CA-02: Una consulta usa el perfil de la sesión autenticada.
+      CA-03: Sin el permiso requerido, se rechaza e informa que no está autorizada.
+      CA-04: Pedir cambio de rol por chat conserva el rol del operador.
+    pruebas_deterministas: [CA-01, CA-02, CA-03, CA-04]
+
+  US-02:
+    titulo: Consultar metadatos y calidad sin exponer registros
+    prioridad: P0
+    criterios:
+      CA-01: Faltantes, duplicados o IDs repetidos devuelven cantidades y columnas.
+      CA-02: La estructura devuelve columnas, tipos y metadatos.
+      CA-03: Los hallazgos se comunican sin listar filas ni valores personales.
+      CA-04: Tabla o métrica inexistente se declara sin inventar.
+    pruebas_deterministas: [CA-01, CA-02, CA-03, CA-04]
+
+  US-03:
+    titulo: Responder preguntas cuantitativas con SQL de solo lectura
+    prioridad: P0
+    criterios:
+      CA-01: Usa la métrica certificada e informa periodo y filtros.
+      CA-02: El SQL se valida como solo lectura antes de ejecutarse.
+      CA-03: Escrituras se bloquean y el resultado se limita.
+      CA-04: PII solo con permiso; si no, se deniega o redacta.
+      CA-05: Sin datos suficientes, declara la limitación sin fabricar cifras.
+    pruebas_deterministas: [CA-01, CA-02, CA-03, CA-04]
+
+  US-04:
+    titulo: Visualizar resultados analíticos
+    prioridad: P1
+    criterios:
+      CA-01: La gráfica usa los datos de la consulta validada.
+      CA-02: La gráfica muestra título, ejes/etiquetas y unidades.
+      CA-03: Si no se puede graficar, conserva la tabla y lo explica.
+      CA-04: La traza relaciona gráfica, consulta y resultados.
+    pruebas_deterministas: [CA-01, CA-02, CA-03]
+
+  US-05:
+    titulo: Responder sobre normativa con evidencia y referencias
+    prioridad: P0
+    criterios:
+      CA-01: Incluye documento y página/ubicación.
+      CA-02: Sin evidencia suficiente lo declara y no inventa.
+      CA-03: Las citas se verifican contra fragmentos recuperados.
+      CA-04: Sin índice remoto usa el modo local y no atribuye resultados remotos.
+    pruebas_deterministas: [CA-02, CA-03, CA-04]
+
+  US-06:
+    titulo: Extraer texto o describir una imagen adjunta
+    prioridad: P1
+    criterios:
+      CA-01: OCR de una imagen admitida de hasta 10 MB.
+      CA-02: Describe el contenido visible sin presentar inferencias como hechos.
+      CA-03: Formato no admitido, límite excedido o fallo del modelo se informan.
+      CA-04: Sin operación clara, pide aclaración.
+    pruebas_deterministas: [CA-03, CA-04]
+
+  US-07:
+    titulo: Convertir documentos a Markdown y consultar su contenido
+    prioridad: P1
+    criterios:
+      CA-01: PDF/DOCX/XLSX/PPTX/CSV/HTML/texto de hasta 25 MB se convierte.
+      CA-02: Resumen o dato basado en el contenido extraído.
+      CA-03: PDF escaneado sin capa de texto se informa (OCR).
+      CA-04: Límite, formato o error se comunica sin inventar.
+    pruebas_deterministas: [CA-01, CA-04]
+
+  US-08:
+    titulo: Hacer preguntas de seguimiento sobre el archivo
+    prioridad: P1
+    criterios:
+      CA-01: Responde con el texto extraído del archivo de la sesión.
+      CA-02: Ante una pregunta ambigua, pide aclaración.
+      CA-03: Al limpiar la conversación se descarta el contexto documental.
+      CA-04: El contexto no se reutiliza para otra identidad.
+    pruebas_deterministas: [CA-03, CA-04]
+
+  US-09:
+    titulo: Inspeccionar cómo se generó una respuesta
+    prioridad: P0
+    criterios:
+      CA-01: La traza identifica especialista/herramienta y estado.
+      CA-02: Se puede inspeccionar el SQL y resultados, sujeto a permisos.
+      CA-03: Se muestran las referencias de la evidencia normativa.
+      CA-04: Turnos autenticados sensibles no se envían a LangSmith.
+    pruebas_deterministas: [CA-01, CA-02, CA-03, CA-04]
+
+  US-10:
+    titulo: Enrutar cada consulta al especialista correcto
+    prioridad: P1
+    criterios:
+      CA-01: Calidad, SQL, normativa o archivo van al especialista correcto.
+      CA-02: Consultas combinadas usan varios especialistas o piden aclaración.
+      CA-03: Si falla la ruta principal y el hub está habilitado, se usa y se reporta.
+      CA-04: Si falla un componente externo opcional, no afirma haber respondido con él.
+    pruebas_deterministas: [CA-01, CA-04]
+
+  US-11:
+    titulo: Usar el sistema como prototipo con datos sintéticos
+    prioridad: P0
+    criterios:
+      CA-01: La interfaz o documentación indica prototipo local con datos sintéticos.
+      CA-02: No afirma que los datos sean reales de clientes o de Banamex.
+      CA-03: Se documenta el uso de componentes remotos y los datos que reciben.
+      CA-04: No ejecuta transacciones ni modifica datos del negocio.
+    pruebas_deterministas: [CA-01, CA-03, CA-04]

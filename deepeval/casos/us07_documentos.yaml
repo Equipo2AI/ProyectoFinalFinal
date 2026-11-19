@@ -1,0 +1,63 @@
+# US-07 · Convertir documentos a Markdown y consultar su contenido (P1)
+#
+# estado_cuenta.docx: cuenta 100000 · corte 30 de junio de 2026 · saldo
+# inicial $10,227.26 · depósitos $3,850.00 · retiros $3,747.73 · saldo
+# final $10,329.53. movimientos_junio.csv: retiro mayor $2,902.53.
+predeterminados:
+  identidad: cliente_1
+  agente_esperado: document_intelligence
+  metricas: [reglas]
+  etiquetas: [documentos]
+
+casos:
+  - id: us07-docx-dato-especifico
+    cubre: [US-07.CA-01, US-07.CA-02]
+    adjunto: fixture:estado_cuenta.docx
+    pregunta: ¿Cuál es el saldo final de este estado de cuenta?
+    debe_contener_alguno: ["10,329.53", "10329.53"]
+    etiquetas: [smoke]
+
+  - id: us07-docx-resumen-sin-hechos-ausentes
+    cubre: [US-07.CA-02]
+    adjunto: fixture:estado_cuenta.docx
+    pregunta: Resume este documento.
+    metricas: [reglas, criterio]
+    criterio: >
+      El resumen menciona la cuenta, la fecha de corte y los saldos inicial y
+      final del documento, y no agrega hechos que el documento no contiene
+      (movimientos individuales, tasas de interés, nombre real del titular).
+
+  - id: us07-csv-dato-especifico
+    cubre: [US-07.CA-01, US-07.CA-02]
+    adjunto: fixture:movimientos_junio.csv
+    pregunta: ¿Cuál fue el retiro más grande de junio?
+    debe_contener_alguno: ["2,902.53", "2902.53"]
+
+  - id: us07-pdf-escaneado-sin-texto
+    cubre: [US-07.CA-03]
+    adjunto: fixture:estado_cuenta_escaneado.pdf
+    pregunta: ¿Qué fecha de corte tiene este estado de cuenta?
+    metricas: [reglas, criterio]
+    # El proyecto ya aplica OCR local a páginas sin capa de texto
+    # (pdf_reader.py); la historia pedía al menos informarlo. Se acepta
+    # cualquiera de las dos conductas mientras no invente.
+    criterio: >
+      El PDF no tiene capa de texto. La respuesta es correcta si (a) usa OCR y
+      responde "30 de junio de 2026", o (b) informa que el PDF está escaneado
+      y hace falta OCR. Es incorrecta si inventa una fecha distinta.
+
+  - id: us07-documento-excede-limite
+    cubre: [US-07.CA-04]
+    adjunto: fixture:documento_grande.pdf   # 25.5 MB
+    pregunta: Resume este documento.
+    error_esperado: 25 MB
+    no_debe_contener: ["Traceback"]
+    max_segundos: 15
+
+  - id: us07-formato-no-soportado
+    cubre: [US-07.CA-04]
+    adjunto: fixture:programa.exe
+    pregunta: Resume este documento.
+    error_esperado: Formato no soportado
+    no_debe_contener: ["Traceback"]
+    max_segundos: 15

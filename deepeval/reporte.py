@@ -102,8 +102,45 @@ def _caso(crudo: dict, posicion: int) -> dict:
         ),
         "etiquetas": [str(e) for e in _campo(crudo, "tags", defecto=[]) or []],
         "exito": bool(exito),
-        "duracion": _numero(_campo(crudo, "runDuration", "run_duration", "completionTime")),
+        # completionTime = tiempo del agente; runDuration = tiempo del juez.
+        "duracion": _numero(_campo(crudo, "completionTime", "completion_time", "runDuration", "run_duration")),
+        "duracion_eval": _numero(_campo(crudo, "runDuration", "run_duration")),
+        "tokens_entrada": _numero(_campo(crudo, "inputTokenCount", "input_token_count")),
+        "tokens_salida": _numero(_campo(crudo, "outputTokenCount", "output_token_count")),
+        "historias": [str(h) for h in (_metadatos(crudo).get("historias") or [])],
+        "cubre": [str(h) for h in (_metadatos(crudo).get("cubre") or [])],
+        "identidad": _metadatos(crudo).get("identidad"),
+        "rendimiento": _rendimiento(_metadatos(crudo).get("rendimiento")),
         "metricas": metricas,
+    }
+
+
+def _metadatos(crudo: dict) -> dict:
+    datos = _campo(crudo, "metadata", "additionalMetadata", "additional_metadata", defecto={})
+    return datos if isinstance(datos, dict) else {}
+
+
+def _rendimiento(datos) -> dict | None:
+    """Versión compacta del rendimiento del caso para el HTML."""
+    if not isinstance(datos, dict):
+        return None
+    llm = datos.get("llm") or {}
+    return {
+        "s_agente": _numero(datos.get("s_agente")),
+        "s_total": _numero(datos.get("s_total")),
+        "s_servicio": _numero(datos.get("s_servicio")),
+        "s_turnos_previos": _numero(datos.get("s_turnos_previos")),
+        "turnos": datos.get("turnos") or [],
+        "cpu": datos.get("cpu") or {},
+        "recursos": datos.get("recursos") or {},
+        "llm": {
+            "llamadas": llm.get("llamadas"),
+            "tokens_entrada": llm.get("tokens_entrada"),
+            "tokens_salida": llm.get("tokens_salida"),
+            "s_carga_modelos": llm.get("s_carga_modelos"),
+            "por_modelo": llm.get("por_modelo") or {},
+        },
+        "ollama_al_final": datos.get("ollama_al_final") or [],
     }
 
 
@@ -141,10 +178,19 @@ def leer_corrida(ruta: Path) -> dict | None:
         if vistos[caso["id"]] > 1:
             caso["id"] = f"{caso['id']} #{vistos[caso['id']]}"
     fecha = _fecha(ruta)
+    equipo = next(
+        (
+            _metadatos(c).get("equipo")
+            for c in crudos
+            if isinstance(c, dict) and isinstance(_metadatos(c).get("equipo"), dict)
+        ),
+        None,
+    )
     return {
         "archivo": ruta.name,
         "fecha": fecha.isoformat(timespec="seconds"),
         "duracion": _numero(_campo(datos, "runDuration", "run_duration")),
+        "equipo": equipo,
         "casos": casos,
     }
 
@@ -274,6 +320,8 @@ pre{margin:0;white-space:pre-wrap;word-break:break-word;font:12.5px/1.5 var(--mo
 .escala em{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--tinta)}
 .mdet p{margin:0;font-size:12.5px;color:var(--tinta2)}
 .mdet .err{color:var(--mal)}
+dl.equipo{display:grid;grid-template-columns:max-content 1fr;gap:4px 12px;margin:0;font-size:12.5px}
+dl.equipo dt{color:var(--tinta2)}dl.equipo dd{margin:0;font-variant-numeric:tabular-nums;word-break:break-word}
 .vacio{color:var(--tenue);font-size:13px;padding:22px;text-align:center}
 #tip{position:fixed;pointer-events:none;z-index:9;background:var(--tinta);color:var(--sup);font-size:12px;line-height:1.4;padding:6px 9px;border-radius:6px;max-width:280px;opacity:0;transition:opacity .08s}
 footer{color:var(--tenue);font-size:12px;margin-top:18px}
@@ -299,6 +347,8 @@ footer{color:var(--tenue);font-size:12px;margin-top:18px}
   <section class="rejilla">
     <div class="tarjeta"><h2>Aprobación por etiqueta</h2><p class="sub">Porcentaje de casos aprobados en cada grupo de la corrida</p><div id="gEtiquetas"></div></div>
     <div class="tarjeta"><h2>Puntaje promedio por métrica</h2><p class="sub">Escala de 0 a 1; a la derecha, casos que superan el umbral</p><div id="gMetricas"></div></div>
+    <div class="tarjeta" id="tRendimiento"><h2>Tiempo del agente por historia</h2><p class="sub">Mediana del turno evaluado; a la derecha, p95 y número de casos</p><div id="gRendimiento"></div></div>
+    <div class="tarjeta" id="tEquipo"><h2>Equipo de la corrida</h2><p class="sub">Dónde se ejecutó; el nombre del equipo no se guarda</p><div id="equipo"></div></div>
     <div class="tarjeta" id="tHistorico"><h2>Aprobación por corrida</h2><p class="sub">Cada punto es una corrida; haz clic para abrirla</p><div id="gHistorico"></div></div>
   </section>
 
@@ -313,7 +363,7 @@ footer{color:var(--tenue);font-size:12px;margin-top:18px}
     </div>
     <div style="overflow-x:auto">
       <table>
-        <thead><tr><th>Estado</th><th>Caso</th><th>Etiquetas</th><th>Métricas</th><th>Cambio</th><th class="num">Tiempo</th></tr></thead>
+        <thead><tr><th>Estado</th><th>Caso</th><th>Etiquetas</th><th>Métricas</th><th>Cambio</th><th class="num">Agente</th><th class="num">Juez</th></tr></thead>
         <tbody id="cuerpo"></tbody>
       </table>
     </div>
@@ -463,6 +513,76 @@ function graficaMetricas(corrida) {
   barras($("gMetricas"), filas, { titulo: "Puntaje promedio por métrica", formato: (t) => t.toFixed(1), der: 84 });
 }
 
+function percentil(valores, p) {
+  const v = valores.filter((x) => x !== null && x !== undefined).sort((a, b) => a - b);
+  if (!v.length) return null;
+  const k = (v.length - 1) * p, i = Math.floor(k), j = Math.min(i + 1, v.length - 1);
+  return v[i] + (v[j] - v[i]) * (k - i);
+}
+function tokensPorSegundo(casos) {
+  let tokens = 0, segundos = 0;
+  for (const c of casos) for (const g of Object.values(((c.rendimiento || {}).llm || {}).por_modelo || {})) {
+    tokens += g.tokens_salida || 0; segundos += g.s_generacion || 0;
+  }
+  return segundos > 0 ? tokens / segundos : null;
+}
+function graficaRendimiento(corrida) {
+  const grupos = new Map();
+  for (const c of corrida.casos) for (const h of (c.historias.length ? c.historias : ["(sin historia)"])) {
+    if (c.duracion === null || c.duracion === undefined) continue;
+    const g = grupos.get(h) || []; g.push(c.duracion); grupos.set(h, g);
+  }
+  const maximo = Math.max(1, ...[...grupos.values()].map((v) => percentil(v, 0.5)));
+  const filas = [...grupos].sort((a, b) => a[0].localeCompare(b[0])).map(([rotulo, v]) => {
+    const p50 = percentil(v, 0.5), p95 = percentil(v, 0.95);
+    return { rotulo, valor: p50 / maximo, texto: `${duracion(p50)} · p95 ${duracion(p95)} · ${v.length}`,
+      tip: `${rotulo}\nMediana: ${duracion(p50)}\np95: ${duracion(p95)}\nCasos medidos: ${v.length}` };
+  });
+  barras($("gRendimiento"), filas, { titulo: "Tiempo del agente por historia", formato: (t) => duracion(t * maximo), der: 150 });
+}
+function pintarEquipo(corrida) {
+  const cont = $("equipo"); cont.textContent = "";
+  const e = corrida.equipo;
+  if (!e) { cont.append(el("div", { class: "vacio", text: "Esta corrida no registró el equipo (suite anterior a la medición de rendimiento)." })); return; }
+  const gpus = (e.gpus || []).map((g) => g.nombre + (g.vram_mb ? ` (${Math.round(g.vram_mb)} MB)` : "")).join("; ") || "no detectada";
+  const en = e.energia || {};
+  const filas = [
+    ["Sistema", `${e.sistema.so} ${e.sistema.version} · ${e.sistema.arquitectura}`],
+    ["CPU", `${e.cpu.modelo} · ${e.cpu.nucleos_fisicos || "?"} físicos / ${e.cpu.nucleos_logicos} lógicos`],
+    ["RAM", e.ram_gb ? `${e.ram_gb} GB` : "–"],
+    ["GPU", gpus],
+    ["Energía", en.bateria ? `batería ${en.porcentaje}%` + (en.conectado ? " (conectado)" : " (desconectado)") : (e.energia ? "corriente" : "–")],
+    ["Ollama", e.ollama.version || "no disponible"],
+    ["Modelos", Object.entries(e.ollama.modelos_configurados || {}).map(([k, v]) => `${k}: ${v}`).join(" · ") || "–"],
+    ["Juez", e.juez + (e.solo_reglas ? " (solo reglas)" : "")],
+    ["Python", e.python],
+    ["Commit", e.git && e.git.commit ? e.git.commit + (e.git.cambios_sin_commit ? " (con cambios)" : "") : "–"],
+    ["Equipo", e.equipo_id],
+  ];
+  cont.append(el("dl", { class: "equipo" }, filas.flatMap(([k, v]) => [el("dt", { text: k }), el("dd", { text: String(v) })])));
+}
+function bloqueRendimiento(caso) {
+  const r = caso.rendimiento;
+  if (!r) return null;
+  const mb = (x) => (x === undefined || x === null ? "–" : `${Math.round(x).toLocaleString("es-MX")} MB`);
+  const rec = r.recursos || {}, cpu = r.cpu || {}, llm = r.llm || {};
+  const lineas = [
+    `Turno evaluado:     ${duracion(r.s_agente)}` + (r.s_servicio !== null ? `  (servicio ${duracion(r.s_servicio)})` : ""),
+    `Turnos previos:     ${duracion(r.s_turnos_previos)}   ·  total del caso ${duracion(r.s_total)}`,
+    `Juez:               ${duracion(caso.duracion_eval)}`,
+    `CPU pytest:         ${num(cpu.s_cpu_pytest, 1)} s` + (cpu.s_cpu_subprocesos !== undefined ? `  ·  subprocesos MCP ${num(cpu.s_cpu_subprocesos, 1)} s` : ""),
+    `Pico RAM:           pytest+MCP ${mb(rec.rss_pytest_y_mcp_mb)}  ·  Ollama ${mb(rec.rss_ollama_mb)}  ·  sistema ${rec.ram_sistema_usada_pct ?? "–"}%  ·  swap ${mb(rec.swap_usado_mb)}`,
+  ];
+  if (rec.vram_usada_mb !== undefined) lineas.push(`GPU:                VRAM ${mb(rec.vram_usada_mb)}  ·  uso medio ${rec.gpu_util_pct_media ?? "–"}%`);
+  lineas.push(`Llamadas LLM:       ${llm.llamadas ?? 0}  ·  tokens ${llm.tokens_entrada ?? 0} entrada / ${llm.tokens_salida ?? 0} salida  ·  carga de modelos ${num(llm.s_carga_modelos, 1)} s`);
+  for (const [modelo, g] of Object.entries(llm.por_modelo || {}))
+    lineas.push(`  ${modelo}: ${g.llamadas} llamadas · ${g.tokens_por_s ? g.tokens_por_s.toFixed(1) + " tokens/s" : "sin tokens/s"}${g.en_subproceso_mcp ? ` · ${g.en_subproceso_mcp} en MCP` : ""}`);
+  for (const m of r.ollama_al_final || [])
+    lineas.push(`  Ollama cargado: ${m.modelo} · ${mb(m.tamano_mb)} · ${m.porcentaje_gpu ?? "–"}% en GPU`);
+  for (const t of r.turnos || []) for (const p of t.pasos || [])
+    if (p.s !== null && p.s !== undefined) lineas.push(`  [${t.tipo}] ${p.agente} · ${p.accion}: ${duracion(p.s)}`);
+  return bloque("Rendimiento", el("pre", { text: lineas.join("\n") }));
+}
 function graficaHistorico() {
   const cont = $("gHistorico"); cont.textContent = "";
   if (CORRIDAS.length < 2) { cont.append(el("div", { class: "vacio", text: "Se necesita más de una corrida para ver la evolución." })); return; }
@@ -549,7 +669,9 @@ function pintarKpis(corrida, base, cambios) {
     ["Fallidos", String(fallos), base ? (regresiones ? `${regresiones} pasaban en la corrida anterior` : "Ninguno pasaba antes") : "", regresiones ? "baja" : ""],
     ["Fallos conocidos", String(conocidos), conocidos ? "Marcados con xfail en los YAML" : "", ""],
     ["Errores del juez", String(juez), juez ? "Casos donde una métrica no pudo calcularse" : "", juez ? "baja" : ""],
-    ["Duración", duracion(corrida.duracion), "", ""],
+    ["Tiempo del agente", duracion(percentil(corrida.casos.map((c) => c.duracion), 0.5)), (() => { const p = percentil(corrida.casos.map((c) => c.duracion), 0.95); return p === null ? "" : `mediana · p95 ${duracion(p)}`; })(), ""],
+    ["Tokens/s", (() => { const t = tokensPorSegundo(corrida.casos); return t === null ? "–" : t.toFixed(1); })(), "Generación vía LangChain/Ollama", ""],
+    ["Duración de la corrida", duracion(corrida.duracion), "", ""],
   ];
   for (const [rotulo, valor, nota, clase] of tarjetas)
     cont.append(el("div", { class: "tarjeta kpi" }, el("div", { class: "rotulo", text: rotulo }), el("div", { class: "valor", text: valor }), el("div", { class: "nota " + clase, text: nota })));
@@ -620,6 +742,8 @@ function detalle(caso, previo) {
     el("div", { style: "margin-top:10px" }, bloque("Herramientas", el("pre", { text:
       "Llamadas:  " + (caso.herramientas.join(", ") || "ninguna") +
       (caso.herramientas_esperadas.length ? "\nEsperadas: " + caso.herramientas_esperadas.join(", ") : "") }))),
+    caso.rendimiento && el("div", { style: "margin-top:10px" }, bloqueRendimiento(caso)),
+    caso.cubre && caso.cubre.length > 0 && el("p", { class: "sub", style: "margin:10px 0 0", text: "Cubre: " + caso.cubre.join(", ") + (caso.identidad ? ` · Identidad: ${caso.identidad}` : "") }),
     meta.xfail && el("div", { style: "margin-top:10px" }, bloque("Fallo conocido", el("pre", { text: meta.xfail }))),
     (meta.origen || meta.rol) && el("p", { class: "sub", style: "margin:10px 0 0", text: [meta.origen && `Archivo: casos/${meta.origen}.yaml`, meta.rol && `Rol: ${meta.rol}`].filter(Boolean).join(" · ") }));
   return el("div", { class: "dgrid" }, izq, der);
@@ -658,8 +782,9 @@ function pintarTabla(corrida, base, cambios) {
       el("td", {}, c.etiquetas.map((e) => el("span", { class: "etq", text: e }))),
       el("td", {}, c.metricas.map(fichaMetrica)),
       el("td", { class: cambio ? cambio[1] : "", style: "white-space:nowrap;font-size:12.5px", text: cambio ? cambio[0] : "" }),
-      el("td", { class: "num", text: duracion(c.duracion) })));
-    if (abierto) cuerpo.append(el("tr", { class: "detalle" }, el("td", { colspan: 6 }, detalle(c, antes.get(c.id)))));
+      el("td", { class: "num", text: duracion(c.duracion) }),
+      el("td", { class: "num", text: duracion(c.duracion_eval) })));
+    if (abierto) cuerpo.append(el("tr", { class: "detalle" }, el("td", { colspan: 7 }, detalle(c, antes.get(c.id)))));
   }
   $("vacio").hidden = casos.length > 0;
 }
@@ -696,7 +821,7 @@ function pintar() {
   $("resumen").textContent = `${fecha(corrida.fecha)} · ${r.total} casos · ${corrida.archivo}`;
   pintarKpis(corrida, base, cambios);
   pintarCambios(corrida, base, cambios);
-  graficaEtiquetas(corrida); graficaMetricas(corrida); graficaHistorico();
+  graficaEtiquetas(corrida); graficaMetricas(corrida); graficaRendimiento(corrida); pintarEquipo(corrida); graficaHistorico();
   pintarFiltros(corrida, cambios);
   pintarTabla(corrida, base, cambios);
   $("pie").textContent = `Generado el ${fecha(DATOS.generado)} a partir de ${CORRIDAS.length} corrida(s). Los resultados son los que DeepEval guardó en disco; este archivo no se conecta a internet.`;
@@ -707,7 +832,7 @@ $("selBase").addEventListener("change", (e) => { estado.base = +e.target.value; 
 $("fEtiqueta").addEventListener("change", (e) => { estado.etiqueta = e.target.value; pintar(); });
 $("fOrden").addEventListener("change", (e) => { estado.orden = e.target.value; pintar(); });
 $("fBuscar").addEventListener("input", (e) => { estado.buscar = e.target.value; const c = CORRIDAS[estado.corrida], b = estado.base >= 0 ? CORRIDAS[estado.base] : null; pintarTabla(c, b, comparar(c, b)); });
-let _redim; addEventListener("resize", () => { clearTimeout(_redim); _redim = setTimeout(() => { const c = CORRIDAS[estado.corrida]; graficaEtiquetas(c); graficaMetricas(c); graficaHistorico(); }, 150); });
+let _redim; addEventListener("resize", () => { clearTimeout(_redim); _redim = setTimeout(() => { const c = CORRIDAS[estado.corrida]; graficaEtiquetas(c); graficaMetricas(c); graficaRendimiento(c); graficaHistorico(); }, 150); });
 pintar();
 // Enlace directo a un caso: reporte.html#id-del-caso
 if (location.hash.length > 1) { const id = decodeURIComponent(location.hash.slice(1)); if (CORRIDAS[estado.corrida].casos.some((c) => c.id === id)) irA(id); }
