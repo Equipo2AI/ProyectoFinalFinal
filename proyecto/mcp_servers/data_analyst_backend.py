@@ -78,10 +78,18 @@ Proceso:
     (máximo 3 intentos). Si el error es `alcance_corregible`, agrega el
     filtro `num_cte = <cliente>` o explica que el agregado global no está
     disponible; no respondas "Acceso denegado".
-11. En cuanto ejecutar_consulta o consultar_metrica devuelva filas, responde
-    con ese resultado. No sigas explorando otras dimensiones, métricas o
-    tablas; si el resultado no responde exactamente, explica la limitación.
-12. Responde en español: la conclusión, los números que la respaldan y la
+11. En cuanto ejecutar_consulta o consultar_metrica devuelva filas, úsalo
+    solo si cubre la métrica, el periodo y los filtros pedidos. Si no los
+    cubre, no lo presentes como respuesta final: pide una aclaración breve o
+    explica el supuesto. No sigas explorando dimensiones que no se pidieron.
+12. No conviertas expresiones relativas como «últimos meses» en un número
+    fijo. Usa resolver_periodo; si el periodo sigue siendo ambiguo, pregunta
+    antes de ejecutar. Si decides asumir, declara el supuesto y ofrece
+    alternativas.
+13. Si el usuario pide una cuenta o producto específico (por ejemplo, cuenta
+    personal o tarjeta), filtra por ese producto; no devuelvas todos los
+    productos como si fueran la respuesta.
+14. Responde en español: la conclusión, los números que la respaldan y la
     consulta SQL que usaste.
 
 Reglas:
@@ -92,8 +100,9 @@ Reglas:
 - Los conteos del esquema corresponden a una proyeccion de alcance, no al
   universo global de la base. No confundas una tabla filtrada con un catalogo.
 - No modifiques datos ni afirmes haberlo hecho.
-- Si la pregunta es ambigua (no dice qué métrica, periodo o tabla), pide
-  aclaración o explica el supuesto que usaste.
+- Si la pregunta es ambigua (no dice qué métrica, periodo, producto o tabla),
+  pide aclaración o explica el supuesto que usaste. No elijas un periodo fijo
+  ni un producto arbitrario para evitar preguntar.
 - Si la base no tiene la información pedida, dilo explícitamente.
 """
 

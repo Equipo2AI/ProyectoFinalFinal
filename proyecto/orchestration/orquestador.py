@@ -27,6 +27,10 @@ from proyecto.orchestration.comun import (
     _ruta_documento_de_consulta,
     _ruta_imagen_de_consulta,
 )
+from proyecto.orchestration.interpretacion import (
+    completar_consulta,
+    es_respuesta_de_aclaracion,
+)
 from proyecto.orchestration.perfil_respuesta import detectar_perfil
 
 logger = logging.getLogger(__name__)
@@ -86,6 +90,7 @@ class Orquestador:
         self._document_store = document_store
         self._imagen_pendiente: str | None = None
         self._ultimo_agente: str | None = None
+        self._aclaracion_pendiente: dict | None = None
         if memory is None:
             self.memory = LongTermMemory(
                 model=modelo,
@@ -114,6 +119,7 @@ class Orquestador:
     def registrar_imagen(self, ruta: str, pregunta: str) -> None:
         """Deja una imagen pendiente en el historial para la siguiente consulta."""
         self._imagen_pendiente = str(Path(ruta).expanduser().resolve())
+        self._aclaracion_pendiente = None
         self._mensajes = [
             *self._mensajes,
             HumanMessage(content=f"Adjunté una imagen en {self._imagen_pendiente}."),
@@ -317,6 +323,7 @@ class Orquestador:
             # No preparar/actualizar memoria aquí: puede disparar inferencias.
             self.ultimas_herramientas = []
             self.agentes_invocados = []
+            self._aclaracion_pendiente = None
             self.ultimo_estado_grafo = {
                 "respuesta": RESPUESTA_FUERA_DE_ALCANCE,
                 "verificacion": {"estado": "fuera_de_alcance"},
@@ -349,11 +356,18 @@ class Orquestador:
     ) -> str:
         from proyecto.orchestration.grafo import ejecutar_grafo
 
-        historial = self.memory.prepare(self._historial_para_modelo(), consulta)
+        consulta_grafo = consulta
+        if self._aclaracion_pendiente and es_respuesta_de_aclaracion(consulta):
+            consulta_grafo = completar_consulta(
+                str(self._aclaracion_pendiente.get("consulta") or ""),
+                consulta,
+            )
+
+        historial = self.memory.prepare(self._historial_para_modelo(), consulta_grafo)
         estado = ejecutar_grafo(
-            consulta,
+            consulta_grafo,
             historial=historial,
-            contexto_documentos=self._contexto_documentos(consulta),
+            contexto_documentos=self._contexto_documentos(consulta_grafo),
             contexto_analista=self._contexto_analista(),
             modelo=self.modelo,
             imagen_pendiente=self._imagen_pendiente,
@@ -367,6 +381,14 @@ class Orquestador:
             raise RuntimeError("El grafo terminó sin respuesta.")
 
         self.ultimo_estado_grafo = estado
+        aclaracion = estado.get("aclaracion") or {}
+        if aclaracion.get("necesaria"):
+            self._aclaracion_pendiente = {
+                "consulta": consulta_grafo,
+                "pregunta": str(aclaracion.get("pregunta") or ""),
+            }
+        else:
+            self._aclaracion_pendiente = None
         trazas = list(estado.get("trazas") or [])
         self.ultimas_herramientas = trazas
         self.agentes_invocados = [
@@ -441,6 +463,7 @@ class Orquestador:
         self._documentos = []
         self._imagen_pendiente = None
         self._ultimo_agente = None
+        self._aclaracion_pendiente = None
         self.modo_efectivo = "grafo"
 
     def __repr__(self) -> str:

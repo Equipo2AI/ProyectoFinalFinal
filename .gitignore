@@ -48,6 +48,11 @@ files/Base Cards para TEC - Diccionario de Variables.csv
 proyecto/data/clientes.csv
 proyecto/data/bank_metadata_simple.json
 
+# Benchmark multimodal: documentos, casos y resultados locales
+benchmarks/multimodal/documentos/
+benchmarks/multimodal/casos.locales/
+benchmarks/multimodal/resultados/
+
 # Herramientas
 .ruff_cache/
 .pytest_cache/

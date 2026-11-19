@@ -190,6 +190,23 @@ def panel_consola(artefacto: dict | None, pensando: bool) -> None:
 
     componentes.traza(_pasos(artefacto))
 
+    aclaracion = artefacto.get("aclaracion") or {}
+    if aclaracion.get("necesaria"):
+        componentes.seccion("Aclaración")
+        st.info(str(aclaracion.get("pregunta") or ""))
+        opciones = [
+            str(opcion)
+            for opcion in aclaracion.get("opciones") or []
+            if str(opcion).strip()
+        ]
+        if opciones:
+            st.caption("Opciones: " + " · ".join(opciones))
+
+    supuestos = artefacto.get("supuestos") or []
+    if supuestos:
+        componentes.seccion("Interpretación")
+        st.caption(" ".join(str(supuesto) for supuesto in supuestos))
+
     error = artefacto.get("error")
     if error:
         componentes.error_consola(str(error))

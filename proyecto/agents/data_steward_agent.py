@@ -114,7 +114,8 @@ _RE_METADATA_STEWARD = re.compile(
     r"\b(?:tabla|tablas|columna|columnas|esquema|esquemas|estructura|"
     r"campos?|variables?|atributos?|metadatos?|catalogo|filas?|registros?|"
     r"faltantes?|nulos?|"
-    r"duplicad\w*|calidad|relacion\w*|foreign\s+keys?|primary\s+keys?|"
+    r"duplicad\w*|repetid\w*|negativos?|calidad|relacion\w*|"
+    r"foreign\s+keys?|primary\s+keys?|"
     r"claves?|indices?|restriccion\w*|integridad|outliers?|"
     r"tipos?\s+de\s+datos?|"
     r"valores\s+(?:faltantes|nulos|negativos|duplicados))\b",
@@ -147,7 +148,7 @@ _RE_NORMATIVA_STEWARD = re.compile(
 _RE_BANAMEX_STEWARD = re.compile(r"\b(?:banamex|citibanamex)\b", re.IGNORECASE)
 _RE_DOCUMENTO_STEWARD = re.compile(
     r"\b(?:factura|facturas|recibo|recibos|comprobante|comprobantes|"
-    r"imagen|imagenes|ocr|pdf|documento|documentos|archivo|archivos|"
+    r"imagen|imagenes|ocr|pdf|documento|documentos|"
     r"foto|fotos|captura|capturas|escaneo|escaneos|docx|xlsx|pptx)\b",
     re.IGNORECASE,
 )
