@@ -52,7 +52,26 @@ _RE_NUMERO = re.compile(r"\d[\d,]*(?:\.\d+)?")
 _RE_MARCADOR_LISTA = re.compile(r"(?m)^\s*\d+[.)]\s")
 
 # Herramientas cuya salida debe llegar íntegra (OCR / conversión a Markdown).
-HERRAMIENTAS_LITERALES = {"mcp_extraer_texto_imagen", "mcp_convertir_documento_markdown"}
+HERRAMIENTAS_LITERALES = {
+    "mcp_extraer_texto_imagen",
+    "mcp_convertir_documento_markdown",
+}
+
+# Evidencia estructurada o normativa: se conserva literal si es la única
+# fuente. Si hay varias fuentes o el usuario pide interpretar/combinar, el
+# orquestador sí puede reescribirla, con las salvaguardas de cifras y fuentes.
+HERRAMIENTAS_EVIDENCIA = {
+    "mcp_buscar_normatividad",
+    "mcp_inspeccionar_dataset",
+    "mcp_validar_calidad_datos",
+    "mcp_evaluar_calidad",
+}
+
+_PIDE_INTERPRETACION = re.compile(
+    r"\b(interpret\w*|combin\w*|compar\w*|relacion\w*|integra\w*|"
+    r"sintetiz\w*|resum\w*|explic\w*|entiend\w*|signific\w*|"
+    r"trata\w*|dice|dicen)\b"
+)
 
 
 @dataclass(frozen=True)
@@ -134,6 +153,9 @@ el tipo de usuario indicado.
 Reglas estrictas:
 - No cambies, redondees ni inventes cifras, fechas, artículos ni fuentes.
 - No agregues información que no esté en la respuesta o en la evidencia.
+- Puedes interpretar, resumir o combinar la evidencia, pero conserva
+  literalmente citas, documentos, páginas, tablas, nombres de columnas y
+  conteos. Si no puedes combinarlos sin perder ese detalle, deja ambos bloques.
 - Si la respuesta informa un error o falta de datos, consérvalo.
 - No incluyas rutas locales ni imágenes Markdown.
 - Responde en el idioma de la consulta y entrega solo la respuesta final.
@@ -188,16 +210,36 @@ def cifras_conservadas(evidencia: str, redactada: str) -> bool:
     return _numeros(redactada) <= _numeros(evidencia) | _conteos(evidencia)
 
 
-def debe_redactar(respuesta: str, trazas: list[dict], resultados: dict) -> bool:
-    """Decide si vale la pena la llamada extra al modelo."""
+def debe_redactar(
+    respuesta: str,
+    trazas: list[dict],
+    resultados: dict,
+    consulta: str = "",
+) -> bool:
+    """Decide si vale la pena la llamada extra al modelo.
+
+    OCR y Markdown siempre son literales. La evidencia normativa o del Data
+    Steward también se conserva si es la única fuente; se reescribe cuando hay
+    varias fuentes que combinar o cuando el usuario pide interpretar/resumir.
+    """
     if not (respuesta or "").strip():
         return False
-    if any(str(t.get("name")) in HERRAMIENTAS_LITERALES for t in trazas or []):
+    nombres = {str(t.get("name")) for t in trazas or []}
+    if nombres & HERRAMIENTAS_LITERALES:
         return False  # OCR o Markdown: el texto debe llegar completo.
     if resultados and all(
         (r or {}).get("estado") == "error" for r in resultados.values()
     ):
         return False  # Solo hay errores; no hay nada que reformular.
+    if nombres & HERRAMIENTAS_EVIDENCIA:
+        validos = [
+            r
+            for r in (resultados or {}).values()
+            if (r or {}).get("estado") != "error"
+        ]
+        if len(validos) > 1:
+            return True  # Hay varias fuentes: el modelo puede combinarlas.
+        return bool(_PIDE_INTERPRETACION.search(_normalizar(consulta or "")))
     return True
 
 

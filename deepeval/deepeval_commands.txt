@@ -1,3 +1,7 @@
+# run some test cases not all, quicker
+uv run deepeval test run deepeval/test_agente.py -m smoke
+
+
 # whole suite (quality + performance summary)
 uv run deepeval test run deepeval/test_agente.py
 

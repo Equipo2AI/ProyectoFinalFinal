@@ -266,17 +266,21 @@ datos almacenados no está resuelta; se detalla en el diagnóstico.
 El análisis funcional señala que el origen principal de los fallos está en el
 orquestador, no en los especialistas:
 
-1. El plan híbrido ya cubre consultas multi-intención; cuando el planner LLM
-   falla, cae a las reglas deterministas.
-2. El verificador comprueba que el especialista respondió, pero no que lo dicho
-   exista en el esquema; de ahí que aparezcan columnas inventadas.
-3. No hay nodo de aclaración, por lo que una pregunta incompleta interrumpe el
-   ciclo en lugar de volver al usuario.
+1. El plan híbrido cubre consultas multi-intención y conserva las rutas
+   deterministas cuando el planner LLM omite un dominio. Las reglas ya no se
+   quedan con el primer especialista.
+2. El verificador comprueba que el especialista respondió, pero todavía no que
+   el SQL cubra exactamente el producto o el periodo pedidos.
+3. Ya existe un nodo de aclaración: si falta un dato que cambiaría la respuesta,
+   el grafo pregunta y no ejecuta especialistas. La primera versión es
+   determinista y cubre periodos relativos, gráficas sin métrica, saldos
+   ambiguos y documentos sin archivo.
 4. Los modelos de 7-9B sostienen bien una herramienta aislada, pero pierden el
    hilo en consultas SQL largas o en inferencias.
 
 Las conclusiones son preliminares y se basan en la observación del flujo actual.
-La siguiente iteración abordará esta parte del orquestador.
+La siguiente iteración profundiza en la suficiencia de los resultados y en las
+ambigüedades que no cubren las reglas.
 
 ### Formulación de consultas
 
@@ -298,16 +302,21 @@ herramienta explícitos produce mejores resultados.
 estado compartido:
 
 ```text
-planear -> despachar -> especialista -> despachar -> ... -> verificar
-   ^                                                         |
-   └──────────────── reintento (máximo 1) ──────────────────┘
-                                                             |
-                                                        sintetizar
+interpretar -> planear -> despachar -> especialista -> ... -> verificar
+   |             ^                                              |
+   |             └────────── reintento (máximo 1) ─────────────┘
+   |                                                            |
+   └──────────── aclaración (sin especialistas) ─────────── sintetizar
 ```
 
+- `interpretar` lee la consulta antes de planear. Si detecta una ambigüedad
+  material (por ejemplo, «últimos meses» sin una ventana), responde con una
+  pregunta y opciones, y no ejecuta especialistas. Si el supuesto es seguro, lo
+  declara en la respuesta para que el usuario pueda corregirlo.
 - `planear` usa un planner híbrido: las reglas léxicas son pistas y el LLM
   decide cuando la consulta tiene más de un dominio. Si el LLM no devuelve un
-  plan válido, se usa el plan determinista como respaldo.
+  plan válido, se usa el plan determinista como respaldo. Si el LLM devuelve un
+  plan incompleto, se conservan las rutas deterministas que faltaban.
 - `despachar` ejecuta los especialistas en orden y comparte el estado.
 - `verificar` revisa si todos los especialistas respondieron; si alguno falló,
   reintenta una vez. El reintento es único: el fallo típico de un modelo pequeño
@@ -321,8 +330,8 @@ planear -> despachar -> especialista -> despachar -> ... -> verificar
 - Antes de formatear, el nodo de Data Steward valida el contrato de las tools
   (tipos y rangos de los agregados). Una salida fuera de contrato se reporta como
   error y no se publica.
-- El estado guarda `plan`, `subpreguntas`, `resultados`, `trazas`, `errores` e
-  `intentos`.
+- El estado guarda `interpretacion`, `aclaracion`, `supuestos`, `plan`,
+  `subpreguntas`, `resultados`, `trazas`, `errores` e `intentos`.
 - `ORCHESTRATION_PLANNER` controla el planner:
   - `hybrid` (por defecto): reglas para una intención y LLM para varias.
   - `llm`: siempre intenta el planner LLM, con respaldo determinista.
@@ -386,12 +395,16 @@ archivo o una entrada, el arranque falla con un mensaje claro.
 
 Estos límites corresponden a la arquitectura actual:
 
-- El planner híbrido cubre consultas multi-intención; si el LLM no devuelve un
-  plan válido, se usa el plan determinista como respaldo.
+- El planner híbrido cubre consultas multi-intención y conserva las rutas
+  deterministas si el LLM devuelve un plan incompleto. Si el LLM falla, se usa el
+  plan determinista completo.
+- El nodo de aclaración es determinista: cubre patrones comunes, pero una
+  ambigüedad no prevista puede llegar al especialista. En ese caso el Data
+  Analyst debe pedir aclaración o declarar el supuesto.
 - El verificador valida que el especialista respondió, no que el contenido exista
-  en el esquema; de ahí que puedan aparecer columnas inexistentes.
-- No existe un nodo de aclaración: una pregunta incompleta interrumpe el ciclo en
-  lugar de volver al usuario.
+  en el esquema ni que el SQL haya aplicado todos los filtros. Si no puede
+  confirmar un filtro de producto o de periodo, añade una nota visible; aun así
+  pueden aparecer columnas inexistentes o resultados más amplios de lo pedido.
 - Los modelos de 7-9B resuelven bien una herramienta aislada, pero pierden
   consistencia en SQL largo o en inferencias entre fuentes.
 - El OCR de PDF está limitado a 20 páginas sin texto por archivo. Un PDF
@@ -400,10 +413,11 @@ Estos límites corresponden a la arquitectura actual:
 
 ## Siguientes pasos
 
-1. **Plan multi-paso**: descomponer las preguntas que cruzan normativa y datos, y
-   ejecutar los especialistas en secuencia.
-2. **Nodo de aclaración**: permitir que el grafo suspenda el turno, pregunte y
-   retome la ejecución.
+1. **Verificador de suficiencia**: contrastar que el SQL y el resultado cubran
+   el producto, el periodo y los filtros pedidos antes de publicar la respuesta.
+2. **Aclaraciones más generales**: ampliar el nodo determinista con un intérprete
+   LLM para ambigüedades que no cubren los patrones actuales, manteniendo el
+   fallback y el límite de latencia.
 3. **Verificador contra esquema**: contrastar las tablas y columnas citadas con
    los metadatos antes de publicar la respuesta.
 4. **Comparación de modelos**: medir 14B y 32B con la misma arquitectura para

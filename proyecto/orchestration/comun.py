@@ -37,6 +37,8 @@ def _es_consulta_normativa(consulta: str) -> bool:
         for clave in (
             "ley",
             "leyes",
+            "norma",
+            "normas",
             "normativ",
             "reglamento",
             "regulacion",

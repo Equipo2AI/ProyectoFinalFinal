@@ -58,28 +58,6 @@ _TERMINOS_GENERICOS = {
     "concepto", "significa", "significado",
 }
 
-# Sinónimos mínimos para no rechazar variantes legítimas del mismo tema.
-_SINONIMOS = {
-    "privado": {"particular", "privacidad"},
-    "particular": {"privado"},
-    "fin": {"finalidad", "proposito"},
-    "finalidad": {"fin", "proposito"},
-    "utilizar": {"tratamiento", "uso", "utilizacion"},
-    "utiliza": {"tratamiento", "uso", "utilizacion"},
-    "tiempo": {"plazo", "termino"},
-    "plazo": {"termino"},
-    "queja": {"reclamacion"},
-    "reclamacion": {"queja"},
-    "cancelar": {"cancelacion"},
-    "cancelacion": {"cancelar"},
-    "presentar": {"presentarse", "presenta", "presentan"},
-    "presentarse": {"presentar", "presenta", "presentan"},
-    "afore": {"retiro", "aforebanamex"},
-    "credito": {"prestamo", "financiamiento"},
-    "hipotecario": {"hipoteca", "vivienda"},
-}
-
-
 def _normalizar_texto(texto: str) -> str:
     normalizado = unicodedata.normalize("NFKD", texto or "").casefold()
     return "".join(c for c in normalizado if not unicodedata.combining(c))
@@ -102,12 +80,42 @@ def _terminos(texto: str) -> set[str]:
     }
 
 
-def _equivalentes(termino: str) -> set[str]:
-    return {termino} | _SINONIMOS.get(termino, set())
-
-
 def _contiene(terminos_texto: set[str], termino: str) -> bool:
-    return any(equivalente in terminos_texto for equivalente in _equivalentes(termino))
+    """Coincidencia exacta o por raíz morfológica compartida.
+
+    La raíz cubre variantes como "presentar"/"presentarse" o
+    "documento"/"documentación" sin mantener un diccionario de sinónimos.
+    """
+    if termino in terminos_texto:
+        return True
+    if len(termino) < 6:
+        return False
+    raiz = termino[:6]
+    return any(candidato.startswith(raiz) for candidato in terminos_texto)
+
+
+def _entidades_consulta(texto: str) -> set[str]:
+    """Nombres propios, siglas y cifras que deben existir en el corpus.
+
+    No intenta identificar verbos de intención como "necesito", "mover" o
+    "estoy": esos los resuelve el score semántico. Solo marca señales duras
+    (por ejemplo "Japón", "AFORE" o una cifra) que, si faltan, indican que la
+    consulta probablemente está fuera del corpus.
+    """
+    tokens = re.findall(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9]+", texto or "")
+    entidades: set[str] = set()
+    for token in tokens:
+        if not any(caracter.isalpha() for caracter in token):
+            if len(token) >= 2 and token.isdigit():
+                entidades.add(token)
+            continue
+        if token.isupper() and len(token) >= 2:
+            entidades.add(_singular(_normalizar_texto(token)))
+            continue
+        normalizado = _normalizar_texto(token)
+        if token[0].isupper() and normalizado not in _PALABRAS_VACIAS:
+            entidades.add(_singular(normalizado))
+    return entidades
 
 
 def _cobertura(terminos_consulta: set[str], terminos_texto: set[str]) -> float:
@@ -271,6 +279,24 @@ class NormatividadRAGAgent:
             for termino in distintivos
             if not _contiene(terminos_corpus, termino)
         )
+        entidades = _entidades_consulta(query)
+        entidades_ausentes = sorted(
+            entidad
+            for entidad in entidades
+            if not _contiene(terminos_corpus, entidad)
+        )
+
+        # Las palabras de intención ("necesito", "mover", "estoy") no deben
+        # bloquear una consulta: el score semántico ya las pondera. Si faltan,
+        # solo restan un poco al score híbrido; no se usa una lista manual de
+        # sinónimos ni se exige que todas aparezcan en el corpus.
+        if distintivos:
+            proporcion_ausente = len(ausentes) / len(distintivos)
+            for candidato in candidatos:
+                candidato["score_hibrido"] = max(
+                    0.0,
+                    candidato["score_hibrido"] - 0.10 * proporcion_ausente,
+                )
 
         aceptados: list[dict] = []
         for candidato in candidatos:
@@ -278,20 +304,19 @@ class NormatividadRAGAgent:
             cobertura = candidato["cobertura"]
             fuente = candidato["coincidencia_fuente"]
 
-            # Un término distintivo que no aparece en ningún candidato es una
-            # señal fuerte de consulta fuera del corpus. Solo un score muy alto
-            # puede compensarlo.
-            if ausentes and (score is None or score < self.strong_score):
+            # Una entidad dura ausente (nombre propio, sigla o cifra) sí es
+            # señal de consulta fuera del corpus. Las palabras de intención no
+            # entran aquí porque no se detectan como entidades.
+            if entidades_ausentes and (score is None or score < self.strong_score):
                 continue
 
             # Un fragmento que solo comparte términos genéricos ("plazo",
             # "ley", "usuario") no responde a la parte distintiva de la
-            # consulta. Evita colar artículos de vigencia en una pregunta
-            # sobre reclamaciones.
+            # consulta. El umbral es bajo para no castigar la intención.
             if distintivos and max(
                 candidato["cobertura_distintiva"],
                 candidato["coincidencia_fuente_distintiva"],
-            ) < 0.50:
+            ) < 0.34:
                 continue
 
             if score is None:
@@ -368,13 +393,18 @@ class NormatividadRAGAgent:
         if not candidatos:
             motivo = "sin_candidatos"
         elif not fragmentos:
-            motivo = "terminos_ausentes" if ausentes else "bajo_umbral"
+            motivo = (
+                "entidad_ausente"
+                if entidades_ausentes
+                else "bajo_umbral"
+            )
 
         diagnostico = {
             "candidatos": len(candidatos),
             "aceptados": len(fragmentos),
             "descartados": len(candidatos) - len(fragmentos),
             "ausentes": ausentes,
+            "entidades_ausentes": entidades_ausentes,
             "motivo": motivo,
             "umbrales": {
                 "min_score": self.min_score,
@@ -484,16 +514,16 @@ class NormatividadRAGAgent:
 
     def _mensaje_sin_evidencia(self, query: str) -> str:
         diagnostico = self._cache_diagnosticos.get((query or "").strip(), {})
-        ausentes = diagnostico.get("ausentes") or []
+        entidades = diagnostico.get("entidades_ausentes") or []
         detalle = ""
-        if ausentes:
+        if entidades:
             detalle = (
-                " Términos sin coincidencia en el corpus: "
-                + ", ".join(ausentes)
+                " No encontré evidencia sobre: "
+                + ", ".join(entidades)
                 + "."
             )
         elif diagnostico.get("motivo") == "bajo_umbral":
-            detalle = " Los fragmentos recuperados no superaron el filtro híbrido."
+            detalle = " Los fragmentos recuperados no fueron suficientemente relevantes."
         elif diagnostico.get("error"):
             detalle = f" Error de recuperación: {diagnostico['error']}."
         return (
@@ -645,7 +675,7 @@ class NormatividadRAGAgent:
             and evidence
             and not evidence.startswith(("No se encontr", "Sin evidencia"))
         ):
-            return "Evidencia documental recuperada mediante Pinecone:\n\n" + evidence
+            return "## Evidencia normativa recuperada\n\n" + evidence
 
         # Si Pinecone no dio evidencia, se intenta el corpus local con el
         # mismo filtro híbrido; así una caída remota no inventa una respuesta.
@@ -656,6 +686,7 @@ class NormatividadRAGAgent:
         if not fragmentos:
             return self._mensaje_sin_evidencia(consulta)
         return (
+            "## Evidencia normativa recuperada\n\n"
             "Respuesta basada en fragmentos literales del corpus local "
             "(Pinecone no disponible o sin evidencia suficiente).\n\n"
             + self._formatear_fragmentos(fragmentos)

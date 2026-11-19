@@ -92,6 +92,9 @@ class Respuesta(TypedDict, total=False):
     grafica: bytes | None
     fuentes: list[str]
     resultados: list[dict]
+    interpretacion: dict
+    aclaracion: dict
+    supuestos: list[str]
     duracion: float | None
     modelo: str | None
     nota: str | None
@@ -827,6 +830,32 @@ def preguntar_orquestador(
             from proyecto.security.local_auth import authorize_request
             authorize_request(consulta)
             texto = orquestador.procesar(consulta, perfil=perfil)
+    except PermissionError:
+        # El control de alcance es determinista y ocurre antes del LLM. Una
+        # negativa esperada no es un fallo técnico: se responde como rechazo
+        # controlado para no mostrar excepciones ni sugerir que se reintente.
+        duracion = round(time.perf_counter() - inicio, 2)
+        mensaje = (
+            "No puedo proporcionar esa información: la solicitud está fuera "
+            "del alcance autorizado para esta sesión."
+        )
+        return {
+            "respuesta": mensaje,
+            "pasos": [
+                {
+                    "agente": "orquestador",
+                    "accion": "Solicitud rechazada",
+                    "detalle": "Fuera del alcance autorizado",
+                    "duracion": duracion,
+                    "estado": "alerta",
+                }
+            ],
+            "agentes": ["orquestador"],
+            "herramientas": [],
+            "duracion": duracion,
+            "error": None,
+            "formato": "markdown",
+        }
     except Exception as exc:  # noqa: BLE001 - se informa en la UI
         duracion = round(time.perf_counter() - inicio, 2)
         mensaje = (
@@ -855,6 +884,39 @@ def preguntar_orquestador(
     herramientas = list(getattr(orquestador, "ultimas_herramientas", []) or [])
     invocadas = list(getattr(orquestador, "agentes_invocados", []) or [])
     pasos, agentes, nombres, alertas = _pasos_de_herramientas(herramientas)
+    estado_grafo = getattr(orquestador, "ultimo_estado_grafo", {}) or {}
+    interpretacion = dict(estado_grafo.get("interpretacion") or {})
+    aclaracion = dict(estado_grafo.get("aclaracion") or {})
+    supuestos = [
+        str(supuesto).strip()
+        for supuesto in estado_grafo.get("supuestos") or []
+        if str(supuesto).strip()
+    ]
+
+    if aclaracion.get("necesaria"):
+        pasos.insert(
+            0,
+            {
+                "agente": "orquestador",
+                "accion": "Aclaración necesaria",
+                "detalle": str(aclaracion.get("pregunta") or ""),
+                "duracion": duracion,
+                "estado": "alerta",
+            },
+        )
+        agentes = ["orquestador", *agentes]
+    elif supuestos:
+        pasos.insert(
+            0,
+            {
+                "agente": "orquestador",
+                "accion": "Interpretación",
+                "detalle": " ".join(supuestos),
+                "duracion": duracion,
+                "estado": "ok",
+            },
+        )
+        agentes = ["orquestador", *agentes]
 
     if not pasos:
         pasos = [
@@ -897,7 +959,6 @@ def preguntar_orquestador(
 
     # El grafo deja el resultado estructurado del analista en el estado. Es la
     # fuente más fiable para SQL, tabla y PNG.
-    estado_grafo = getattr(orquestador, "ultimo_estado_grafo", {}) or {}
     resultado_analista = (estado_grafo.get("resultados") or {}).get(
         "data_analyst", {}
     )
@@ -920,7 +981,22 @@ def preguntar_orquestador(
         texto = "El orquestador no devolvió una respuesta."
 
     if isinstance(resultado_analista, dict) and resultado_analista:
-        texto, pii = redactar_pii(texto)
+        # La redacción por defecto es total. Solo una sesión de auditoría con
+        # un permiso explícito (pii:rfc, pii:nombre) puede conservar ese campo.
+        permitidos_pii: set[str] = set()
+        try:
+            from proyecto.security.local_auth import principal
+
+            permisos = set(principal().get("permissions") or [])
+            if "audit" in permisos:
+                permitidos_pii = {
+                    permiso.split(":", 1)[1]
+                    for permiso in permisos
+                    if permiso.startswith("pii:")
+                }
+        except Exception:  # noqa: BLE001 - sin sesión se redacta todo
+            permitidos_pii = set()
+        texto, pii = redactar_pii(texto, permitidos=permitidos_pii)
         if pii:
             alertas.append(
                 "Se ocultaron datos personales en la respuesta: "
@@ -955,6 +1031,9 @@ def preguntar_orquestador(
         "datos": datos,
         "grafica": grafica,
         "resultados": herramientas,
+        "interpretacion": interpretacion,
+        "aclaracion": aclaracion,
+        "supuestos": supuestos,
         "duracion": duracion,
         "modelo": getattr(orquestador, "modelo", None),
         "nota": nota,
