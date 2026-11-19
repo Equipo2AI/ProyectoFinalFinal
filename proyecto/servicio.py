@@ -24,15 +24,17 @@ if str(_RAIZ) not in sys.path:
 
 from proyecto.agents.document_intelligence_agent import (
     EXTENSIONES_DOCUMENTO,
+    EXTENSIONES_IMAGEN,
     MAX_DOCUMENT_BYTES,
+    MAX_IMAGE_BYTES,
     MODELO_VISION_POR_DEFECTO,
     describe_an_image,
     document_to_markdown,
     ocr_image,
 )
+from proyecto.agents.document_relevance import es_rechazo, filtrar_documento
 from proyecto.guardrails import limpiar_base64, redactar_pii
-
-_ORQUESTADOR = None
+from proyecto.security.file_access import authorize_file_access
 
 # Nombres de las tools MCP que expone el orquestador.
 _TOOL_A_AGENTE = {
@@ -46,7 +48,7 @@ _TOOL_A_AGENTE = {
     "mcp_extraer_texto_imagen": "document_intelligence",
     "mcp_describir_imagen": "document_intelligence",
     "mcp_convertir_documento_markdown": "document_intelligence",
-    # Tools de bajo nivel usadas por el hub y por el grafo.
+    # Tools de bajo nivel usadas por el backend de Data Analyst y por el grafo.
     "listar_tablas": "data_analyst",
     "describir_tabla": "data_analyst",
     "valores_columna": "data_analyst",
@@ -98,25 +100,48 @@ class Respuesta(TypedDict, total=False):
     validacion_documental: dict
 
 
+def _token_actual() -> str:
+    """Token de la sesión activa, venga de Streamlit o del entorno."""
+    token = os.environ.get("PROYECTO_AUTH_TOKEN", "")
+    try:
+        import streamlit as st
+
+        token = str(st.session_state.get("auth_token", token) or token)
+    except Exception:  # noqa: BLE001 - el servicio también se usa sin Streamlit
+        pass
+    return token.strip()
+
+
 def _llamar_mcp_document_intelligence(
     nombre_tool: str,
     ruta: str,
     campo: str = "image_path",
+    extra: dict[str, str] | None = None,
 ) -> str:
     """Llama una tool del servidor MCP por stdio."""
     from fastmcp import Client
     from fastmcp.client.transports import StdioTransport
+    from proyecto.security.local_auth import subprocess_env
+
+    # El subproceso MCP debe recibir la misma identidad que la UI para que
+    # document_intelligence aplique el aislamiento de archivos.
+    entorno = subprocess_env()
+    token = _token_actual()
+    if token:
+        entorno["PROYECTO_AUTH_TOKEN"] = token
 
     transporte = StdioTransport(
         command=sys.executable,
         args=["-m", "proyecto.mcp_servers.document_intelligence_server"],
         cwd=str(_RAIZ),
+        env=entorno,
     )
+    argumentos = {campo: ruta, **(extra or {})}
 
     async def ejecutar() -> str:
-        timeout = float(os.getenv("MCP_TIMEOUT", "180"))
+        timeout = float(os.getenv("MCP_DOCUMENT_TIMEOUT", "1800"))
         async with Client(transporte, timeout=timeout) as cliente:
-            resultado = await cliente.call_tool(nombre_tool, {campo: ruta})
+            resultado = await cliente.call_tool(nombre_tool, argumentos)
             if resultado.is_error:
                 raise RuntimeError(f"El servidor MCP falló al ejecutar {nombre_tool}.")
             return "\n".join(
@@ -128,6 +153,62 @@ def _llamar_mcp_document_intelligence(
     return asyncio.run(ejecutar())
 
 
+_PAGINAS_RE = re.compile(
+    r"\b(?:p[aá]ginas?|pags?\.?|hojas?)\s+(\d+(?:\s*(?:-|a|y|,)\s*\d+)*)",
+    re.IGNORECASE,
+)
+
+
+def _paginas_solicitadas(consulta: str) -> str:
+    """Extrae un rango de páginas de la consulta, por ejemplo ``1-5,8``."""
+    coincidencia = _PAGINAS_RE.search(consulta or "")
+    if not coincidencia:
+        return ""
+    fragmento = coincidencia.group(1)
+    fragmento = re.sub(r"\s*a\s*", "-", fragmento, flags=re.IGNORECASE)
+    fragmento = re.sub(r"\s*y\s*", ",", fragmento, flags=re.IGNORECASE)
+    fragmento = re.sub(r"\s*-\s*", "-", fragmento)
+    fragmento = re.sub(r"\s*,\s*", ",", fragmento)
+    return fragmento.strip(" ,-")
+
+
+def _mensaje_formato(sufijo: str, permitidas: set[str]) -> str:
+    """Mensaje público y estable para un formato de archivo no soportado."""
+    return (
+        f"Formato no soportado: {sufijo or 'sin extensión'}. "
+        f"Usa: {', '.join(sorted(permitidas))}."
+    )
+
+
+def _respuesta_error_archivo(
+    mensaje: str,
+    *,
+    detalle: str,
+    accion: str,
+    duracion: float,
+    fuente: str,
+) -> Respuesta:
+    """Respuesta de error común para archivos rechazados por el servicio."""
+    return {
+        "respuesta": mensaje,
+        "pasos": [
+            {
+                "agente": "document_intelligence",
+                "accion": accion,
+                "detalle": detalle,
+                "duracion": duracion,
+                "estado": "error",
+            }
+        ],
+        "agentes": ["document_intelligence"],
+        "herramientas": [],
+        "fuentes": [fuente],
+        "duracion": duracion,
+        "error": mensaje,
+        "formato": "markdown",
+    }
+
+
 def procesar_imagen(ruta: str, operacion: str = "ocr") -> Respuesta:
     """Procesa una imagen local mediante el servidor MCP, con respaldo local."""
     inicio = time.perf_counter()
@@ -137,23 +218,45 @@ def procesar_imagen(ruta: str, operacion: str = "ocr") -> Respuesta:
     nombre_tool = "describir_imagen" if es_descripcion else "extraer_texto_imagen"
     herramienta_local = describe_an_image if es_descripcion else ocr_image
 
+    try:
+        authorize_file_access(ruta_path, token=_token_actual())
+    except PermissionError as exc:
+        mensaje = f"Acceso denegado: {exc}"
+        return _respuesta_error_archivo(
+            mensaje,
+            detalle=ruta_path.name,
+            accion=f"{etiqueta} de imagen",
+            duracion=round(time.perf_counter() - inicio, 2),
+            fuente=ruta_path.name,
+        )
+
     if not ruta_path.is_file():
-        mensaje = f"No existe la imagen: {ruta}"
-        return {
-            "respuesta": mensaje,
-            "pasos": [
-                {
-                    "agente": "document_intelligence",
-                    "accion": f"{etiqueta} de imagen",
-                    "detalle": mensaje,
-                    "estado": "error",
-                }
-            ],
-            "agentes": ["document_intelligence"],
-            "herramientas": [],
-            "error": mensaje,
-            "formato": "markdown",
-        }
+        return _respuesta_error_archivo(
+            f"No existe la imagen: {ruta}",
+            detalle=ruta_path.name,
+            accion=f"{etiqueta} de imagen",
+            duracion=round(time.perf_counter() - inicio, 2),
+            fuente=ruta_path.name,
+        )
+
+    sufijo = ruta_path.suffix.lower()
+    if sufijo not in EXTENSIONES_IMAGEN:
+        return _respuesta_error_archivo(
+            _mensaje_formato(sufijo, EXTENSIONES_IMAGEN),
+            detalle=ruta_path.name,
+            accion=f"{etiqueta} de imagen",
+            duracion=round(time.perf_counter() - inicio, 2),
+            fuente=ruta_path.name,
+        )
+
+    if ruta_path.stat().st_size > MAX_IMAGE_BYTES:
+        return _respuesta_error_archivo(
+            "La imagen supera el límite de 10 MB.",
+            detalle=ruta_path.name,
+            accion=f"{etiqueta} de imagen",
+            duracion=round(time.perf_counter() - inicio, 2),
+            fuente=ruta_path.name,
+        )
 
     via = "MCP"
     error: str | None = None
@@ -161,7 +264,17 @@ def procesar_imagen(ruta: str, operacion: str = "ocr") -> Respuesta:
         texto = _llamar_mcp_document_intelligence(nombre_tool, str(ruta_path))
     except Exception as exc:  # noqa: BLE001 - se intenta el respaldo local
         try:
-            texto = herramienta_local.invoke({"image_path": str(ruta_path)})
+            token = _token_actual()
+            if token:
+                from proyecto.security.local_auth import authenticated
+
+                with authenticated(token):
+                    texto = herramienta_local.invoke({"image_path": str(ruta_path)})
+            else:
+                texto = herramienta_local.invoke({"image_path": str(ruta_path)})
+            # El servidor MCP ya filtra por relevancia; el respaldo local
+            # debe aplicar el mismo filtro.
+            texto = filtrar_documento(texto, ruta_path.name)
             via = f"Fallback local ({type(exc).__name__})"
         except Exception as exc_local:  # noqa: BLE001
             texto = (
@@ -173,6 +286,7 @@ def procesar_imagen(ruta: str, operacion: str = "ocr") -> Respuesta:
 
     if texto.startswith("No se pudo procesar la imagen:"):
         error = texto
+    rechazado = es_rechazo(texto)
 
     duracion = round(time.perf_counter() - inicio, 2)
     return {
@@ -183,7 +297,7 @@ def procesar_imagen(ruta: str, operacion: str = "ocr") -> Respuesta:
                 "accion": f"{etiqueta} de imagen",
                 "detalle": f"{ruta_path.name} · vía {via}",
                 "duracion": duracion,
-                "estado": "error" if error else "ok",
+                "estado": "error" if error else ("alerta" if rechazado else "ok"),
             }
         ],
         "agentes": ["document_intelligence"],
@@ -209,52 +323,59 @@ def procesar_documento(
     sufijo = ruta_path.suffix.lower()
 
     mensaje_error: str | None = None
-    if not ruta_path.is_file():
-        mensaje_error = f"No existe el documento: {ruta}"
-    elif sufijo not in EXTENSIONES_DOCUMENTO:
-        permitidos = ", ".join(sorted(EXTENSIONES_DOCUMENTO))
-        mensaje_error = (
-            f"Formato no soportado: {sufijo or 'sin extensión'}. "
-            f"Usa: {permitidos}."
-        )
-    elif ruta_path.stat().st_size > MAX_DOCUMENT_BYTES:
-        mensaje_error = "El documento supera el límite de 25 MB."
+    try:
+        authorize_file_access(ruta_path, token=_token_actual())
+    except PermissionError as exc:
+        mensaje_error = f"Acceso denegado: {exc}"
+    else:
+        if not ruta_path.is_file():
+            mensaje_error = f"No existe el documento: {ruta}"
+        elif sufijo not in EXTENSIONES_DOCUMENTO:
+            mensaje_error = _mensaje_formato(sufijo, EXTENSIONES_DOCUMENTO)
+        elif ruta_path.stat().st_size > MAX_DOCUMENT_BYTES:
+            mensaje_error = "El documento supera el límite de 25 MB."
 
     if mensaje_error:
-        duracion = round(time.perf_counter() - inicio, 2)
-        return {
-            "respuesta": mensaje_error,
-            "pasos": [
-                {
-                    "agente": "document_intelligence",
-                    "accion": "No se pudo convertir el documento",
-                    "detalle": etiqueta,
-                    "duracion": duracion,
-                    "estado": "error",
-                }
-            ],
-            "agentes": ["document_intelligence"],
-            "herramientas": [],
-            "fuentes": [etiqueta],
-            "duracion": duracion,
-            "error": mensaje_error,
-            "formato": "markdown",
-        }
+        return _respuesta_error_archivo(
+            mensaje_error,
+            detalle=etiqueta,
+            accion="No se pudo convertir el documento",
+            duracion=round(time.perf_counter() - inicio, 2),
+            fuente=etiqueta,
+        )
 
     via = "MCP"
     error: str | None = None
     alertas: list[str] = []
+    extra: dict[str, str] = {"modo": "auto"}
+    if sufijo == ".pdf":
+        paginas = _paginas_solicitadas(consulta)
+        if paginas:
+            extra["paginas"] = paginas
     try:
         texto = _llamar_mcp_document_intelligence(
             "convertir_documento_markdown",
             str(ruta_path),
             campo="file_path",
+            extra=extra,
         )
     except Exception as exc:  # noqa: BLE001 - se intenta el respaldo local
         try:
-            texto = document_to_markdown.invoke(
-                {"file_path": str(ruta_path)}
-            )
+            token = _token_actual()
+            if token:
+                from proyecto.security.local_auth import authenticated
+
+                with authenticated(token):
+                    texto = document_to_markdown.invoke(
+                        {"file_path": str(ruta_path), **extra}
+                    )
+            else:
+                texto = document_to_markdown.invoke(
+                    {"file_path": str(ruta_path), **extra}
+                )
+            # El servidor MCP ya filtra por relevancia; el respaldo local
+            # debe aplicar el mismo filtro.
+            texto = filtrar_documento(texto, ruta_path.name)
             via = f"Fallback local ({type(exc).__name__})"
         except Exception as exc_local:  # noqa: BLE001
             texto = (
@@ -294,7 +415,7 @@ def procesar_documento(
             "fuentes": [etiqueta],
             "duracion": duracion,
             "modelo": None,
-            "nota": f"Documento · MarkItDown · vía {via}",
+            "nota": f"Documento · MarkItDown/PDF OCR · vía {via}",
             "error": error,
             "formato": "markdown",
         }
@@ -339,11 +460,33 @@ def procesar_documento(
     return resultado
 
 
+def _usuario_actual() -> str:
+    """Identidad autenticada para aislar el contexto documental."""
+    token = _token_actual()
+
+    if not token:
+        return (
+            os.getenv("PROYECTO_AUTH_SUBJECT", "local").strip() or "local"
+        )
+    try:
+        from proyecto.security.local_auth import authenticated, principal
+
+        with authenticated(token):
+            return str(principal().get("subject") or "local").strip() or "local"
+    except Exception:  # noqa: BLE001 - se usa un ámbito local seguro
+        return os.getenv("PROYECTO_AUTH_SUBJECT", "local").strip() or "local"
+
+
 def _get_orquestador():
     import streamlit as st
-    if 'orquestador_sesion' not in st.session_state:
+
+    usuario = _usuario_actual()
+    actual = st.session_state.get("orquestador_sesion")
+    if actual is None or st.session_state.get("orquestador_usuario") != usuario:
         from proyecto.orchestration.orquestador import Orquestador
-        st.session_state.orquestador_sesion = Orquestador()
+
+        st.session_state.orquestador_sesion = Orquestador(usuario=usuario)
+        st.session_state.orquestador_usuario = usuario
     return st.session_state.orquestador_sesion
 
 
@@ -513,6 +656,55 @@ def _registrar_documento_en_orquestador(
         pass
 
 
+def _respuesta_rechazo(
+    consulta: str,
+    ruta: str,
+    etiqueta: str,
+    texto: str,
+    pasos_previos: list[Paso] | None = None,
+    herramientas: list[str] | None = None,
+) -> Respuesta:
+    """Respuesta determinista para un archivo ajeno a banca o finanzas.
+
+    No se llama al orquestador ni se guarda el archivo en el contexto
+    documental: así su contenido no puede influir en la conversación.
+    """
+    # Las rutas de la UI son temporales (documento_<uuid>.pdf); el usuario
+    # reconoce el nombre original.
+    nombre_temporal = Path(ruta).name
+    mensaje = texto.strip()
+    if etiqueta and nombre_temporal and nombre_temporal != etiqueta:
+        mensaje = mensaje.replace(f"«{nombre_temporal}»", f"«{etiqueta}»")
+
+    try:
+        _get_orquestador().registrar_documento_rechazado(ruta, mensaje, consulta)
+    except Exception:  # noqa: BLE001 - el rechazo no debe romper la respuesta
+        pass
+
+    pasos: list[Paso] = [
+        *(pasos_previos or []),
+        {
+            "agente": "document_intelligence",
+            "accion": "Archivo rechazado por relevancia",
+            "detalle": f"{etiqueta} · no relacionado con banca o finanzas",
+            "estado": "alerta",
+        },
+    ]
+    return {
+        "respuesta": mensaje,
+        "pasos": pasos,
+        "agentes": ["document_intelligence"],
+        "herramientas": list(dict.fromkeys(herramientas or [])),
+        "alertas": [
+            f"{etiqueta}: archivo fuera del alcance bancario; no se guardó "
+            "ni se usó en la conversación."
+        ],
+        "fuentes": [],
+        "nota": "Filtro de relevancia documental",
+        "formato": "markdown",
+    }
+
+
 def _responder_con_archivo(
     consulta: str,
     ruta: str,
@@ -524,6 +716,11 @@ def _responder_con_archivo(
     herramientas: list[str],
 ) -> Respuesta:
     """Entrega el resultado del subagente al orquestador para la respuesta final."""
+    if es_rechazo(texto):
+        return _respuesta_rechazo(
+            consulta, ruta, etiqueta, texto, pasos_previos, herramientas
+        )
+
     try:
         _registrar_documento_en_orquestador(
             _get_orquestador(),
@@ -617,13 +814,7 @@ def preguntar_orquestador(
                 resultado.get("herramientas") or [],
             )
 
-        token = os.environ.get("PROYECTO_AUTH_TOKEN", "")
-        try:
-            import streamlit as st
-
-            token = st.session_state.get("auth_token", token) or token
-        except Exception:  # noqa: BLE001 - el servicio también se usa sin Streamlit
-            pass
+        token = _token_actual()
 
         if token:
             from langsmith import tracing_context
@@ -705,7 +896,7 @@ def preguntar_orquestador(
                 fuentes.append(nombre)
 
     # El grafo deja el resultado estructurado del analista en el estado. Es la
-    # fuente más fiable para SQL, tabla y PNG, sobre todo con el hub.
+    # fuente más fiable para SQL, tabla y PNG.
     estado_grafo = getattr(orquestador, "ultimo_estado_grafo", {}) or {}
     resultado_analista = (estado_grafo.get("resultados") or {}).get(
         "data_analyst", {}
@@ -839,11 +1030,44 @@ def procesar_imagen_auto(
     nombre: str | None = None,
 ) -> Respuesta:
     """Pregunta OCR/descripción o deja que el orquestador decida."""
+    inicio = time.perf_counter()
     ruta_path = Path(ruta).expanduser().resolve()
+    etiqueta = (nombre or ruta_path.name).strip() or ruta_path.name
+
+    try:
+        authorize_file_access(ruta_path, token=_token_actual())
+    except PermissionError as exc:
+        mensaje = f"Acceso denegado: {exc}"
+        return _respuesta_error_archivo(
+            mensaje,
+            detalle=etiqueta,
+            accion="Imagen rechazada",
+            duracion=round(time.perf_counter() - inicio, 2),
+            fuente=etiqueta,
+        )
+
     if not ruta_path.is_file():
         return procesar_imagen(str(ruta_path), "ocr")
 
-    etiqueta = (nombre or ruta_path.name).strip() or ruta_path.name
+    sufijo = ruta_path.suffix.lower()
+    if sufijo not in EXTENSIONES_IMAGEN:
+        return _respuesta_error_archivo(
+            _mensaje_formato(sufijo, EXTENSIONES_IMAGEN),
+            detalle=etiqueta,
+            accion="Imagen rechazada",
+            duracion=round(time.perf_counter() - inicio, 2),
+            fuente=etiqueta,
+        )
+
+    if ruta_path.stat().st_size > MAX_IMAGE_BYTES:
+        return _respuesta_error_archivo(
+            "La imagen supera el límite de 10 MB.",
+            detalle=etiqueta,
+            accion="Imagen rechazada",
+            duracion=round(time.perf_counter() - inicio, 2),
+            fuente=etiqueta,
+        )
+
     indicacion = (consulta or "").strip().rstrip(" .!?")
     if indicacion.casefold() in _CONSULTAS_IMAGEN_GENERICAS:
         return _preguntar_operacion_imagen(ruta_path, etiqueta)
@@ -881,14 +1105,24 @@ def procesar_imagen_auto(
         f"{indicacion}\n\n"
         f"Adjunté una imagen en {ruta_path}. Decide si necesitas extraer el "
         "texto (OCR) o describir la imagen. Si parece una factura, recibo o "
-        "comprobante, prefiere OCR; si es una foto general, descríbela. Usa la "
-        "herramienta MCP adecuada. Si la intención no es clara, pregúntame qué "
-        "quiero hacer."
+        "comprobante, prefiere OCR; en otro caso, descríbela. Usa la "
+        "herramienta MCP adecuada. Si la herramienta responde que el archivo "
+        "está fuera de alcance, comunícalo sin describir su contenido. Si la "
+        "intención no es clara, pregúntame qué quiero hacer."
     )
 
     resultado = preguntar_orquestador(prompt)
     if resultado.get("error"):
         alterno = procesar_imagen(str(ruta_path), "ocr")
+        if es_rechazo(alterno.get("respuesta")):
+            return _respuesta_rechazo(
+                indicacion,
+                str(ruta_path),
+                etiqueta,
+                str(alterno.get("respuesta") or ""),
+                alterno.get("pasos") or [],
+                alterno.get("herramientas") or [],
+            )
         if not alterno.get("error"):
             try:
                 _registrar_documento_en_orquestador(
@@ -912,6 +1146,20 @@ def procesar_imagen_auto(
         alterno["fuentes"] = [etiqueta]
         alterno["nota"] = "MCP directo (fallback)"
         return alterno
+
+    # Si el filtro de relevancia rechazó la imagen, la respuesta es el
+    # rechazo y no se guarda nada en el contexto documental.
+    for herramienta in resultado.get("resultados") or []:
+        salida = str(herramienta.get("salida") or "")
+        if es_rechazo(salida):
+            return _respuesta_rechazo(
+                indicacion,
+                str(ruta_path),
+                etiqueta,
+                salida,
+                resultado.get("pasos") or [],
+                resultado.get("herramientas") or [],
+            )
 
     # Guarda el resultado documental que haya usado el orquestador para que
     # las consultas de seguimiento no dependan de que el LLM recuerde el path.

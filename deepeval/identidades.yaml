@@ -1,0 +1,43 @@
+# Identidades de prueba que la suite aprovisiona como "operador" (US-01).
+#
+# Se crean en una carpeta privada TEMPORAL (PROYECTO_AUTH_DIR de la corrida),
+# nunca en tu AppData real. La clave se genera al azar en cada corrida y no se
+# imprime ni se guarda. Al terminar, la carpeta se borra.
+#
+# rol:       normal | auditor  (los únicos que acepta local_auth.provision)
+# clientes:  lista de num_cte o "todos" (todos los clientes de dim_cliente)
+# permisos:  aggregate, audit, governance, pii:nombre, pii:rfc
+#
+# Un caso elige identidad con `identidad: <nombre>`. `sin_sesion` es reservado:
+# ejecuta el caso sin token para comprobar que se exige autenticación.
+
+identidades:
+  cliente_1:
+    descripcion: Cliente persona física; solo ve sus propias cuentas.
+    rol: normal
+    clientes: [1]
+    permisos: []
+
+  cliente_2:
+    descripcion: Otro cliente; sirve para probar aislamiento entre identidades.
+    rol: normal
+    clientes: [2]
+    permisos: []
+
+  auditor:
+    descripcion: Auditor con alcance completo, gobierno y PII de nombre/RFC.
+    rol: auditor
+    clientes: todos
+    permisos: [aggregate, audit, governance, "pii:nombre", "pii:rfc"]
+
+  analista:
+    descripcion: Analista con alcance completo, sin PII ni gobierno de datos.
+    rol: auditor
+    clientes: todos
+    permisos: [aggregate, audit]
+
+  data_steward:
+    descripcion: Responsable de gobierno de datos; metadatos y calidad.
+    rol: auditor
+    clientes: todos
+    permisos: [governance, aggregate]

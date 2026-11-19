@@ -54,8 +54,22 @@ def plan_query(question):
         if 'cheques' in q and 'ahorro' in q:
             base += " AND cve_producto IN ('CHEQUES','AHORRO')"
         return 'Clientes con mayor saldo autorizado', f'SELECT num_cte,ROUND(SUM(saldo_mes),2) saldo_combinado FROM vw_saldo_mensual WHERE {base} GROUP BY num_cte ORDER BY SUM(saldo_mes) DESC,num_cte LIMIT {limit}'
-    if 'saldo' in q and 'promedio' in q and 'segmento' in q and periods:
-        return 'Saldo promedio por segmento', "SELECT c.segmento,ROUND(AVG(s.saldo_mes),2) saldo_promedio FROM vw_saldo_mensual s JOIN vw_cliente_publico c USING(num_cte) WHERE s.anio_mes="+str(periods[-1])+(f" AND s.cve_producto='{product}'" if product else '')+' GROUP BY c.segmento ORDER BY c.segmento'
+    if 'saldo' in q and 'promedio' in q and 'segmento' in q:
+        condiciones = []
+        if account:
+            condiciones.append(f's.num_cta={int(account[1])}')
+        if customer:
+            condiciones.append(f's.num_cte={int(customer[1])}')
+        if product:
+            condiciones.append(f"s.cve_producto='{product}'")
+        if periods:
+            condiciones.append(f's.anio_mes={periods[-1]}')
+        where_s = ' WHERE ' + ' AND '.join(condiciones) if condiciones else ''
+        return 'Saldo promedio por segmento', (
+            'SELECT c.segmento,ROUND(AVG(s.saldo_mes),2) saldo_promedio '
+            'FROM vw_saldo_mensual s JOIN vw_cliente_publico c USING(num_cte)'
+            + where_s + ' GROUP BY c.segmento ORDER BY c.segmento'
+        )
     if 'saldo' in q and 'por producto' in q and periods:
         return 'Saldo total por producto', f'SELECT cve_producto,ROUND(SUM(saldo_mes),2) saldo_total FROM vw_saldo_mensual WHERE anio_mes={periods[-1]} GROUP BY cve_producto ORDER BY cve_producto'
     if re.search(r'creci|crecimiento|variacion', q) and 'saldo' in q and len(periods) == 2:
@@ -84,6 +98,8 @@ def format_result(title, result, sql):
     def cell(value):
         if value is None:
             return 'Sin dato disponible'
+        if isinstance(value, float):
+            value = round(value, 2)
         return str(value).replace('|', '\\|').replace('\n', ' ')
     labels = {'num_cta':'Cuenta','num_cte':'Cliente','saldo_mes':'Saldo de cierre','fec_corte':'Fecha de corte','fec_txn':'Fecha','desc_txn':'Movimiento','saldo_txn':'Importe','importe_firmado':'Importe con signo'}
     text = '**'+title+'**\n\n'

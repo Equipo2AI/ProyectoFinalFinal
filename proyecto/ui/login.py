@@ -1,10 +1,15 @@
 """Presentacion del acceso: usa exclusivamente la autenticacion existente."""
+import shutil
+
 import streamlit as st
 
 from proyecto.security.local_auth import authenticated, login, logout, principal
 
 
 def _clear(message=None):
+    upload_dir = st.session_state.get('upload_dir')
+    if upload_dir:
+        shutil.rmtree(upload_dir, ignore_errors=True)
     theme = st.session_state.get('tema', 'oscuro')
     st.session_state.clear()
     st.session_state.tema = theme

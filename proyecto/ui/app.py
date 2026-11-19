@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import shutil
 import sys
-import tempfile
 import uuid
 from pathlib import Path
 
@@ -27,6 +26,7 @@ from agents.document_intelligence_agent import (
     MAX_DOCUMENT_BYTES,
     MAX_IMAGE_BYTES,
 )
+from security.file_access import new_upload_dir
 from ui import componentes, estilos
 
 TIPOS_ARCHIVO = sorted(
@@ -62,7 +62,7 @@ st.set_page_config(
 
 st.session_state.setdefault('tema', 'oscuro')
 estilos.aplicar(st.session_state.tema)
-from ui.login import render_access
+from ui.login import identidad_actual, render_access
 render_access()
 
 for clave, valor in {
@@ -116,7 +116,11 @@ def _guardar_archivo_chat(archivo) -> tuple[str, str, str] | None:
 
     directorio = st.session_state.get("upload_dir")
     if not directorio:
-        directorio = tempfile.mkdtemp(prefix="docint_ui_")
+        identidad = identidad_actual(st.session_state.get("auth_token"))
+        if not identidad:
+            st.error("La sesión ya no es válida. Inicia sesión nuevamente.")
+            return None
+        directorio = str(new_upload_dir(identidad["subject"]))
         st.session_state.upload_dir = directorio
 
     destino = Path(directorio) / f"{tipo}_{uuid.uuid4().hex}{sufijo}"
@@ -318,6 +322,9 @@ with izquierda:
                         else:
                             st.markdown(componentes.texto(mensaje["texto"]))
                         if mensaje["rol"] == "assistant":
+                            grafica = mensaje.get("grafica")
+                            if grafica:
+                                st.image(grafica, width="stretch")
                             st.markdown(
                                 componentes.meta_mensaje(
                                     mensaje.get("pasos"),
@@ -329,7 +336,7 @@ with izquierda:
                     if st.session_state.get("archivo_tipo") == "imagen":
                         estado = "Procesando imagen…"
                     elif st.session_state.get("archivo_tipo") == "documento":
-                        estado = "Convirtiendo documento…"
+                        estado = "Leyendo documento (un PDF escaneado puede tardar)…"
                     else:
                         estado = "Analizando la consulta…"
                     componentes.pensando(estado)
@@ -456,6 +463,7 @@ if st.session_state.pensando:
                 "pasos": pasos,
                 "duracion": artefacto.get("duracion"),
                 "formato": artefacto.get("formato"),
+                "grafica": artefacto.get("grafica"),
             }
         )
     finally:

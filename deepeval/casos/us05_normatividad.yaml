@@ -1,0 +1,70 @@
+# US-05 · Responder sobre normativa con evidencia y referencias (P0)
+#
+# CA-03 (verificar_cita contra la evidencia recuperada) también se prueba sin
+# LLM en tests/historias/test_us05_normatividad.py.
+predeterminados:
+  identidad: cliente_1
+  agente_esperado: normatividad_rag
+  herramientas_esperadas: [mcp_buscar_normatividad]
+  metricas: [relevancia]
+  etiquetas: [normatividad]
+
+casos:
+  - id: us05-consentimiento-con-fuente
+    cubre: [US-05.CA-01, US-09.CA-03]
+    pregunta: ¿Qué dice la Ley Federal de Protección de Datos Personales sobre el consentimiento?
+    debe_tener_fuentes: true
+    debe_contener: ["consentimiento"]
+    debe_contener_alguno: ["página", "pagina", "FUENTE"]
+    criterio: >
+      La respuesta explica lo que dice la evidencia sobre el consentimiento y
+      cita el documento y la página o ubicación de donde proviene.
+    etiquetas: [smoke]
+
+  - id: us05-aviso-privacidad-con-fuente
+    cubre: [US-05.CA-01]
+    pregunta: Según el aviso de privacidad de Banamex, ¿para qué finalidades se tratan mis datos personales?
+    debe_tener_fuentes: true
+    criterio: >
+      La respuesta describe las finalidades del tratamiento según el aviso de
+      privacidad, cita el archivo y no inventa artículos de otras leyes.
+
+  - id: us05-sin-evidencia-no-inventa
+    cubre: [US-05.CA-02]
+    pregunta: ¿Qué dice la ley de criptomonedas de Japón sobre los exchanges?
+    agente_esperado: null
+    herramientas_esperadas: []
+    debe_contener_alguno:
+      - Sin evidencia
+      - No se recuperó evidencia
+      - no encontr
+      - no tengo información
+    metricas: [reglas, criterio]
+    criterio: >
+      El corpus no contiene esa ley. La respuesta declara que no hay evidencia
+      suficiente y no inventa artículos, plazos ni citas.
+
+  - id: us05-cita-respaldada-por-evidencia
+    cubre: [US-05.CA-03]
+    pregunta: Cita textualmente lo que dice el aviso legal sobre la disponibilidad del portal.
+    debe_tener_fuentes: true
+    # fidelidad compara cada afirmación con los fragmentos recuperados (traza).
+    metricas: [fidelidad, criterio]
+    criterio: >
+      Lo que se presenta como cita textual aparece en la evidencia recuperada;
+      si no hay un fragmento literal, la respuesta lo dice en vez de inventarlo.
+
+  - id: us05-modo-local-sin-pinecone
+    cubre: [US-05.CA-04, US-10.CA-04]
+    # El modo local exige que los términos distintivos aparezcan en el corpus;
+    # por eso la pregunta usa el vocabulario del documento.
+    pregunta: ¿Qué indican los términos y condiciones Citibanamex sobre el acceso al Portal?
+    # Fuerza la caída del índice remoto solo durante este caso.
+    entorno: {PINECONE_API_KEY: "", INDEX_NAME: ""}
+    debe_tener_fuentes: true
+    no_debe_contener: ["mediante Pinecone"]
+    metricas: [reglas, criterio]
+    criterio: >
+      Pinecone no está disponible. La respuesta se apoya en fragmentos del
+      corpus local, cita el archivo y no afirma que la evidencia provenga del
+      índice remoto.

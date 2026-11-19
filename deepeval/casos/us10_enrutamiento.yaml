@@ -1,0 +1,50 @@
+# US-10 · Enrutar cada consulta al especialista correcto (P1)
+#
+# El enrutamiento a Document Intelligence se cubre con us06-ocr-comprobante y
+# CA-04 (componente externo caído) con us05-modo-local-sin-pinecone.
+predeterminados:
+  metricas: [reglas]
+  traza_completa: true
+  etiquetas: [enrutamiento]
+
+casos:
+  - id: us10-ruta-calidad
+    cubre: [US-10.CA-01]
+    identidad: data_steward
+    pregunta: ¿Cuántos valores nulos tiene raw_saldos?
+    agente_esperado: data_steward
+    etiquetas: [smoke]
+
+  - id: us10-ruta-analitica
+    cubre: [US-10.CA-01]
+    identidad: analista
+    pregunta: ¿Cuál es el saldo total por producto en junio de 2026?
+    agente_esperado: data_analyst
+
+  - id: us10-ruta-normativa
+    cubre: [US-10.CA-01]
+    identidad: cliente_1
+    pregunta: ¿Qué establece la Ley Federal de Protección de Datos Personales sobre los derechos ARCO?
+    agente_esperado: normatividad_rag
+
+  - id: us10-consulta-combinada
+    cubre: [US-10.CA-02]
+    identidad: auditor
+    pregunta: >
+      ¿Qué dice la Ley Federal de Protección de Datos Personales sobre el
+      consentimiento y cuántos clientes hay por segmento?
+    agentes_esperados: [normatividad_rag, data_analyst]
+    debe_contener_alguno: ["3,750", "3750"]
+    metricas: [reglas, criterio]
+    criterio: >
+      La respuesta contesta las dos partes: lo que dice la ley sobre el
+      consentimiento (con fuente) y el conteo de clientes por segmento.
+
+  - id: us10-respaldo-hub
+    cubre: [US-10.CA-03]
+    identidad: analista
+    pregunta: ¿Cuántos clientes hay por segmento?
+    skip: >
+      El checkout evaluado solo tiene la ruta LangGraph; no hay modo hub ni
+      variable para forzar la caída de la ruta principal. Agrega aquí el
+      `entorno` que active el hub cuando exista y borra esta línea.

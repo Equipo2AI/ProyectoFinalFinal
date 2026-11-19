@@ -1,7 +1,8 @@
-# Modelos por agente. Es la fuente efectiva: el código lee este archivo al
-# inicializar cada agente. Si falta el archivo o una entrada, se usa el valor
-# por defecto definido en proyecto/config/models.py.
+# Modelos por agente. Es la única fuente efectiva: el código lee este archivo
+# al inicializar cada agente y falla si falta una entrada.
 # DOCUMENT_INTELLIGENCE_MODEL puede sobrescribir el modelo de visión.
+# DOCUMENT_PDF_MODEL puede sobrescribir el modelo de OCR de PDF.
+# DOCUMENT_RELEVANCE_MODEL puede sobrescribir el filtro de relevancia.
 
 agents:
   orchestrator:
@@ -24,6 +25,13 @@ agents:
     provider: ollama
     model: "qwen2.5vl:7b"
 
-  compliance:
+  # Filtro de relevancia de archivos adjuntos: decide si un documento ambiguo
+  # está relacionado con banca o finanzas.
+  document_relevance:
     provider: ollama
     model: "qwen2.5:7b-instruct"
+
+# OCR de PDF: no es un agente, pero comparte la misma configuración de modelos.
+document_pdf:
+  provider: ollama
+  model: "qwen2.5vl:3b"

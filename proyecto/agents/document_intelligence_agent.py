@@ -5,9 +5,13 @@ Qwen2.5-VL servido localmente con Ollama. También convierte documentos locales
 (PDF, DOCX, XLSX, PPTX, CSV, HTML y texto) a Markdown con MarkItDown para que
 otro agente pueda procesarlos.
 
-La conversión a Markdown no hace OCR: si un PDF es escaneado y no tiene capa de
-texto, MarkItDown devolverá poco o ningún contenido. Para esos casos se debe
-usar una tool de OCR/visión sobre las páginas convertidas a imagen.
+Los PDF se procesan por página: si tienen capa de texto se extrae directamente;
+si una página está escaneada o tiene poco texto, se rasteriza y se aplica OCR
+local con Qwen2.5-VL. El OCR nunca sale de la máquina.
+
+Las tools de este módulo solo convierten. El filtro de relevancia (archivos
+ajenos a banca o finanzas) vive en ``document_relevance`` y se aplica en el
+servidor MCP, en el respaldo local de ``servicio`` y en ``procesar``.
 """
 
 from __future__ import annotations
@@ -23,7 +27,9 @@ from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 from langchain_ollama import ChatOllama
 
+from proyecto.agents.document_relevance import filtrar_documento
 from proyecto.config.models import modelo_de
+from proyecto.security.file_access import authorize_file_access
 
 load_dotenv()
 
@@ -149,14 +155,21 @@ def _vision(prompt: str, ruta: str, modelo: str) -> str:
     return _extraer_texto(respuesta.content).strip()
 
 
+def _detalle_error(error: Exception) -> str:
+    """Conserva el mensaje de validación sin exponer la clase de excepción."""
+    if isinstance(error, (ValueError, FileNotFoundError)):
+        return str(error)
+    return f"{type(error).__name__}: {error}"
+
+
 def _error_legible(error: Exception) -> str:
-    return f"No se pudo procesar la imagen: {type(error).__name__}: {error}"
+    return f"No se pudo procesar la imagen: {_detalle_error(error)}"
 
 
 def _error_documento(error: Exception) -> str:
     return (
-        f"No se pudo convertir el documento a Markdown: "
-        f"{type(error).__name__}: {error}"
+        "No se pudo convertir el documento a Markdown: "
+        f"{_detalle_error(error)}"
     )
 
 
@@ -176,8 +189,21 @@ def _extraer_ruta_documento(consulta: str) -> str | None:
     return coincidencia.group(1) or coincidencia.group(2)
 
 
-def _convertir_documento(path: Path) -> str:
-    """Convert a local document to Markdown with MarkItDown."""
+def _convertir_documento(
+    path: Path,
+    modo: str = "auto",
+    paginas: str | None = None,
+) -> str:
+    """Convert a local document to Markdown, with local OCR for PDF pages."""
+    if path.suffix.lower() == ".pdf":
+        from proyecto.agents.pdf_reader import pdf_to_markdown
+
+        return pdf_to_markdown(
+            str(path),
+            modo=modo,
+            paginas=paginas,
+        )
+
     from markitdown import MarkItDown
 
     resultado = MarkItDown().convert(str(path))
@@ -206,6 +232,7 @@ def _quiere_descripcion(consulta: str) -> bool:
 def ocr_image(image_path: str) -> str:
     """Extrae el texto visible de una imagen local (factura, recibo, comprobante)."""
     try:
+        authorize_file_access(image_path)
         return _vision(PROMPT_OCR, image_path, MODELO_VISION_POR_DEFECTO)
     except Exception as error:  # noqa: BLE001 - se devuelve al agente como texto
         return _error_legible(error)
@@ -215,16 +242,31 @@ def ocr_image(image_path: str) -> str:
 def describe_an_image(image_path: str) -> str:
     """Describe una imagen local y, si es un comprobante, resume sus datos visibles."""
     try:
+        authorize_file_access(image_path)
         return _vision(PROMPT_DESCRIPCION, image_path, MODELO_VISION_POR_DEFECTO)
     except Exception as error:  # noqa: BLE001 - se devuelve al agente como texto
         return _error_legible(error)
 
 
 @tool
-def document_to_markdown(file_path: str) -> str:
-    """Convierte un documento local (PDF, DOCX, XLSX, PPTX, CSV, HTML, TXT) a Markdown."""
+def document_to_markdown(
+    file_path: str,
+    modo: str = "auto",
+    paginas: str | None = None,
+) -> str:
+    """Convierte un documento local a Markdown.
+
+    En PDF usa la capa de texto y, si una página no tiene texto suficiente,
+    aplica OCR local con Qwen2.5-VL. ``modo`` puede ser ``auto``, ``texto``,
+    ``ocr`` o ``describir``; ``paginas`` acepta rangos como ``1-5,8``.
+    """
     try:
-        return _convertir_documento(_resolver_documento(file_path))
+        authorize_file_access(file_path)
+        return _convertir_documento(
+            _resolver_documento(file_path),
+            modo=modo,
+            paginas=paginas,
+        )
     except Exception as error:  # noqa: BLE001 - se devuelve al agente como texto
         return _error_documento(error)
 
@@ -234,7 +276,9 @@ class DocumentIntelligenceAgent:
         self.nombre = "document_intelligence"
         self.descripcion = (
             "Lee imágenes (facturas, recibos, comprobantes) con OCR y visión, "
-            "y convierte documentos locales (PDF, DOCX, XLSX, PPTX) a Markdown."
+            "y convierte documentos locales (PDF, DOCX, XLSX, PPTX) a Markdown; "
+            "en PDF usa texto nativo y OCR local de páginas escaneadas. Solo "
+            "acepta archivos relacionados con banca o finanzas."
         )
         # Qwen2.5-VL no soporta tool calling en Ollama. En vez de cargar un
         # segundo LLM solo para enrutar, `procesar` despacha a la tool adecuada.
@@ -245,24 +289,25 @@ class DocumentIntelligenceAgent:
     def procesar(self, consulta: str) -> str:
         ruta_documento = _extraer_ruta_documento(consulta)
         if ruta_documento:
-            return document_to_markdown.invoke(
-                {"file_path": ruta_documento}
-            )
+            texto = document_to_markdown.invoke({"file_path": ruta_documento})
+            return filtrar_documento(texto, Path(ruta_documento).name)
         ruta = _extraer_ruta_imagen(consulta)
         if not ruta:
             return (
                 "Proporciona la ruta local de una imagen o documento "
-                "(por ejemplo: tests/modelo-factura-ex.png o "
+                "(por ejemplo: ruta/a/tu-imagen.png o "
                 "data_governance_files/archivo.pdf)."
             )
         if _quiere_descripcion(consulta):
-            return describe_an_image.invoke({"image_path": ruta})
-        return ocr_image.invoke({"image_path": ruta})
+            texto = describe_an_image.invoke({"image_path": ruta})
+        else:
+            texto = ocr_image.invoke({"image_path": ruta})
+        return filtrar_documento(texto, Path(ruta).name)
 
     def __repr__(self) -> str:
         return (
             f"<Agente {self.nombre} | visión: {self.modelo} | "
-            "documentos: MarkItDown>"
+            "documentos: MarkItDown + PDF OCR | filtro de relevancia>"
         )
 
 

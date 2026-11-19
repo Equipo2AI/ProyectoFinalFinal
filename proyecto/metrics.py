@@ -1,7 +1,7 @@
 """Catálogo declarativo de métricas del Data Analyst.
 
 Las métricas no son SQL libre: son definiciones cerradas sobre vistas y
-columnas existentes. El hub puede consultar el catálogo y pedir una métrica por
+columnas existentes. El orquestador puede consultar el catálogo y pedir una métrica por
 nombre; el backend construye la consulta con una allowlist.
 """
 
