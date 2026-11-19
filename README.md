@@ -549,3 +549,53 @@ La prueba manual existente `tests/probar_data_analyst_mcp.py` se conserva local
 (segun la exclusion del equipo) y ahora verifica MCP real y Streamlit sin
 guardar contrasenas ni alterar la base. Las pruebas unitarias del equipo usan
 identidades reales sobre fixtures aisladas; no requieren acceso anonimo.
+
+### Filtro semántico de documentos adjuntos
+
+Los adjuntos documentales de Streamlit se convierten con MarkItDown/MCP y se
+comparan, antes del orquestador, con cuatro referencias internas mediante
+`bge-large:latest` local. No son normativa oficial ni se agregan a Pinecone/RAG.
+Este filtro identifica similitud de tipo; no certifica autenticidad, cumplimiento
+legal ni permisos para acceder a datos. Imágenes y OCR conservan su flujo previo;
+un PDF sin texto extraíble informa un error y no se clasifica como irrelevante.
+
+Preparación explícita, una vez por equipo/checkout, con los cuatro PDF legítimos
+en Downloads (ajusta las rutas si los guardaste en otro lugar):
+
+```powershell
+ollama pull bge-large:latest
+$pdf = Join-Path $env:USERPROFILE 'Downloads'
+.\.venv\Scripts\python.exe -m proyecto.agents.document_similarity --referencias "$pdf\01_Normativa_Data_Governance_COMPLICADA.pdf" "$pdf\01_Normativa_Data_Governance_LIMPIA.pdf" "$pdf\02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf" "$pdf\02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf" --calibracion tests/fixtures/document_similarity_calibration.json
+```
+
+El registro guarda vectores normalizados, nombres, hashes de los PDF, identidad
+del modelo y evidencia de calibración en
+`%LOCALAPPDATA%\ProyectoFinalFinal\document_similarity\<id-del-proyecto>\references.json`.
+No copia PDF ni conserva texto o embeddings de uploads. No es una base vectorial.
+`PROYECTO_DOCUMENT_REFERENCES_DIR` permite otra ubicación privada; debe ser la misma
+para la preparación y Streamlit. No la pongas en el repositorio ni OneDrive.
+
+Se comparan hasta 24 fragmentos repartidos por el documento mediante coseno;
+cada fragmento aporta su mejor coincidencia con cada referencia y se promedian
+las coincidencias. Se toma la referencia con mayor puntuación. Los límites se
+calculan con ejemplos sintéticos etiquetados separados de la validación: mínimo
+de positivos para aceptar, máximo de negativos para rechazar. Entre ambos es
+indeterminado; si no hay separación en la calibración, no se habilita el filtro.
+Cambiar el modelo, las referencias o el algoritmo requiere preparar/calibrar otra
+vez. Los límites se guardan, no se recalculan por upload.
+
+Solo un resultado aceptado llega al orquestador. Un indeterminado solicita más
+evidencia sin llamarlo irrelevante; los fallos de Ollama, extracción o caché son
+errores técnicos. La traza muestra decisión, modelo, similitudes y tiempo. Las
+similitudes no son porcentajes de confianza. La calibración actual es pequeña:
+no se garantiza generalización a todos los documentos financieros.
+
+Pruebas focalizadas, sin inferencia generativa:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/test_document_similarity.py -q -p no:cacheprovider
+# Opcional: requiere referencias preparadas y Ollama; ejecuta los cuatro PDF sintéticos por MCP.
+$env:VALIDAR_EMBEDDINGS_REAL = '1'
+.\.venv\Scripts\python.exe -m pytest tests/test_document_similarity.py -k lote_mcp_real -q -s -p no:cacheprovider
+Remove-Item Env:VALIDAR_EMBEDDINGS_REAL
+```

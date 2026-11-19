@@ -95,6 +95,7 @@ class Respuesta(TypedDict, total=False):
     nota: str | None
     error: str | None
     formato: str | None
+    validacion_documental: dict
 
 
 def _llamar_mcp_document_intelligence(
@@ -266,7 +267,7 @@ def procesar_documento(
     if texto.startswith("No se pudo convertir el documento a Markdown:"):
         error = texto
     elif texto.startswith("MarkItDown no extrajo texto"):
-        alertas.append(texto)
+        error = texto
 
     duracion = round(time.perf_counter() - inicio, 2)
     estado = "error" if error else ("alerta" if alertas else "ok")
@@ -298,16 +299,44 @@ def procesar_documento(
             "formato": "markdown",
         }
 
-    return _responder_con_archivo(
+    # El upload no alcanza el orquestador ni su memoria hasta validar su tipo.
+    # Sin fallback permisivo: un fallo tecnico no equivale a irrelevancia.
+    from proyecto.mcp_servers.mcp_client import llamar_herramienta
+    try:
+        validacion = json.loads(llamar_herramienta(
+            "proyecto.mcp_servers.document_intelligence_server",
+            "validar_tipo_documental", {"texto": texto},
+        ))
+        if validacion.get("decision") not in {"aceptado", "rechazado", "indeterminado", "error_tecnico"}:
+            raise ValueError("Contrato de validacion documental invalido")
+    except Exception:
+        validacion = {"decision": "error_tecnico", "message": "No se pudo ejecutar la validación documental por MCP. Comprueba Ollama y las referencias locales."}
+    herramientas.append("validar_tipo_documental")
+    pasos = [paso_conversion, {
+        "agente": "document_intelligence", "accion": "Validación semántica del tipo documental",
+        "detalle": validacion["decision"], "duracion": validacion.get("seconds"),
+        "estado": "ok" if validacion["decision"] == "aceptado" else "error" if validacion["decision"] == "error_tecnico" else "alerta",
+    }]
+    if validacion["decision"] != "aceptado":
+        return {
+            "respuesta": validacion["message"], "pasos": pasos,
+            "agentes": ["document_intelligence"], "herramientas": herramientas,
+            "fuentes": [etiqueta], "duracion": round(time.perf_counter() - inicio, 2),
+            "error": validacion["message"] if validacion["decision"] == "error_tecnico" else None,
+            "formato": "markdown", "validacion_documental": validacion,
+        }
+    resultado = _responder_con_archivo(
         consulta,
         str(ruta_path),
         etiqueta,
         "documento",
         "markdown",
         texto,
-        [paso_conversion],
+        pasos,
         herramientas,
     )
+    resultado["validacion_documental"] = validacion
+    return resultado
 
 
 def _get_orquestador():

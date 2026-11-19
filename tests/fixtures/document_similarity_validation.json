@@ -1,0 +1,25 @@
+[
+  {
+    "id": "estado_nuevo",
+    "expected": "aceptado",
+    "text": "ESTADO DE CUENTA DE PRUEBA\nCuenta DEMO-Z9, periodo septiembre. Moneda pesos mexicanos.\nResumen: saldo inicial 8300; depositos 1700; retiros 900; saldo al cierre 9100.\nFECHA | CONCEPTO | CARGO | ABONO | SALDO\n03 septiembre | Transferencia recibida | 0 | 1700 | 10000\n08 septiembre | Pago de servicio | 900 | 0 | 9100\nLas operaciones de este resumen son sinteticas y no pertenecen a ninguna persona. Comisiones del periodo: cero. Conserve su comprobante y solicite aclaracion si desconoce un movimiento de su cuenta bancaria."
+  },
+  {
+    "id": "gobierno_nuevo",
+    "expected": "aceptado",
+    "text": "POLITICA EXPERIMENTAL DE GOBIERNO DE DATOS\nObjetivo: asegurar que los activos de informacion tengan responsables y calidad medible. El Data Owner aprueba las finalidades y el Data Steward mantiene el diccionario de datos y controla la completitud. Los custodios implementan accesos de minimo privilegio. Cada conjunto registra su linaje, origen, clasificacion y plazo de retencion. Los datos personales requieren medidas de privacidad, trazabilidad y evidencia de autorizacion. El comite revisa incidencias, controles y auditorias cada trimestre. Las excepciones se documentan antes de utilizar informacion confidencial."
+  },
+  {
+    "id": "ajeno_nuevo",
+    "expected": "rechazado",
+    "text": "INTRODUCCION A LA GEOLOGIA VOLCANICA\nUn volcan se forma cuando el magma asciende a traves de la corteza terrestre. La lava se enfria y produce rocas igneas. Las erupciones pueden expulsar cenizas y gases hacia la atmosfera. El estudio de minerales permite conocer la historia de la Tierra. Las placas tectonicas se desplazan lentamente y originan montanas, fallas y zonas de subduccion. Los investigadores observan la actividad sismica para estudiar procesos geologicos. Este material educativo describe fenomenos naturales del planeta."
+  },
+  {
+    "id": "financiero_narrativo",
+    "expected": [
+      "aceptado",
+      "indeterminado"
+    ],
+    "text": "Carta de conciliacion de la cuenta bancaria ficticia DEMO-N. Estimado equipo: durante junio la cuenta comenzo con un saldo de 12000 pesos. Se recibieron dos transferencias por 4000 pesos en total y se registraron cargos por compras de 1500 pesos. El saldo de cierre es 14500 pesos. No hubo intereses ni comisiones. En lugar de un formato tabular, esta carta describe los movimientos bancarios y el resumen del periodo en parrafos. Las fechas y referencias de cada operacion se conservan en los comprobantes para cualquier aclaracion. Todos los importes son de prueba y no identifican a clientes."
+  }
+]

@@ -186,6 +186,11 @@ def panel_consola(artefacto: dict | None, pensando: bool) -> None:
 
     componentes.traza(_pasos(artefacto))
 
+    validacion = artefacto.get("validacion_documental")
+    if validacion:
+        with st.expander("Validación del tipo documental", expanded=False):
+            st.json(validacion)
+
     error = artefacto.get("error")
     if error:
         componentes.error_consola(str(error))

@@ -34,5 +34,12 @@ def convertir_documento_markdown(file_path: str) -> str:
     return document_to_markdown.invoke({"file_path": file_path})
 
 
+@mcp.tool()
+def validar_tipo_documental(texto: str) -> dict:
+    """Compara texto extraido con referencias locales usando embeddings, sin LLM."""
+    from proyecto.agents.document_similarity import evaluate
+    return evaluate(texto)
+
+
 if __name__ == "__main__":
     mcp.run()
