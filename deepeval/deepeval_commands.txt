@@ -1,8 +1,8 @@
-# run some test cases not all, quicker
+# run some test cases not all, quicker <<<----- PARA CORRER RAPIDO SOLO UNOS CUANTOS CON COMPU CHAFA 
 uv run deepeval test run deepeval/test_agente.py -m smoke
 
 
-# whole suite (quality + performance summary)
+# whole suite (quality + performance summary) <<<<<-------- UTILIZAR ESTE COMANDO PARA CORRER TODOS LOS CASOS
 uv run deepeval test run deepeval/test_agente.py
 
 # one user story (us01 ... us11) or a group (smoke, seguridad, documentos...)
