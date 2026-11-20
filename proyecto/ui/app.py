@@ -190,6 +190,10 @@ def panel_consola(artefacto: dict | None, pensando: bool) -> None:
 
     componentes.traza(_pasos(artefacto))
 
+    validacion = artefacto.get("validacion_documental")
+    if validacion:
+        with st.expander("Validación del tipo documental", expanded=False):
+            st.json(validacion)
     aclaracion = artefacto.get("aclaracion") or {}
     if aclaracion.get("necesaria"):
         componentes.seccion("Aclaración")
