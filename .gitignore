@@ -45,6 +45,9 @@ benchmarks/multimodal/documentos/
 benchmarks/multimodal/casos.locales/
 benchmarks/multimodal/resultados/
 
+# Capa semántica de diseño: referencia local, no runtime
+capa_semantica_financiera_v1/
+
 # Herramientas
 .ruff_cache/
 .pytest_cache/

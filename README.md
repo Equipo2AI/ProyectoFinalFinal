@@ -190,11 +190,25 @@ categorías repetidas. El grafo la genera cuando el usuario pide una gráfica; l
 UI la muestra y permite descargarla desde `Respuesta.grafica`.
 
 Para evitar SQL libre en preguntas frecuentes, `catalogo_metricas` declara
-métricas cerradas (clientes, saldo, transacciones, importes) con sus dimensiones
-y `consultar_metrica` las ejecuta con allowlist. `resolver_periodo` convierte
-expresiones como `2026-02`, `1T 2026` o `mes pasado` a claves de `dim_fecha`;
-`resolver_valor` normaliza una categoría antes del `WHERE`. `verificar_cifras`
-contrasta cifras y PII de la redacción contra la evidencia de la última consulta.
+métricas cerradas (clientes, cuentas, saldos, transacciones e importes brutos o
+netos) con sus dimensiones y `consultar_metrica` las ejecuta con allowlist. Los
+saldos se marcan como `snapshot`: la consulta debe indicar un corte
+(`anio_mes`/`cve_fecha_informacion`) o agrupar por `anio_mes`; así no se suman
+cortes distintos. `resolver_periodo` convierte expresiones como `2026-02`,
+`1T 2026` o `mes pasado` a claves de `dim_fecha`; `resolver_valor` normaliza una
+categoría antes del `WHERE`. `verificar_cifras` contrasta cifras y PII de la
+redacción contra la evidencia de la última consulta.
+
+La capa semántica adaptada a SQLite vive en `proyecto/semantic/`. Valida tablas,
+vistas, columnas, métricas, reglas y relaciones contra `banamex.db`:
+
+```bash
+.venv/bin/python -m proyecto.semantic.validar
+.venv/bin/python -m proyecto.semantic.validar --json
+```
+
+No modifica la base ni las respuestas por sí sola: es el contrato que mantiene
+alineados el esquema real, las vistas `vw_*` y el catálogo de métricas.
 
 El orquestador usa `mimo-v2.6` para la planificación y la síntesis.
 

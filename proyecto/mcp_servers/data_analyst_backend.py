@@ -965,6 +965,21 @@ class DataAnalystSQLBackend:
                 f"{self._literal_sql(valor)}"
             )
 
+        if metrica.tipo == "snapshot":
+            periodo_en_filtro = any(
+                columna in filtros
+                for columna in ("anio_mes", "cve_fecha_informacion")
+            )
+            periodo_en_grupo = agrupar_por == "anio_mes"
+            if not (periodo_en_filtro or periodo_en_grupo):
+                raise ValueError(
+                    f"La métrica {metrica.nombre} es un saldo snapshot: "
+                    "indica un corte con filtros, por ejemplo "
+                    "{'anio_mes': 202606} o "
+                    "{'cve_fecha_informacion': 20260630}, "
+                    "o agrupa por 'anio_mes'."
+                )
+
         q = motor.dialect.identifier_preparer.quote
         if metrica.agregacion == "count":
             expresion = f"COUNT({q(metrica.columna)})"
