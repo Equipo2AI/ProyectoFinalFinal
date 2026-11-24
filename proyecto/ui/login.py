@@ -46,6 +46,36 @@ def render_access():
       border-color: var(--borde); }
     .st-key-login_card label { color: var(--tinta); }
     .st-key-login_card button[kind="primaryFormSubmit"] { width: 100%; }
+    .st-key-login_tema button {
+      width: auto !important;
+      min-height: 40px !important;
+      padding: 9px 16px !important;
+      border: 1px solid var(--borde) !important;
+      border-radius: 14px !important;
+      background: var(--cristal, var(--papel-2)) !important;
+      color: var(--tinta) !important;
+      box-shadow: 0 5px 16px rgba(35, 30, 24, 0.08) !important;
+      transition: background-color .18s ease, border-color .18s ease,
+        color .18s ease, transform .18s ease, box-shadow .18s ease;
+    }
+    .st-key-login_tema button p {
+      color: var(--tinta) !important;
+      font-size: 14px !important;
+      line-height: 1.35 !important;
+      margin: 0 !important;
+    }
+    .st-key-login_tema button:hover {
+      background: var(--papel-2) !important;
+      color: var(--tinta) !important;
+      border-color: var(--rojo) !important;
+      transform: translateY(-1px);
+      box-shadow: 0 8px 20px rgba(35, 30, 24, 0.12) !important;
+    }
+    .st-key-login_tema button:hover p { color: var(--tinta) !important; }
+    .st-key-login_tema button:focus-visible {
+      outline: 3px solid color-mix(in srgb, var(--rojo) 45%, transparent) !important;
+      outline-offset: 3px !important;
+    }
     </style>''', unsafe_allow_html=True)
     with st.container(key='login_card'):
         st.caption('ASISTENTE DE DATOS · ACCESO LOCAL')
