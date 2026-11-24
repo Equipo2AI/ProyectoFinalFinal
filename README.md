@@ -316,27 +316,33 @@ herramienta explícitos produce mejores resultados.
 estado compartido:
 
 ```text
-interpretar -> planear -> despachar -> especialista -> ... -> verificar
-   |             ^                                              |
-   |             └────────── reintento (máximo 1) ─────────────┘
-   |                                                            |
-   └──────────── aclaración (sin especialistas) ─────────── sintetizar
+interpretar -> planear -> ejecutar -> verificar
+   |             ^                         |
+   |             └── reintento (máximo 1) ──┘
+   |                                        |
+   └──── aclaración (sin especialistas) ─ sintetizar
 ```
 
 - `interpretar` lee la consulta antes de planear. Si detecta una ambigüedad
   material (por ejemplo, «últimos meses» sin una ventana), responde con una
   pregunta y opciones, y no ejecuta especialistas. Si el supuesto es seguro, lo
   declara en la respuesta para que el usuario pueda corregirlo.
-- `planear` usa un planner híbrido: las reglas léxicas son pistas y el LLM
-  decide cuando la consulta tiene más de un dominio. Si el LLM no devuelve un
-  plan válido, se usa el plan determinista como respaldo. Si el LLM devuelve un
-  plan incompleto, se conservan las rutas deterministas que faltaban.
-- `despachar` ejecuta los especialistas en orden y comparte el estado.
-- `verificar` revisa si todos los especialistas respondieron; si alguno falló,
-  reintenta una vez. El reintento es único: el fallo típico de un modelo pequeño
-  es de planificación, y repetir el mismo plan no lo corrige, solo suma latencia. Si
-  el reintento también falla, el sintetizador responde con lo que sí llegó y deja
-  el error visible en la traza.
+- `planear` produce un plan de **capacidades**, no solo una lista de agentes.
+  Cada paso declara `id`, `capacidad`, `args` y `depende_de`. El planner recibe
+  el catálogo de `proyecto/orchestration/capacidades.py` y puede combinar
+  capacidades para consultas nuevas. Las reglas léxicas siguen siendo pistas y
+  el plan determinista es el respaldo si el LLM falla o devuelve un plan
+  inválido. No se pueden inventar capacidades, ejecutar efectos que no sean de
+  lectura ni saltarse dependencias.
+- `ejecutar` corre los pasos en orden topológico, comparte resultados y
+  artefactos entre pasos, y deja las fuentes en `resultados`/`artefactos` para
+  que la síntesis no las pierda. Si un paso falla, sus dependientes no se
+  ejecutan.
+- `verificar` revisa si todos los especialistas del plan respondieron; si alguno
+  falló, reintenta una vez. El reintento es único: el fallo típico de un modelo
+  pequeño es de planificación, y repetir el mismo plan no lo corrige, solo suma
+  latencia. Si el reintento también falla, el sintetizador responde con lo que sí
+  llegó y deja el error visible en la traza.
 - `sintetizar` compone la respuesta final. Si hay un solo especialista, conserva
   su salida verificada; si hay varios, el orquestador integra las respuestas y
   las fuentes en una sola explicación. Si el modelo no está disponible, cae a la
@@ -345,11 +351,15 @@ interpretar -> planear -> despachar -> especialista -> ... -> verificar
   (tipos y rangos de los agregados). Una salida fuera de contrato se reporta como
   error y no se publica.
 - El estado guarda `interpretacion`, `aclaracion`, `supuestos`, `plan`,
-  `subpreguntas`, `resultados`, `trazas`, `errores` e `intentos`.
+  `pasos`, `subpreguntas`, `resultados`, `artefactos`, `evidencia`, `trazas`,
+  `errores` e `intentos`.
 - `ORCHESTRATION_PLANNER` controla el planner:
-  - `hybrid` (por defecto): reglas para una intención y LLM para varias.
-  - `llm`: siempre intenta el planner LLM, con respaldo determinista.
-  - `rules`: conserva solo las reglas anteriores.
+  - `hybrid` (por defecto): el LLM piensa toda consulta sustantiva y las reglas
+    son pistas/respaldo; solo evita la llamada en saludos o aclaraciones muy
+    cortas.
+  - `capabilities`: fuerza el planner de capacidades, con respaldo determinista.
+  - `llm`: alias de `capabilities`.
+  - `rules`: conserva solo las reglas anteriores, sin planner LLM.
 - `ORCHESTRATION_SYNTHESIS` controla la respuesta multiagente:
   - `auto` (por defecto): el orquestador integra varios resultados.
   - `llm`: fuerza la síntesis con LLM.
@@ -358,6 +368,13 @@ interpretar -> planear -> despachar -> especialista -> ... -> verificar
 La comunicación entre agentes es por estado compartido, no por llamadas directas
 entre servidores MCP. Así el verificador y el sintetizador pueden ver la evidencia
 de todos los especialistas sin crear una malla de dependencias.
+
+Para agregar una capacidad nueva, se registra en
+`proyecto/orchestration/capacidades.py`, se conecta su ejecutor en
+`_EJECUTORES` (o se expone como tool MCP) y se agregan pruebas. El planner la
+descubre desde el catálogo; no hace falta agregar una ruta léxica por cada frase.
+Las capacidades deben ser de solo lectura y declarar sus entradas, salidas,
+permisos y requisitos.
 
 ## Estructura
 
@@ -378,6 +395,8 @@ proyecto/
 │   └── pdf_reader.py         # Texto nativo + OCR por página de PDF
 ├── mcp_servers/              # Servidores MCP por especialista
 ├── orchestration/
+│   ├── capacidades.py        # Catálogo de capacidades y contrato de pasos
+│   ├── planificador.py       # Planner LLM por capacidades con fallback
 │   ├── comun.py              # Helpers compartidos (MCP, normalización)
 │   ├── grafo.py              # Grafo LangGraph
 │   └── orquestador.py        # Adaptador entre UI y grafo
@@ -409,9 +428,10 @@ archivo o una entrada, el arranque falla con un mensaje claro.
 
 Estos límites corresponden a la arquitectura actual:
 
-- El planner híbrido cubre consultas multi-intención y conserva las rutas
-  deterministas si el LLM devuelve un plan incompleto. Si el LLM falla, se usa el
-  plan determinista completo.
+- El planner por capacidades cubre combinaciones nuevas de las capacidades
+  registradas; si el LLM falla o devuelve un plan inválido, se usa el plan
+  determinista. Las capacidades que todavía no existen no se inventan: el
+  orquestador debe pedir aclaración o declarar el límite.
 - El nodo de aclaración es determinista: cubre patrones comunes, pero una
   ambigüedad no prevista puede llegar al especialista. En ese caso el Data
   Analyst debe pedir aclaración o declarar el supuesto.

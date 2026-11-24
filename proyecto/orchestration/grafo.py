@@ -3,11 +3,11 @@
 El grafo reemplaza el enrutamiento opaco anterior por un flujo con estado
 compartido:
 
-    interpretar -> planear -> despachar -> especialista -> ... -> verificar
-       |             ^                                                |
-       |             └──────────── reintento (máx. 1) ────────────────┘
-       |                                                              |
-       └──────────── aclaración (sin especialistas) ──────────── sintetizar
+    interpretar -> planear -> ejecutar -> verificar
+       |             ^                      |
+       |             └── reintento (máx. 1) ┘
+       |                                    |
+       └──── aclaración (sin especialistas) ┴── sintetizar
 
 Cada especialista lee el estado común y deja allí su resultado. El verificador
 puede pedir un reintento de los especialistas que fallaron, y el sintetizador
@@ -37,6 +37,15 @@ from proyecto.agents.document_intelligence_agent import (
 from proyecto.config.models import modelo_de
 from proyecto.config.ollama_runtime import ChatOllama
 from proyecto.guardrails import limpiar_base64
+from proyecto.orchestration.capacidades import (
+    AGENTES_EJECUTABLES,
+    PasoPlan,
+    PlanInvalido,
+    agentes_de_pasos,
+    capacidad,
+    pasos_para_agentes,
+    validar_pasos,
+)
 from proyecto.orchestration.comun import (
     _es_consulta_normativa,
     _llamar_mcp,
@@ -46,6 +55,7 @@ from proyecto.orchestration.interpretacion import (
     formatear_aclaracion,
     interpretar_consulta,
 )
+from proyecto.orchestration.planificador import planear_pasos_hibrido
 from proyecto.orchestration.perfil_respuesta import (
     HERRAMIENTAS_EVIDENCIA,
     HERRAMIENTAS_LITERALES,
@@ -226,6 +236,9 @@ class EstadoGrafo(TypedDict, total=False):
 
     plan: list[str]
     rutas: list[str]
+    # Plan tipado por capacidades. ``plan`` y ``rutas`` se conservan para la
+    # compatibilidad con la UI y con los verificadores existentes.
+    pasos: list[dict]
     subpreguntas: list[str]
     plan_origen: str
     plan_razon: str
@@ -237,6 +250,8 @@ class EstadoGrafo(TypedDict, total=False):
     verificacion: dict
 
     resultados: Annotated[dict[str, dict], _merge_dicts]
+    artefactos: dict[str, Any]
+    evidencia: list[dict]
     trazas: Annotated[list[dict], operator.add]
     errores: Annotated[list[str], operator.add]
 
@@ -1068,39 +1083,86 @@ def _nodo_planear(estado: EstadoGrafo) -> dict:
             for ruta in estado.get("fallidos") or []
             if ruta in _ESPECIALISTAS
         ]
-        return {"pendientes": fallidos, "reintento": False}
+        pasos = pasos_para_agentes(fallidos)
+        return {
+            "rutas": fallidos,
+            "plan": fallidos,
+            "pasos": [paso.a_dict() for paso in pasos],
+            "subpreguntas": [],
+            "plan_origen": "reintento",
+            "plan_razon": "reintento de especialistas fallidos",
+            "pendientes": [],
+            "reintento": False,
+        }
 
-    rutas, subpreguntas, origen, razon = planear_rutas_hibrido(
-        estado.get("consulta") or "",
+    consulta = estado.get("consulta") or ""
+    imagen_pendiente = estado.get("imagen_pendiente")
+    contexto_documentos = estado.get("contexto_documentos") or ""
+
+    if fuera_de_alcance(
+        consulta,
+        hay_contexto=bool(estado.get("ultimo_agente") or contexto_documentos),
+        imagen_pendiente=imagen_pendiente,
+    ):
+        return {
+            "rutas": ["directo"],
+            "plan": ["directo"],
+            "pasos": [],
+            "subpreguntas": [],
+            "plan_origen": "reglas",
+            "plan_razon": "fuera de alcance",
+            "pendientes": [],
+            "reintento": False,
+        }
+
+    pistas = _pistas_plan(
+        consulta,
         ultimo_agente=estado.get("ultimo_agente"),
-        imagen_pendiente=estado.get("imagen_pendiente"),
-        contexto_documentos=estado.get("contexto_documentos") or "",
+        imagen_pendiente=imagen_pendiente,
+        contexto_documentos=contexto_documentos,
+    )
+    rutas_reglas = planear_rutas(
+        consulta,
+        ultimo_agente=estado.get("ultimo_agente"),
+        imagen_pendiente=imagen_pendiente,
+        contexto_documentos=contexto_documentos,
+    )
+    plan = planear_pasos_hibrido(
+        consulta,
+        pistas=pistas,
+        rutas_fallback=rutas_reglas,
+        contexto_documentos=contexto_documentos,
+        ultimo_agente=estado.get("ultimo_agente"),
+        imagen_pendiente=imagen_pendiente,
         modelo=estado.get("modelo"),
     )
+    agentes = agentes_de_pasos(plan.pasos) or ["directo"]
+    pasos = [paso.a_dict() for paso in plan.pasos]
     return {
-        "rutas": rutas,
-        "plan": rutas,
-        "subpreguntas": subpreguntas,
-        "plan_origen": origen,
-        "plan_razon": razon,
-        "pendientes": rutas,
+        "rutas": agentes,
+        "plan": agentes,
+        "pasos": pasos,
+        "subpreguntas": plan.subpreguntas,
+        "plan_origen": plan.origen,
+        "plan_razon": plan.razon,
+        "pendientes": [],
         "reintento": False,
+        "trazas": [
+            {
+                "name": "plan_capacidades",
+                "args": {"consulta": consulta},
+                "salida": json.dumps(
+                    {
+                        "pasos": pasos,
+                        "razon": plan.razon,
+                        "origen": plan.origen,
+                    },
+                    ensure_ascii=False,
+                ),
+                "estado": "ok",
+            }
+        ],
     }
-
-
-def _nodo_despachar(estado: EstadoGrafo) -> dict:
-    pendientes = list(estado.get("pendientes") or [])
-    if not pendientes:
-        return {"siguiente": "verificar", "pendientes": []}
-    siguiente = pendientes.pop(0)
-    if siguiente not in _ESPECIALISTAS:
-        return {"siguiente": "verificar", "pendientes": pendientes}
-    return {"siguiente": siguiente, "pendientes": pendientes}
-
-
-def _siguiente_despacho(estado: EstadoGrafo) -> str:
-    siguiente = estado.get("siguiente") or "verificar"
-    return siguiente if siguiente in _ESPECIALISTAS else "verificar"
 
 
 def _nodo_data_steward(estado: EstadoGrafo) -> dict:
@@ -1511,6 +1573,165 @@ def _nodo_documento(estado: EstadoGrafo) -> dict:
             if estado_llamada == "error"
             else []
         ),
+    }
+
+
+# Adaptadores de la primera migración: las capacidades actuales delegan en los
+# nodos existentes, que ya contienen las llamadas MCP y sus guardrails. Cuando
+# se agreguen capacidades más finas (por ejemplo verificación de expediente),
+# solo se registra un nuevo ejecutor; el grafo no necesita otro nodo.
+_EJECUTORES = {
+    "data_steward": _nodo_data_steward,
+    "data_analyst": _nodo_data_analyst,
+    "normatividad_rag": _nodo_normatividad,
+    "document_intelligence": _nodo_documento,
+}
+
+
+def _artefacto_resultado(resultado: dict) -> dict:
+    """Copia el resultado sin la imagen para no duplicar payloads grandes."""
+    return {
+        clave: valor
+        for clave, valor in resultado.items()
+        if clave != "grafica"
+    }
+
+
+def _aplicar_args_capacidad(
+    estado: EstadoGrafo,
+    cap: Any,
+    paso: PasoPlan,
+) -> EstadoGrafo:
+    """Traduce los args del plan al contrato de los nodos existentes."""
+    subestado = dict(estado)
+    args = paso.args or {}
+
+    if cap.nombre == "normativa.buscar":
+        query = str(args.get("query") or "").strip()
+        if query:
+            subestado["subpreguntas"] = [query]
+    elif cap.nombre in {"datos.metricas", "datos.metadatos"}:
+        consulta = str(args.get("consulta") or "").strip()
+        if consulta:
+            subestado["consulta"] = consulta
+    elif cap.nombre == "documentos.leer":
+        ruta = str(args.get("file_path") or "").strip()
+        if ruta and ruta not in str(subestado.get("consulta") or ""):
+            subestado["consulta"] = (
+                f"{subestado.get('consulta') or ''}\n{ruta}"
+            ).strip()
+    return subestado
+
+
+def _ejecutar_capacidad(estado: EstadoGrafo, paso: PasoPlan) -> dict:
+    cap = capacidad(paso.capacidad)
+    if cap.agente not in AGENTES_EJECUTABLES:
+        return {
+            "resultados": {},
+            "trazas": [],
+            "errores": [f"plan: el agente {cap.agente} no es ejecutable"],
+            "artefactos": {},
+        }
+    ejecutor = _EJECUTORES.get(cap.agente)
+    if ejecutor is None:
+        return {
+            "resultados": {},
+            "trazas": [],
+            "errores": [f"plan: no hay ejecutor para {cap.agente}"],
+            "artefactos": {},
+        }
+
+    salida = ejecutor(_aplicar_args_capacidad(estado, cap, paso))
+    if not isinstance(salida, dict):
+        return {
+            "resultados": {},
+            "trazas": [],
+            "errores": [f"plan: {cap.agente} devolvió un resultado inválido"],
+            "artefactos": {},
+        }
+    artefactos = dict(salida.get("artefactos") or {})
+    for agente, resultado in (salida.get("resultados") or {}).items():
+        artefactos[f"resultado.{agente}"] = _artefacto_resultado(resultado)
+    return {**salida, "artefactos": artefactos}
+
+
+def _nodo_ejecutar(estado: EstadoGrafo) -> dict:
+    """Ejecuta el plan tipado, respetando dependencias y permisos de lectura."""
+    crudos = estado.get("pasos") or []
+    if not crudos:
+        return {"siguiente": "verificar"}
+
+    try:
+        pasos = validar_pasos(
+            [PasoPlan.desde_dict(paso) for paso in crudos]
+        )
+    except PlanInvalido as error:
+        return {
+            "errores": [f"plan: {error}"],
+            "siguiente": "verificar",
+        }
+
+    resultados = dict(estado.get("resultados") or {})
+    artefactos = dict(estado.get("artefactos") or {})
+    evidencia = list(estado.get("evidencia") or [])
+    trazas: list[dict] = []
+    errores: list[str] = []
+    fallidos: set[str] = set()
+
+    for paso in pasos:
+        dependencias_fallidas = [
+            dependencia
+            for dependencia in paso.depende_de
+            if dependencia in fallidos
+        ]
+        if dependencias_fallidas:
+            fallidos.add(paso.id)
+            errores.append(
+                f"{paso.id}: no se ejecutó porque falló "
+                + ", ".join(dependencias_fallidas)
+            )
+            continue
+
+        subestado = dict(estado)
+        subestado["resultados"] = resultados
+        subestado["artefactos"] = artefactos
+        subestado["evidencia"] = evidencia
+        salida = _ejecutar_capacidad(subestado, paso)
+
+        nuevos = salida.get("resultados") or {}
+        resultados.update(nuevos)
+        artefactos.update(salida.get("artefactos") or {})
+        evidencia.extend(salida.get("evidencia") or [])
+        trazas.extend(salida.get("trazas") or [])
+        errores.extend(salida.get("errores") or [])
+
+        # Las fuentes normativas quedan como artefacto explícito. La síntesis
+        # sigue usando ``_agregar_evidencia_normativa`` para no perderlas al
+        # reescribir la respuesta.
+        for agente, resultado in nuevos.items():
+            if agente != "normatividad_rag" or resultado.get("estado") == "error":
+                continue
+            fuentes = _bloques_evidencia_normativa(
+                str(resultado.get("respuesta") or "")
+            )
+            if fuentes:
+                artefactos.setdefault("fuentes.normativas", []).extend(fuentes)
+                evidencia.append(
+                    {"agente": agente, "fuentes": fuentes}
+                )
+
+        cap = capacidad(paso.capacidad)
+        resultado = nuevos.get(cap.agente) or {}
+        if resultado.get("estado") == "error" or not resultado:
+            fallidos.add(paso.id)
+
+    return {
+        "resultados": resultados,
+        "artefactos": artefactos,
+        "evidencia": evidencia,
+        "trazas": trazas,
+        "errores": errores,
+        "siguiente": "verificar",
     }
 
 
@@ -2057,11 +2278,7 @@ def _construir_grafo():
 
     grafo.add_node("interpretar", _nodo_interpretar)
     grafo.add_node("planear", _nodo_planear)
-    grafo.add_node("despachar", _nodo_despachar)
-    grafo.add_node("data_steward", _nodo_data_steward)
-    grafo.add_node("data_analyst", _nodo_data_analyst)
-    grafo.add_node("normatividad_rag", _nodo_normatividad)
-    grafo.add_node("document_intelligence", _nodo_documento)
+    grafo.add_node("ejecutar", _nodo_ejecutar)
     grafo.add_node("verificar", _nodo_verificar)
     grafo.add_node("sintetizar", _nodo_sintetizar)
     grafo.add_node("redactar", _nodo_redactar)
@@ -2075,26 +2292,8 @@ def _construir_grafo():
             "sintetizar": "sintetizar",
         },
     )
-    grafo.add_edge("planear", "despachar")
-    grafo.add_conditional_edges(
-        "despachar",
-        _siguiente_despacho,
-        {
-            "data_steward": "data_steward",
-            "data_analyst": "data_analyst",
-            "normatividad_rag": "normatividad_rag",
-            "document_intelligence": "document_intelligence",
-            "verificar": "verificar",
-        },
-    )
-
-    for especialista in (
-        "data_steward",
-        "data_analyst",
-        "normatividad_rag",
-        "document_intelligence",
-    ):
-        grafo.add_edge(especialista, "despachar")
+    grafo.add_edge("planear", "ejecutar")
+    grafo.add_edge("ejecutar", "verificar")
 
     grafo.add_conditional_edges(
         "verificar",
@@ -2152,6 +2351,7 @@ def ejecutar_grafo(
         "supuestos": [],
         "plan": [],
         "rutas": [],
+        "pasos": [],
         "subpreguntas": [],
         "plan_origen": "",
         "plan_razon": "",
@@ -2161,6 +2361,8 @@ def ejecutar_grafo(
         "fallidos": [],
         "intentos": 0,
         "resultados": {},
+        "artefactos": {},
+        "evidencia": [],
         "trazas": [],
         "errores": [],
         "respuesta": "",
