@@ -404,7 +404,11 @@ if abierta:
 # chat_scroll altera su scrollHeight y puede colapsar el layout durante el
 # rerun. El bucle reintenta mientras Streamlit termina de montar los mensajes.
 if st.session_state.mensajes:
-    firma = f"{len(st.session_state.mensajes)}-{len(st.session_state.mensajes[-1].get('texto', ''))}"
+    firma = (
+        f"{len(st.session_state.mensajes)}-"
+        f"{len(st.session_state.mensajes[-1].get('texto', ''))}-"
+        f"{int(abierta)}"
+    )
     st.iframe(
         f"""
         <script>
@@ -418,7 +422,7 @@ if st.session_state.mensajes:
         }};
         const bucle = () => {{
           alFinal();
-          if (performance.now() - inicio < 2500) requestAnimationFrame(bucle);
+          if (performance.now() - inicio < 2200) setTimeout(bucle, 70);
         }};
         bucle();
         /* {firma} */
