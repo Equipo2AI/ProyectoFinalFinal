@@ -10,7 +10,7 @@ from __future__ import annotations
 AJUSTES_CLARO: tuple[tuple[str, str], ...] = (
     (
         '  --papel: #121417;\n  --papel-2: #171A1E;\n  --tinta: #F2EEE8;\n  --tinta-2: #DED8D0;\n  --cuerpo: #C2BDB5;\n  --tenue: #9E9991;\n  --plata: #7C7871;\n  --rojo: #E23B45;\n  --teal: #6FB7A8;\n  --ambar: #D8A45C;\n  --inverso: #16191C;',
-        '  --papel: #F3EDE4;\n  --papel-2: #FAF7F1;\n  --tinta: #171923;\n  --tinta-2: #2A2622;\n  --cuerpo: #4A463F;\n  --tenue: #7A746B;\n  --plata: #A39B8F;\n  --rojo: #C8102E;\n  --teal: #2F7F73;\n  --ambar: #A96F1F;',
+        '  --papel: #F3EDE4;\n  --papel-2: #FAF7F1;\n  --tinta: #171923;\n  --tinta-2: #2A2622;\n  --cuerpo: #4A463F;\n  --tenue: #625D55;\n  --plata: #70685E;\n  --rojo: #C8102E;\n  --teal: #2F7F73;\n  --ambar: #A96F1F;\n  --inverso: #F8F4EC;',
     ),
     (
         '  --borde: rgba(236, 240, 244, 0.15);\n  --borde-suave: rgba(236, 240, 244, 0.085);\n  --cristal: rgba(26, 30, 34, 0.68);',
@@ -122,7 +122,7 @@ AJUSTES_CLARO: tuple[tuple[str, str], ...] = (
     ),
     (
         '  color: rgba(156, 144, 130, 0.78);',
-        '  color: rgba(122, 116, 107, 0.78);',
+        '  color: #70685E;',
     ),
     (
         '  background-color: #C22B36 !important;',
