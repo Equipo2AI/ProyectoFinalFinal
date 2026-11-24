@@ -181,7 +181,14 @@ def login(username, password):
 @_serialized
 def logout(token):
     data = _read()
-    data['sessions'].pop(hashlib.sha256(token.encode()).hexdigest(), None)
+    key = hashlib.sha256(token.encode()).hexdigest()
+    session = data['sessions'].get(key)
+    if session:
+        session['expires'] = 0  # revocar antes de cualquier reintento
+        from proyecto.security.document_access import _cleanup
+        _cleanup(data)
+        if not session.get('documents'):
+            data['sessions'].pop(key, None)
     _write(data)
 
 
@@ -218,6 +225,8 @@ def audit(action, allowed, subject=None, sql=None):
 def authenticated(token):
     reset = TOKEN.set(token)
     try:
+        from proyecto.security.document_access import cleanup_expired
+        cleanup_expired()
         principal()
         yield
     finally:

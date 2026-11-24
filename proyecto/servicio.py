@@ -96,6 +96,12 @@ class Respuesta(TypedDict, total=False):
     error: str | None
     formato: str | None
     validacion_documental: dict
+    integridad_documental: dict
+    pertinencia_documental: dict
+    finalidad_documental: dict
+    metadatos_documentales: dict
+    evidencia_documental: list[dict]
+    code: str
 
 
 def _llamar_mcp_document_intelligence(
@@ -104,6 +110,12 @@ def _llamar_mcp_document_intelligence(
     campo: str = "image_path",
 ) -> str:
     """Llama una tool del servidor MCP por stdio."""
+    if campo == "file_path":
+        # Misma propagacion de entorno privado que preparacion y preguntas.
+        from proyecto.mcp_servers.mcp_client import llamar_herramienta
+        return llamar_herramienta(
+            "proyecto.mcp_servers.document_intelligence_server", nombre_tool, {campo: ruta},
+        )
     from fastmcp import Client
     from fastmcp.client.transports import StdioTransport
 
@@ -202,9 +214,32 @@ def procesar_documento(
     consulta: str = "",
     nombre: str | None = None,
 ) -> Respuesta:
+    """Mantiene la identidad existente durante conversion, MCP y respaldo local."""
+    from proyecto.security.local_auth import authenticated
+    from proyecto.security.document_access import authorize_file
+    try:
+        _, token = _identidad_documental(consulta)
+        with authenticated(token):
+            authorize_file(ruta)
+            return _procesar_documento_autorizado(ruta, consulta, nombre)
+    except PermissionError:
+        return {"respuesta": "Acceso denegado al documento solicitado.", "code": "ACCESO_DENEGADO", "error": "autorizacion_denegada", "pasos": [], "herramientas": []}
+
+
+def _procesar_documento_autorizado(
+    ruta: str, consulta: str = "", nombre: str | None = None,
+) -> Respuesta:
     """Convierte un documento y entrega el resultado al orquestador."""
     inicio = time.perf_counter()
-    ruta_path = Path(ruta).expanduser().resolve()
+    try:
+        _identidad_documental(consulta)
+    except PermissionError:
+        return {"respuesta": "Acceso denegado: se requiere una sesión autorizada para consultar documentos.", "error": "autorizacion_denegada", "code": "ACCESO_DENEGADO", "pasos": [], "herramientas": []}
+    import streamlit as st
+    st.session_state.pop("documento_consultable", None)
+    from proyecto.security.document_access import authorize_file
+    identifier, entry = authorize_file(ruta)
+    ruta_path = Path(entry['path'])
     etiqueta = (nombre or ruta_path.name).strip() or ruta_path.name
     sufijo = ruta_path.suffix.lower()
 
@@ -238,6 +273,7 @@ def procesar_documento(
             "fuentes": [etiqueta],
             "duracion": duracion,
             "error": mensaje_error,
+            "code": "ERROR_TECNICO",
             "formato": "markdown",
         }
 
@@ -247,15 +283,18 @@ def procesar_documento(
     try:
         texto = _llamar_mcp_document_intelligence(
             "convertir_documento_markdown",
-            str(ruta_path),
+            identifier,
             campo="file_path",
         )
     except Exception as exc:  # noqa: BLE001 - se intenta el respaldo local
+        authorize_file(identifier)  # nunca usar fallback tras revocacion/denegacion
         try:
             texto = document_to_markdown.invoke(
-                {"file_path": str(ruta_path)}
+                {"file_path": identifier}
             )
             via = f"Fallback local ({type(exc).__name__})"
+        except PermissionError:
+            raise
         except Exception as exc_local:  # noqa: BLE001
             texto = (
                 "No se pudo convertir el documento a Markdown: "
@@ -296,6 +335,7 @@ def procesar_documento(
             "modelo": None,
             "nota": f"Documento · MarkItDown · vía {via}",
             "error": error,
+            "code": "ERROR_TECNICO",
             "formato": "markdown",
         }
 
@@ -305,7 +345,7 @@ def procesar_documento(
     try:
         validacion = json.loads(llamar_herramienta(
             "proyecto.mcp_servers.document_intelligence_server",
-            "validar_tipo_documental", {"texto": texto},
+            "validar_tipo_documental", {"documento_id": identifier},
         ))
         if validacion.get("decision") not in {"aceptado", "rechazado", "indeterminado", "error_tecnico"}:
             raise ValueError("Contrato de validacion documental invalido")
@@ -314,17 +354,38 @@ def procesar_documento(
     herramientas.append("validar_tipo_documental")
     pasos = [paso_conversion, {
         "agente": "document_intelligence", "accion": "Validación semántica del tipo documental",
-        "detalle": validacion["decision"], "duracion": validacion.get("seconds"),
+        "detalle": validacion.get("code", validacion["decision"]), "duracion": validacion.get("seconds"),
         "estado": "ok" if validacion["decision"] == "aceptado" else "error" if validacion["decision"] == "error_tecnico" else "alerta",
     }]
     if validacion["decision"] != "aceptado":
+        from proyecto.agents.document_questions import admission_failure
         return {
+            "code": validacion.get("code") or admission_failure(validacion)["code"],
             "respuesta": validacion["message"], "pasos": pasos,
             "agentes": ["document_intelligence"], "herramientas": herramientas,
             "fuentes": [etiqueta], "duracion": round(time.perf_counter() - inicio, 2),
             "error": validacion["message"] if validacion["decision"] == "error_tecnico" else None,
             "formato": "markdown", "validacion_documental": validacion,
         }
+    try:
+        owner, token = _identidad_documental(consulta)
+        from proyecto.security.local_auth import authenticated
+        with authenticated(token):
+            documento = json.loads(llamar_herramienta(
+                "proyecto.mcp_servers.document_intelligence_server",
+                "preparar_documento_consultable", {"file_path": identifier, "texto": ""},
+            ))
+        import streamlit as st
+        if documento.get("code"):
+            return {"respuesta": documento["message"], "code": documento["code"], "pasos": pasos,
+                    "herramientas": herramientas, "validacion_documental": validacion, "formato": "markdown"}
+        st.session_state.documento_consultable = {"owner": owner, "index": documento, "previous": ""}
+        st.session_state.documento_nuevo = True
+        herramientas.append("preparar_documento_consultable")
+    except Exception:
+        return {"respuesta": "No se pudo preparar el contexto autorizado del documento. Comprueba la extracción, los permisos y Ollama.",
+                "error": "contexto_documental_no_disponible", "code": "ERROR_TECNICO", "pasos": pasos, "herramientas": herramientas,
+                "validacion_documental": validacion, "formato": "markdown"}
     resultado = _responder_con_archivo(
         consulta,
         str(ruta_path),
@@ -336,6 +397,14 @@ def procesar_documento(
         herramientas,
     )
     resultado["validacion_documental"] = validacion
+    from proyecto.security.document_access import authorize_context
+    authorize_context(documento)  # no mostrar el informe tras revocacion durante la respuesta
+    if resultado.get('code') == 'ACCESO_DENEGADO':
+        return resultado
+    from proyecto.agents.document_questions import integrity_summary
+    resultado['integridad_documental'] = documento['integrity']
+    resultado['metadatos_documentales'] = documento['metadata']
+    resultado['respuesta'] = integrity_summary(documento['integrity']) + '\n\n' + resultado['respuesta']
     return resultado
 
 
@@ -350,6 +419,9 @@ def _get_orquestador():
 def reiniciar_orquestador() -> None:
     """Limpia el historial del orquestador compartido por la UI."""
     import streamlit as st
+    st.session_state.pop("documento_consultable", None)
+    st.session_state.pop("usar_documento", None)
+    st.session_state.pop("documento_nuevo", None)
     if 'orquestador_sesion' in st.session_state:
         st.session_state.orquestador_sesion.reiniciar()
 
@@ -513,6 +585,68 @@ def _registrar_documento_en_orquestador(
         pass
 
 
+def _identidad_documental(consulta: str = "") -> tuple[str, str]:
+    """Valida la identidad existente y liga el contexto al token/alcance reales."""
+    import streamlit as st
+    from proyecto.security.local_auth import authenticated, authorize_request
+    from proyecto.agents.document_questions import session_owner
+    token = st.session_state.get("auth_token", os.getenv("PROYECTO_AUTH_TOKEN", ""))
+    with authenticated(token):
+        authorize_request(consulta)
+        owner = session_owner()
+    return owner, token
+
+
+def _preguntar_documento(consulta: str) -> Respuesta:
+    import streamlit as st
+    from proyecto.security.local_auth import authenticated
+    from proyecto.mcp_servers.mcp_client import llamar_herramienta
+    inicio = time.perf_counter()
+    try:
+        owner, token = _identidad_documental(consulta)
+        context = st.session_state.get("documento_consultable")
+        if not context or context["owner"] != owner:
+            st.session_state.pop("documento_consultable", None)
+            raise PermissionError("El documento no pertenece a la sesión autorizada actual.")
+        from proyecto.security.document_access import authorize_context
+        with authenticated(token):
+            authorize_context(context['index'])
+        from proyecto.orchestration.grafo import interpretar_finalidad_documental
+        finalidad = interpretar_finalidad_documental(consulta, context['previous'])
+        if not consulta.strip() or consulta.strip() == "Analiza el documento adjunto y responde lo más útil.":
+            return {"respuesta": "Documento aceptado. Puedes preguntar por su contenido sin volver a subirlo.", "pasos": [],
+                    "fuentes": [context["index"]["name"]], "herramientas": [], "formato": "markdown"}
+        with authenticated(token):
+            response = json.loads(llamar_herramienta(
+                "proyecto.mcp_servers.document_intelligence_server", "responder_pregunta_documental",
+                {"pregunta": consulta, "documento": context["index"], "anterior": context["previous"]},
+            ))
+            authorize_context(context['index'])
+            from proyecto.security.local_auth import authorize_request
+            authorize_request(consulta)
+        if response["status"] in {"respondido", "evidencia_recuperada"}:
+            context["previous"] = consulta
+        text, _ = redactar_pii(response["message"])
+        code = response.get("code", "OK")
+        return {"respuesta": text, "pasos": [{"agente": "document_intelligence", "accion": "Recuperación del adjunto por embeddings",
+                    "detalle": code, "estado": "error" if code in {"ERROR_TECNICO", "ACCESO_DENEGADO"} else "ok" if code == "OK" else "alerta"}],
+                "herramientas": ["responder_pregunta_documental"], "agentes": ["document_intelligence"],
+                "fuentes": [context["index"]["name"]], "evidencia_documental": response.get("evidence", []),
+                "calculo_documental": response.get("calculation"), "modelo": response.get("model"),
+                "integridad_documental": None if code == 'ACCESO_DENEGADO' else response.get('integrity', context['index'].get('integrity')),
+                "finalidad_documental": finalidad,
+                "pertinencia_documental": response.get('compatibility') if code != 'ACCESO_DENEGADO' else None,
+                "metadatos_documentales": context['index'].get('metadata') if code != 'ACCESO_DENEGADO' else None,
+                "code": code, "error": response["message"] if code in {"ERROR_TECNICO", "ACCESO_DENEGADO"} else None,
+                "estado_documental": response["status"], "duracion": round(time.perf_counter() - inicio, 2), "formato": "markdown"}
+    except PermissionError:
+        return {"respuesta": "Acceso denegado: el documento o la consulta no pertenecen a tu alcance autorizado.",
+                "error": "autorizacion_denegada", "code": "ACCESO_DENEGADO", "pasos": [], "herramientas": []}
+    except Exception:
+        return {"respuesta": "No se pudo consultar el contexto documental. Comprueba Ollama y vuelve a intentarlo; no se ha inferido una respuesta.",
+                "error": "error_tecnico_documental", "code": "ERROR_TECNICO", "pasos": [], "herramientas": []}
+
+
 def _responder_con_archivo(
     consulta: str,
     ruta: str,
@@ -524,6 +658,12 @@ def _responder_con_archivo(
     herramientas: list[str],
 ) -> Respuesta:
     """Entrega el resultado del subagente al orquestador para la respuesta final."""
+    if tipo == "documento":
+        from proyecto.agents.document_questions import external_request
+        resultado = preguntar_orquestador(consulta) if external_request(consulta) else _preguntar_documento(consulta)
+        resultado["pasos"] = pasos_previos + resultado.get("pasos", [])
+        resultado["herramientas"] = herramientas + resultado.get("herramientas", [])
+        return resultado
     try:
         _registrar_documento_en_orquestador(
             _get_orquestador(),
@@ -595,6 +735,12 @@ def preguntar_orquestador(
     """
     inicio = time.perf_counter()
     try:
+        import streamlit as st
+        from proyecto.agents.document_questions import external_request
+        if (st.session_state.get("documento_consultable")
+                and st.session_state.get("usar_documento", True)
+                and not external_request(consulta)):
+            return _preguntar_documento(consulta)
         orquestador = _get_orquestador()
 
         # Si la imagen se adjuntó antes y el usuario responde con una

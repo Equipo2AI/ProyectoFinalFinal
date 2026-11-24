@@ -64,6 +64,10 @@ st.session_state.setdefault('tema', 'oscuro')
 estilos.aplicar(st.session_state.tema)
 from ui.login import render_access
 render_access()
+from proyecto.security.local_auth import authenticated
+from proyecto.security.document_access import invalidate_visible_state
+with authenticated(st.session_state.auth_token):
+    invalidate_visible_state(st.session_state)
 
 for clave, valor in {
     "mensajes": [],
@@ -114,6 +118,14 @@ def _guardar_archivo_chat(archivo) -> tuple[str, str, str] | None:
         st.error(f"El archivo supera el límite de {etiqueta_limite}.")
         return None
 
+    if tipo == "documento":
+        from proyecto.security.document_access import store_upload, binding
+        with authenticated(st.session_state.auth_token):
+            reference = store_upload(archivo.getvalue(), sufijo, archivo.name)
+            st.session_state.document_history_binding = binding()
+        st.session_state.setdefault('history_document_ids', []).append(reference)
+        return reference, archivo.name, tipo
+
     directorio = st.session_state.get("upload_dir")
     if not directorio:
         directorio = tempfile.mkdtemp(prefix="docint_ui_")
@@ -142,6 +154,13 @@ def iniciar(
 
 
 def limpiar() -> None:
+    from proyecto.security.document_access import clear_session_documents
+    with authenticated(st.session_state.auth_token):
+        cleanup = clear_session_documents()
+    if cleanup['pending']:
+        st.warning('Hay archivos temporales pendientes de eliminar; se reintentara su limpieza.')
+    for key in ('documento_consultable', 'document_history_binding', 'history_document_ids'):
+        st.session_state.pop(key, None)
     _limpiar_archivo()
     reiniciar_orquestador()
     st.session_state.mensajes = []
@@ -186,10 +205,25 @@ def panel_consola(artefacto: dict | None, pensando: bool) -> None:
 
     componentes.traza(_pasos(artefacto))
 
+    if artefacto.get('integridad_documental'):
+        with st.expander('Integridad documental: reglas verificables', expanded=True):
+            st.json(artefacto['integridad_documental'])
+    if artefacto.get('pertinencia_documental') or artefacto.get('metadatos_documentales'):
+        with st.expander('Tipo, período y pertinencia de la consulta', expanded=False):
+            st.json({'finalidad': artefacto.get('finalidad_documental'),
+                     'pertinencia': artefacto.get('pertinencia_documental'),
+                     'metadatos': artefacto.get('metadatos_documentales')})
+
     validacion = artefacto.get("validacion_documental")
     if validacion:
         with st.expander("Validación del tipo documental", expanded=False):
             st.json(validacion)
+    if artefacto.get("evidencia_documental"):
+        with st.expander("Evidencia del documento", expanded=False):
+            st.json(artefacto["evidencia_documental"])
+    if artefacto.get("calculo_documental"):
+        with st.expander("Cálculo verificable", expanded=False):
+            st.json(artefacto["calculo_documental"])
 
     error = artefacto.get("error")
     if error:
@@ -334,6 +368,11 @@ with izquierda:
                         estado = "Analizando la consulta…"
                     componentes.pensando(estado)
 
+        if st.session_state.get("documento_consultable"):
+            if st.session_state.pop("documento_nuevo", False):
+                st.session_state.usar_documento = True
+            st.toggle("Consultar el documento adjunto", key="usar_documento", disabled=st.session_state.pensando,
+                      help="Desactívalo para volver al asistente general. Las consultas explícitas a SQLite o normativa conservan su ruta.")
         entrada = st.chat_input(
             "Hazme una consulta o adjunta un archivo",
             accept_file=True,

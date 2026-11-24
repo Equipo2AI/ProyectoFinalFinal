@@ -156,7 +156,7 @@ def _error_legible(error: Exception) -> str:
 def _error_documento(error: Exception) -> str:
     return (
         f"No se pudo convertir el documento a Markdown: "
-        f"{type(error).__name__}: {error}"
+        f"{type(error).__name__}."
     )
 
 
@@ -224,7 +224,10 @@ def describe_an_image(image_path: str) -> str:
 def document_to_markdown(file_path: str) -> str:
     """Convierte un documento local (PDF, DOCX, XLSX, PPTX, CSV, HTML, TXT) a Markdown."""
     try:
-        return _convertir_documento(_resolver_documento(file_path))
+        from proyecto.security.document_access import extract_authorized
+        return extract_authorized(file_path)[2]
+    except PermissionError:
+        raise
     except Exception as error:  # noqa: BLE001 - se devuelve al agente como texto
         return _error_documento(error)
 

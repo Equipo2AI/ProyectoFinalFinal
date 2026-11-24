@@ -61,15 +61,48 @@ def test_puerta_antes_del_orquestador(tmp_path, monkeypatch, decision):
     """Dobles de frontera: solo el caso aceptado alcanza el generador."""
     from proyecto import servicio
     from proyecto.mcp_servers import mcp_client
+    from proyecto.security import local_auth as auth, document_access as access
+    from proyecto.agents import document_questions as dq
+    from contextlib import nullcontext
+    import streamlit as st
+    class State(dict):
+        __getattr__ = dict.get
+        __setattr__ = dict.__setitem__
+    monkeypatch.setattr(st, 'session_state', State())
     file = tmp_path / "sintetico.txt"
-    file.write_text("Documento de prueba", encoding="utf-8")
-    monkeypatch.setattr(servicio, "_llamar_mcp_document_intelligence", lambda *a, **kw: "Texto extraido " * 10)
-    monkeypatch.setattr(mcp_client, "llamar_herramienta", lambda *a, **kw: json.dumps({"decision": decision, "message": decision}))
+    text = ('Estado de cuenta de débito sintético\nSaldo inicial: 100.00\n'
+            'Total de abonos: 20.00\nTotal de cargos: 10.00\nSaldo final: 110.00')
+    file.write_text(text, encoding="utf-8")
+    pages = [{'source': 'Sección 1', 'text': text}]
+    context = {'document_id': 'doc-simulado', 'owner': 'owner-controlado',
+               'admission': {'decision': 'aceptado'}, 'pages': pages,
+               'integrity': dq.validate_integrity(pages), 'metadata': dq.document_metadata(pages)}
+    assert context['integrity']['state'] == 'VALIDO'
+    monkeypatch.setattr(auth, 'authenticated', lambda token: nullcontext())
+    monkeypatch.setattr(access, 'authorize_file', lambda ref: ('doc-simulado', {'path': str(file)}))
+    def authorize_context(value):
+        assert value == context and value['owner'] == 'owner-controlado'
+    context_guard = Mock(side_effect=authorize_context)
+    monkeypatch.setattr(access, 'authorize_context', context_guard)
+    monkeypatch.setattr(servicio, "_identidad_documental", lambda *a: ("owner-controlado", "token-de-prueba"))
+    monkeypatch.setattr(servicio, "_llamar_mcp_document_intelligence", lambda *a, **kw: text)
+    def call(module, name, args):
+        assert module == 'proyecto.mcp_servers.document_intelligence_server'
+        if name == 'validar_tipo_documental':
+            assert args == {'documento_id': 'doc-simulado'}
+            return json.dumps({'decision': decision, 'message': decision})
+        assert decision == 'aceptado' and name == 'preparar_documento_consultable'
+        assert args == {'file_path': 'doc-simulado', 'texto': ''}
+        return json.dumps(context)
+    monkeypatch.setattr(mcp_client, "llamar_herramienta", call)
     generator = Mock(return_value={"respuesta": "frontera aceptada"})
     monkeypatch.setattr(servicio, "_responder_con_archivo", generator)
     result = servicio.procesar_documento(str(file))
     assert result["validacion_documental"]["decision"] == decision
     assert generator.call_count == (1 if decision == "aceptado" else 0)
+    assert context_guard.call_count == (1 if decision == 'aceptado' else 0)
+    if decision == 'aceptado':
+        assert result['integridad_documental']['state'] == 'VALIDO'
 
 
 def _pdf(path, text):
@@ -93,16 +126,18 @@ def _pdf(path, text):
 
 
 @pytest.mark.skipif(os.getenv("VALIDAR_EMBEDDINGS_REAL") != "1", reason="Requiere referencias privadas preparadas y Ollama")
-def test_lote_mcp_real(tmp_path, monkeypatch):
+def test_lote_mcp_real(tmp_path, monkeypatch, identidad_prueba):
     from fastmcp import Client
     from proyecto.mcp_servers.mcp_client import crear_transporte
     from proyecto import servicio
     from proyecto.mcp_servers import mcp_client
+    from proyecto.security.document_access import store_upload
+    from proyecto.security.local_auth import principal
     examples = json.loads((Path(__file__).parent / "fixtures/document_similarity_validation.json").read_text(encoding="utf-8"))
     cache = ds.storage() / "references.json"
     before = cache.read_bytes()
     cache_mtime = cache.stat().st_mtime_ns
-    db = Path("proyecto/bd/banamex.db")
+    db = Path(principal()['database'])
     db_before = hashlib.sha256(db.read_bytes()).hexdigest() if db.exists() else None
     results = []
 
@@ -110,12 +145,15 @@ def test_lote_mcp_real(tmp_path, monkeypatch):
         async with Client(crear_transporte("proyecto.mcp_servers.document_intelligence_server"), timeout=180) as client:
             for example in examples:
                 file = tmp_path / (example["id"] + ".pdf")
-                _pdf(file, example["text"])
-                extracted = await client.call_tool("convertir_documento_markdown", {"file_path": str(file)})
+                customer = principal()['customers'][0]
+                text_fixture = example['text'].replace('Cuenta DEMO-Z9', f'Cliente: {customer}').replace('cuenta bancaria ficticia DEMO-N', f'cuenta bancaria del cliente {customer}')
+                _pdf(file, text_fixture)
+                reference = store_upload(file.read_bytes(), '.pdf', file.name)
+                extracted = await client.call_tool("convertir_documento_markdown", {"file_path": reference})
                 assert not extracted.is_error
                 text = "\n".join(b.text for b in extracted.content if b.type == "text")
                 assert not text.startswith(("No se pudo", "MarkItDown no extrajo"))
-                validated = await client.call_tool("validar_tipo_documental", {"texto": text})
+                validated = await client.call_tool("validar_tipo_documental", {"documento_id": reference})
                 assert not validated.is_error
                 result = json.loads("\n".join(b.text for b in validated.content if b.type == "text"))
                 results.append({"id": example["id"], **result})
@@ -126,7 +164,7 @@ def test_lote_mcp_real(tmp_path, monkeypatch):
                     monkeypatch.setattr(mcp_client, "llamar_herramienta", lambda *a, **kw: json.dumps(result))
                     generator = Mock(side_effect=AssertionError("El rechazo no puede llamar al generador"))
                     monkeypatch.setattr(servicio, "_responder_con_archivo", generator)
-                    assert servicio.procesar_documento(str(file))["validacion_documental"]["decision"] == "rechazado"
+                    assert servicio.procesar_documento(reference)["validacion_documental"]["decision"] == "rechazado"
                     generator.assert_not_called()
     asyncio.run(run())
     print("RESULTADOS_EMBEDDINGS=" + json.dumps(results, ensure_ascii=False))

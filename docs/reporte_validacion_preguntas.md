@@ -2079,3 +2079,388 @@ AppData, herramientas SQL/MCP, reporte historico y mitigacion de MiMo.
 - SQLite conservo su SHA-256. No se tocaron documentos originales, .env ni
   credenciales. Capturas y respaldos permanecen fuera de Git. La inferencia
   vision/OCR y la sintesis abierta de documentos no se repitieron en esta etapa.
+
+## Embeddings de admisión y preguntas sobre adjuntos - 2026-11-19
+
+### Trabajo recuperado, sin regenerar referencias
+
+Los ocho archivos de admisión están guardados en `e3135d0` (`embedding`).
+El caché privado existente conserva cuatro referencias y los umbrales originales
+de `bge-large:latest` (1024 dimensiones). No se repitió el lote de cuatro pruebas
+de admisión ni se recalibraron límites. La prueba nueva de navegador sí ejercita
+el filtro inicial al subir su PDF sintético antes de las preguntas.
+Los PDF internos no entran al corpus normativo ni son fuentes normativas oficiales.
+
+Evidencia histórica del lote MCP real anterior, con PDF sintéticos distintos de
+los siete ejemplos de calibración. Similitudes de coseno, no porcentajes:
+
+| Documento nuevo | Gobierno complicada | Gobierno limpia | Estado compleja | Estado limpia | Decisión | Evaluación, s |
+|---|---:|---:|---:|---:|---|---:|
+| Estado de cuenta | 0.742884 | 0.733351 | 0.835621 | 0.845426 | Aceptado | 0.312 |
+| Política de gobierno | 0.792814 | 0.807557 | 0.740842 | 0.719657 | Aceptado | 1.068 |
+| Geología volcánica | 0.651690 | 0.651495 | 0.634035 | 0.621883 | Rechazado | 1.022 |
+| Carta financiera narrativa | 0.782659 | 0.766146 | 0.777961 | 0.775591 | Indeterminado | 1.271 |
+
+Aceptación desde `0.7874881012226205`, rechazo hasta `0.6864000014989039`,
+zona intermedia indeterminada. Los tiempos excluyen conversión y arranque MCP.
+La primera aserción del lote exigía aceptación de la carta; se corrigió el contrato
+de la prueba para permitir incertidumbre, sin bajar umbrales ni alterar los datos.
+No se presenta ese caso como una aceptación ni como prueba concluyente de
+independencia de cualquier formato. El rechazo no alcanzó la frontera generativa
+del servicio (resultado MCP real y espía controlado en esa frontera).
+
+### Ampliación nueva: recuperación temporal y autorización
+
+El servicio conserva el adjunto aceptado solo en memoria de su sesión; el contexto
+está ligado a identidad, token, base y permisos reales. Las herramientas MCP
+`preparar_documento_consultable` y `responder_pregunta_documental` comprueban la
+identidad existente; no aceptan un contexto de otra sesión. No se modificó login,
+la autorización, SQLite del proyecto ni la configuración de modelos.
+
+Los embeddings de preguntas recuperan los cuatro fragmentos más próximos. No se
+inventó un umbral universal para determinar si una pregunta tiene respuesta.
+Las reglas existentes reconocen temas claramente ajenos; el apoyo textual y los
+conceptos ausentes distinguen falta de evidencia. MiMo selecciona citas que el
+servidor verifica literalmente. PDF cita páginas reales; otros formatos, secciones.
+No se reescribe el resultado documental mediante otra generación del orquestador.
+Las sumas de cargos se hacen con Decimal sobre columnas no ambiguas, mostrando
+operandos; se declina calcular ante filas/encabezados ambiguos o páginas sin texto.
+
+Pruebas nuevas focalizadas: citas reales y rechazo de citas inventadas, pregunta
+ajena y pregunta relacionada sin respuesta sin invocar LLM, seguimiento y suma,
+rutas explícitas hacia otras fuentes, contexto de otro usuario/sesión y permisos
+personales. Se detectó y corrigió el reconocimiento de «¿Y…?» en seguimientos.
+Los dobles de LLM de estas pruebas no se presentan como inferencias reales.
+
+La SQLite configurada `proyecto/bd/banamex.db` no está disponible en este checkout.
+El usuario autorizó una SQLite temporal y usuarios sintéticos aislados para la
+prueba focalizada de navegador, sin cambiar configuración ni identidades existentes.
+No se puede certificar ahora el hash de una base del proyecto que está ausente.
+
+### Resultados nuevos comprobados
+
+Las seis regresiones unitarias nuevas pasaron; se repitieron únicamente las
+afectadas por correcciones de seguimiento, aislamiento y enrutamiento. Pasó además
+la comprobación focalizada del adaptador documental al cliente MCP compartido.
+Los dobles de embeddings/LLM de esos casos prueban contratos y fronteras, no
+se presentan como inferencias ni llamadas MCP reales.
+
+`test_preguntas_mcp_real` pasó en 64.95 s con una sola sesión STDIO real,
+identidad normal autenticada y SQLite sintética temporal. Utilizó el PDF de
+estado sintético previamente contrastado, sin repetir el lote de admisión.
+Se ejecutaron `convertir_documento_markdown`, `preparar_documento_consultable`
+y cuatro llamadas a `responder_pregunta_documental`:
+
+| Pregunta | Resultado real | Evidencia / modelo |
+|---|---|---|
+| ¿Cuál es el saldo final? | Respondido: 9100 | MiMo `mimo-v2.6` seleccionó literalmente «Resumen: saldo inicial 8300; depositos 1700; retiros 900; saldo al cierre 9100.»; Página 1, F1, coseno 0.6526089955523465 |
+| ¿Y cuánto suman los cargos? | Respondido: 900.00 | Decimal: 0 + 900 = 900; ambas filas de Página 1; sin generación LLM |
+| ¿Por qué el cielo es azul? | Fuera del documento | Sin evidencia ni modelo generativo; control temprano reutilizado |
+| ¿Cuál es mi historial crediticio? | Sin evidencia | El concepto no está en el PDF; sin modelo generativo |
+
+La cita del saldo es el texto completo publicado por el servidor: no se reemplazó
+por una respuesta simulada. El coseno de recuperación no es comparable al umbral
+de admisión: pregunta y documento son tareas distintas. La suma proviene de las
+filas, no de una respuesta del LLM. El caché de referencias conservó todos sus
+bytes y la SQLite temporal conservó su SHA-256 durante este lote.
+
+### Comprobación de navegador y límite de certificación
+
+Edge real inició sesión con el backend y adjuntó el PDF sintético. Un primer
+intento de instrumentación esperaba el nombre completo como texto visible;
+se corrigió esa espera tras comprobar el archivo en el input real del navegador.
+El recorrido posterior no completó la primera respuesta dentro del plazo del
+comprobador: permaneció en conexión/conversión MCP. En un intento estable el
+servidor anunció su arranque más de dos minutos después de iniciarse la fase.
+Ese intento inicial no acreditó la llegada a las herramientas nuevas o MiMo.
+
+Diagnóstico limitado: el mismo PDF se convirtió directamente con MarkItDown en
+0.77 s; el adaptador MCP personalizado completó una llamada directa en 31.28 s
+y el cliente compartido, otra en 19.91 s. No se comprobó una causa de fondo del
+retraso en Streamlit. No se cambiaron extractores, timeouts MCP, drivers ni
+servicios. El adaptador documental se alineó con el cliente compartido para
+conservar el entorno privado de sesión y deshabilitar trazas externas; la rama
+de imágenes se conserva. El intento posterior de navegador tampoco completó la
+primera respuesta visible en los 300 s del comprobador, sin aumentar los timeouts
+del sistema. La revisión completa del registro mostró que sí terminaron las
+cuatro herramientas (conversión: 165.97 s) y después apareció una advertencia,
+no una excepción, por inicializar el toggle con estado y valor predeterminado.
+Se corrigió el diagnóstico: ese registro no demuestra un bloqueo permanente de
+MCP. El comprobador dejó de imponer 300 s a un flujo de cuatro llamadas cuyo
+timeout individual sigue siendo 180 s; una comprobación final de renderizado
+se consigna abajo. No se atribuye la demora al adaptador.
+
+La memoria consultada fue 5.14 GiB libres de 15.7 GiB y Ollama no tenía modelos
+residentes en ese instante. Esto no permite atribuir el retraso a falta de RAM
+o a GPU. Se conservaron capturas y registros sintéticos fuera de Git; el
+comprobador manual local `tests/probar_documento_browser.py` permanece excluido.
+No se publican sus identidades, sesiones ni SQLite de prueba.
+
+Límites funcionales: extracción sin OCR, recuperación de hasta cuatro fragmentos
+por pregunta, selector conservador con apoyo textual y citas literales. No se
+certifican todas las paráfrasis ni respuestas exhaustivas en documentos largos.
+La suma implementada exige columnas con separadores `|` y filas inequívocas;
+otros diseños no se estiman. El resultado de la carta narrativa de admisión
+continúa siendo indeterminado, sin alterar el umbral para aceptar más casos.
+
+### Cierre de la comprobación focalizada de Edge
+
+La última ejecución **sí comprobó la subida y primera respuesta visible**. El
+comprobador leyó `innerText` del mensaje de asistente del navegador real:
+
+> Según el documento:
+>
+> Resumen: saldo inicial 8300; depositos 1700; retiros 900; saldo al cierre 9100. [Página 1]
+
+El saldo y la página coinciden con el PDF sintético. El registro confirma por
+STDIO conversión, admisión, preparación y respuesta; no se sustituyó el backend
+por un doble. Esta evidencia corrige la interpretación provisional de los
+intentos que habían agotado el plazo del driver.
+
+Al continuar después de la primera respuesta, el automatizador perdió su conexión
+CDP con Edge (`ConnectionClosedError`). La captura de error también falló al estar
+desconectado y ocultó el punto original de esa desconexión; se corrigió solo el
+registro del comprobador para conservar la causa en un futuro intento. **No se
+certifican los tres seguimientos desde navegador**: esos casos están aprobados
+por el lote MCP real, no por Edge. No se hizo otro intento completo. El cierre
+del comprobador detuvo sus propios procesos; no se reinició Ollama ni servicios.
+
+Se eliminó el valor predeterminado redundante del nuevo toggle: su estado inicial
+ya procede de la sesión. No se cambió el diseño ni se ejecutó otra inferencia por
+esa limpieza. La inicialización MCP en el recorrido de interfaz siguió siendo
+lenta; mejorar su rendimiento y completar la automatización de seguimientos son
+pendientes, sin atribuirles una causa de GPU/RAM no demostrada.
+
+Revisión final de integridad: la SQLite del último navegador conserva el SHA-256
+registrado por el aprovisionamiento de su identidad de prueba. El caché sigue con
+cuatro referencias, los mismos límites y última escritura `2026-11-19T15:07:50`;
+no se regeneró. Sintaxis UTF-8 y `git diff --check` correctos; sin conflictos ni
+archivos preparados para commit. Ocho archivos de código/documentación/pruebas
+pendientes; el comprobador manual está excluido. No hay credenciales reconocibles
+en el diff ni cambios de login, configuración MiMo, SQL, RAG o bases del proyecto.
+
+## Revisión de alcance de preguntas PDF - 2026-11-19
+
+Esta revisión no aborda la base ausente ni navegador. No se ejecutaron Edge,
+MiMo, Ollama ni pruebas reales de embeddings; tampoco las 30 preguntas.
+
+**Ya existía:** llamada al filtro general desde `document_questions.retrieve`,
+admisión en el servicio, autorización de sesión/alcance, recuperación semántica,
+citas literales y cálculo Decimal. No hacía falta otro clasificador ni agente.
+
+**Huecos encontrados:** el filtro general priorizaba palabras bancarias o
+documentales sobre la finalidad; «inventar una historia sobre compras» podía
+alcanzar el LLM por coincidencia textual. La herramienta de preparación tampoco
+comprobaba por sí misma la admisión del archivo real, y se mezclaban resultados
+sin evidencia con fallos de generación/formato.
+
+**Corrección:** la misma función general decide primero sobre solicitudes
+explícitas ajenas a las funciones del proyecto, incluso con referencias al PDF.
+Se distingue pedir ficción de verificar un texto o resumir su historial. MCP
+reutiliza el clasificador existente sobre la extracción del archivo real antes
+de preparar su contexto; los controles de cuentas/clientes preceden a sus
+embeddings. El contexto conserva su admisión y sigue ligado a la sesión. No
+se regenera el caché ni se cambian umbrales, modelos, login o permisos.
+
+Los errores y denegaciones se transportan sin datos privados y con `code`:
+
+| Código | Significado |
+|---|---|
+| DOCUMENTO_FUERA_DE_ALCANCE | Clasificador existente rechazó el documento |
+| PREGUNTA_FUERA_DE_ALCANCE | Finalidad de la solicitud ajena al proyecto, aunque coincida con texto del PDF |
+| SIN_EVIDENCIA | Solicitud permitida sin evidencia suficiente para responder |
+| ACCESO_DENEGADO | Identidad, sesión o datos fuera de los permisos existentes |
+| ERROR_TECNICO | Fallo de extracción, embeddings, formato/citas del modelo o falta de metadatos de admisión |
+| DOCUMENTO_INDETERMINADO | Admisión inconcluyente; se conserva la distinción previa sin llamarla rechazo |
+
+**Validación focalizada:** 21 casos nuevos con dobles de embeddings, LLM,
+extracción y autorización. El bloque inicial tuvo 20 casos aprobados tras
+corregir dos regresiones de la propia regla (singular «canción» y una solicitud
+de verificar un texto que menciona ficción). Después pasaron dos casos
+afectados/adicionales: formato/citas y denegación antes de embeddings, para un
+total de 21 casos distintos comprobados. No se presentan como ejecuciones
+reales de modelos, extracción ni consultas de permisos contra SQLite.
+
+Se comprobó:
+
+- Historia/cuento/canción sobre compras, movimientos o saldos y pregunta del
+  cielo con referencia al PDF: `PREGUNTA_FUERA_DE_ALCANCE` antes de embeddings
+  y creación del LLM, aunque el documento contenga esas palabras.
+- Saldo, suma, resumen histórico, prohibición de inventar y verificación de un
+  texto: permitidos; la consulta de calidad del PDF no se desvía a SQLite.
+- Documento rechazado/indeterminado o sin admisión verificable: no llega al LLM.
+- Preparación usa la extracción real simulada, no el texto sustituido del cliente.
+- Falta de historial crediticio: `SIN_EVIDENCIA`, distinta de pregunta ajena.
+- Embeddings indisponibles, JSON inválido o cita no literal: `ERROR_TECNICO`.
+- Denegación y contexto de otra sesión: `ACCESO_DENEGADO`, sin exponer contenido.
+- Cuenta no autorizada detectada en el archivo: no se ejecuta su clasificador
+  de embeddings. Se conserva el autorizador existente, sin simular privilegios.
+
+**Límites:** las reglas deterministas no certifican todas las paráfrasis o
+intenciones mixtas posibles. La similitud solo propone evidencia; no certifica
+autenticidad, cumplimiento ni titularidad. Evaluar calidad requiere criterios
+concretos: esta tarea permite la intención, no implementa un motor nuevo de
+auditoría de PDFs. Los contextos de sesiones anteriores sin admisión registrada
+deben reconstruirse; los nuevos conservan sus seguimientos. La preparación
+repite la comprobación de admisión sobre el archivo real como defensa de MCP,
+sin regenerar referencias ni reclasificarlo en cada pregunta. La integración
+actualizada no se reejecutó con modelos ni navegador, por el límite de esta tarea.
+
+## Seguridad del ciclo documental - 2026-11-19
+
+Se corrigieron las cuatro observaciones del orden de controles sin modificar
+credenciales, roles, SQLite habitual, modelos ni Pinecone. No se ejecutaron
+navegador, inferencias reales ni las suites anteriores de agentes.
+
+### Autoridad sobre archivos y contexto
+
+`security/document_access.py` amplía los recursos de las sesiones existentes:
+`store_upload` autentica y guarda bytes recibidos por el servidor en su almacén
+privado; registra identificador, ruta creada por el servidor, huella del alcance
+y SHA-256 en `identities.json`. No agrega otro login, token de autenticación,
+clave ni base vectorial. Conocer una ruta o un identificador no concede permiso.
+`authorize_file` comprueba la sesión y alcance antes de stat/lectura del archivo.
+
+`servicio.procesar_documento` mantiene `authenticated(token)` durante conversión,
+MCP y respaldo local, y verifica el recurso antes de cualquier conversión. El
+respaldo usa el mismo extractor protegido y conserva una denegación como
+`ACCESO_DENEGADO`, sin confundirla con fallo técnico. El tool LangChain documental
+también exige el recurso, para no dejar un respaldo que omita las guardas MCP.
+
+Conversión, validación y preparación MCP extraen únicamente un recurso registrado
+de la sesión vigente. El texto suministrado por el cliente se ignora como prueba
+de autorización. La extracción devuelve Markdown/páginas controlados; todas las
+representaciones se autorizan antes de admisión o embeddings de fragmentos.
+Se verifica la titularidad de identificadores mediante el autorizador existente;
+campos personales se excluyen/protegen, y los ambiguos se deniegan. No quedan
+comprobaciones de página realizadas por primera vez después de vectorizar.
+
+`bind_context` guarda solo SHA-256 del contexto, no textos ni vectores. Cada
+consulta MCP exige identidad, permiso, archivo vigente y contexto inalterado.
+Copiar `owner` o cambiar los fragmentos/admisión recibidos no evita el control.
+Se revalida antes y después de responder y entre lotes de embeddings. No se
+promete cancelar una operación que ya estaba en curso al revocarse permisos;
+no se publican sus resultados ni se inician nuevos lotes tras detectar revocación.
+
+Streamlit registra las subidas bajo autenticación y llama a
+`invalidate_visible_state` antes de mostrar historial o artefactos. Un cambio de
+rol/permisos/clientes, expiración, logout o recurso inválido impide recuperar el
+contexto y elimina el historial/artefactos afectados del estado visible. El cierre
+de sesión usa el mecanismo existente y revoca también el acceso a sus recursos.
+
+### Evidencia focalizada nueva
+
+`tests/test_document_access.py`: **25 casos aprobados en 11.51 s**, seguidos de
+cuatro casos adicionales aprobados en bloques dirigidos (revocación durante
+recuperación, seguimiento manipulado y dos variantes de identificadores del
+esquema bancario): **29 casos distintos de seguridad comprobados**. Tras añadir
+las guardas previas al LLM también pasaron las tres regresiones dirigidas de
+propietario y respaldo local. Se ejercitaron registros, hashes, aislamiento de sesión y
+controles de la autenticación existente sobre metadatos sintéticos. Lookup de
+cuentas, extracción, embeddings y LLM fueron simulados. No se creó ni consultó
+SQLite, no se iniciaron subprocesos MCP, Edge ni modelos para estas pruebas.
+La propagación de token/almacén se verificó construyendo el transporte sin abrirlo.
+
+- Propietario permitido: conversión, admisión, contexto y respuesta conservan el
+  flujo, sin incluir campos personales denegados en embeddings/prompt.
+- Otro usuario autenticado: denegado antes de leer incluso el hash del archivo
+  ajeno, mediante instrumento sobre `Path.read_bytes`.
+- MCP anónimo o texto sin referencia autorizada: sin extracción ni vectorización.
+- Página protegida que solo aparece en la representación PDF, identidad ajena,
+  identificadores enmascarados, etiquetas multilínea o tabla ambigua: sin
+  embeddings, admisión ni generación; no se asume titularidad.
+- Contexto alterado: `ACCESO_DENEGADO` antes de llamar al generador.
+- Revocación de permisos de auditor, cambio de clientes, expiración y logout:
+  contexto/historial/artefactos inaccesibles. Dos usuarios con recursos distintos
+  no comparten acceso por conocer una ruta.
+- Revocación durante respuesta: el resultado no se divulga. Revocación en el
+  primer lote de embeddings: no se ejecuta el siguiente lote ni se publica índice.
+- Revocación durante el embedding de la pregunta: no se inicia el LLM. El
+  seguimiento recibido por MCP también pasa por el autorizador; no puede
+  introducir una consulta de cuenta ajena mediante el argumento `anterior`.
+- Transporte y respaldo local: identidad mantenida en toda la operación y
+  denegaciones no convertidas en respuestas técnicas permisivas.
+- Metadatos de secciones y etiquetas Markdown no reintroducen nombres excluidos
+  en el contexto ni en los embeddings. Las secciones se numeran sin títulos PII.
+
+Se adaptaron siete contratos unitarios previos afectados por las guardas, con
+ejecuciones dirigidas, sin repetir suites extensas. Las pruebas reales opcionales
+ahora deben usar subidas registradas y clientes verificables; se actualizaron sus
+fixtures, pero **no se reejecutaron**. No se reutilizan sus evidencias históricas
+como certificación de la integración nueva de seguridad.
+
+### Límites y riesgos restantes
+
+La referencia opaca es un identificador de recurso, no una credencial paralela.
+El servidor confía en la integridad del almacén privado y en el usuario de Windows
+que lo administra, igual que la autenticación local previa; no es defensa ante
+un administrador local hostil. La política de datos detecta estructuras e
+identificadores reconocibles, no certifica toda la semántica de PII implícita ni
+la autenticidad del documento. Titularidades/formats ambiguos se bloquean
+conservadoramente; algunos documentos legítimos necesitarán revisión o una
+clasificación confiable, en lugar de relajar permisos o inferir identidades.
+
+Los archivos de subidas son temporales. Al cerrar sesión se revoca el acceso y
+se solicita eliminar sus archivos registrados; al limpiar el chat se invalida
+el contexto documental y se solicita eliminar los documentos de esa conversación.
+La expiración activa una limpieza oportunista en las siguientes entradas al
+contexto autenticado, con hasta 64 intentos de eliminación por llamada. Antes de
+borrar se comprueban registro, identificador, directorio privado y SHA-256; se
+rechazan rutas externas, enlaces y puntos de reanálisis. No se eliminan carpetas
+completas ni documentos asociados a otras sesiones válidas.
+
+La extracción activa y la limpieza comparten un bloqueo entre procesos. Si el
+archivo está en uso o su eliminación falla, se conserva el registro pendiente,
+se registra el fallo sin contenido personal y se reintenta posteriormente; no
+se declara eliminado. Sin actividad de la aplicación no hay limpieza en segundo
+plano. Los archivos antiguos huérfanos sin registro no se borran automáticamente:
+requieren revisión local conservadora de pertenencia y sesiones vigentes. Esto
+no implementa borrado forense ni un historial documental permanente.
+
+Los vectores de usuario siguen solo en memoria. Las cuatro
+referencias, caché y umbrales de `bge-large:latest` no se regeneraron ni cambiaron.
+El flujo de imágenes/OCR anterior no se auditó ni se certifica en este alcance.
+Queda pendiente, con autorización posterior, la integración real STDIO/modelos
+de las nuevas guardas; esta entrega demuestra sus controles con pruebas rápidas.
+
+## Consolidación de etapas documentales y ajuste de contratos - 2026-11-24
+
+### Resultados existentes, sin repetir los lotes
+
+| Etapa | Resultado previamente obtenido | Alcance y limitación |
+|---|---|---|
+| Seguridad y limpieza temporal | 38 casos aprobados y uno omitido | Cierre, expiración, limpiar chat, aislamiento, reintentos, límites, rutas manipuladas y conservación del caché de prueba. La creación real de un enlace simbólico se omitió por falta de privilegios en Windows; el rechazo de puntos de reanálisis se comprobó mediante simulación. |
+| Integridad documental | 20 casos aprobados | Datos sintéticos: conciliación Decimal, campos ausentes o no extraíbles, fechas, paginación, incidencias múltiples y protección del informe. Extracción, embeddings, transporte y LLM simulados según cada caso. |
+| Pertinencia contextual y temporal | 19 casos aprobados | Consultas históricas/actuales, período y versión, crédito/débito, normas y gobierno de datos, evidencia insuficiente y aclaraciones; sin modelos reales. |
+
+Estos números proceden de ejecuciones distintas y correcciones sucesivas;
+no representan una única suite ni certifican toda la integración actual. No se
+repitieron estos tres lotes para esta actualización. Los resultados históricos
+de STDIO, Ollama y navegador consignados arriba no certifican las guardas y
+reglas añadidas después. Siguen pendientes la recertificación real de extremo
+a extremo y los seguimientos de navegador bajo el contrato actual.
+
+Persisten los perfiles documentales parciales, los formatos explícitos de fecha
+e importe y la ausencia de un verificador actualizado de vigencia jurídica.
+Los PDF de referencia son ejemplos sintéticos, no fuentes normativas oficiales.
+
+### Dos contratos corregidos, sin cambios de producción
+
+- `test_puerta_antes_del_orquestador`: el doble distingue admisión y preparación
+  MCP. La rama aceptada recibe contexto, metadatos e informe de un estado
+  sintético completo y consistente; se comprueba la autorización del contexto
+  mediante un doble explícito. Los tres estados no aceptados no lo preparan ni
+  alcanzan la frontera de generación. Son contratos simulados, no seguridad real.
+- `test_preguntas_mcp_real`: conserva el PDF histórico con resumen narrativo,
+  que no cumple el perfil actual de campos etiquetados. Exige un informe que
+  bloquee conclusiones; la pregunta de suma debe devolver diagnóstico limitado,
+  sin cálculo ni modelo. Se conserva la posibilidad de citar el saldo literal.
+  El lote real opcional no se ejecutó: requiere autorización de Ollama/MiMo.
+
+La ejecución dirigida de `test_puerta_antes_del_orquestador` obtuvo **4 casos
+aprobados en 5.22 s**, sin navegador ni modelos reales. Es evidencia nueva solo
+de ese contrato, no una repetición o nueva aprobación de los lotes anteriores.
+El nodo opcional se seleccionó con su activación deshabilitada para comprobar
+que queda omitido: **1 omitido**, sin ejecutar su cuerpo ni sus fixtures de
+identidad/SQLite. Esa omisión no valida el recorrido real. `git diff --check`
+pasó; no se modificó lógica de producción ni se ejecutaron modelos.

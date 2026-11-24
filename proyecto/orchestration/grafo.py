@@ -276,6 +276,24 @@ def fuera_de_alcance(
     dominio y referencias conversacionales. Ante duda conserva el flujo actual.
     """
     texto = _normalizar(consulta or "")
+    # El tema financiero no legitima una finalidad creativa. Esta decision
+    # compartida precede a las excepciones por PDF, contexto y vocabulario.
+    for creativa in re.finditer(
+        r"(?:^|[;!?¿]|\b(?:y|luego|despues)\b)\s*"
+        r"(?:(?:por favor|puedes|podrias|quiero que|necesito que|me puedes|ayudame a)\s+){0,3}"
+        r"(?:inventa(?:r|me)?|inventes|escrib(?:e|ir|eme)|crea(?:r|me)?|"
+        r"genera(?:r|me)?|redacta(?:r|me)?|narra(?:r|me)?|cuentame|haz|hacer)\b"
+        r"\s+(?:(?:un|una|el|la|unos|unas|breve|pequena|original|nueva|nuevo|otra|otro|mi|su)\s+){0,4}"
+        r"(?:historias?|cuentos?|poemas?|cancion(?:es)?|chistes?)\b", texto,
+    ):
+        if not re.search(r"\b(?:no|sin|evita)\s+$", texto[:creativa.start()]):
+            return True
+    if re.search(
+        r"\bpor que (?:el )?cielo\b.{0,40}\bazul\b|"
+        r"\b(?:que es|explica|describe) (?:la )?fotosintesis\b|"
+        r"\b(?:cual es|dime) (?:la )?capital de (?:francia|italia|japon|alemania)\b", texto,
+    ):
+        return True
     if imagen_pendiente or _tiene_ruta_imagen(consulta) or _tiene_ruta_documento(consulta):
         return False
     if (_tabla_mencionada(consulta) or _es_consulta_normativa(consulta)
@@ -306,6 +324,38 @@ def fuera_de_alcance(
         r"\bcapital de (?:francia|italia|japon|alemania)\b", texto,
     )
     return bool(peticion and tema_ajeno)
+
+
+def interpretar_finalidad_documental(consulta: str, anterior: str = "") -> dict:
+    """Finalidad del adjunto activo, sin inferencia ni atribuir vigencia al PDF.
+
+    Compartida por el controlador documental y MCP. No reemplaza las rutas
+    explicitas a SQLite o fuentes normativas oficiales.
+    """
+    texto = _normalizar(consulta)
+    version = re.search(r'\bversion\s+v?([0-9]+(?:\.[0-9]+)*)\b', texto)
+    # Demostrativos no son identificadores de version: "esta version".
+    periodo = re.search(r'\b(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\s+(?:de\s+)?(\d{4})\b', texto)
+    year = re.search(r'\b(?:19|20)\d{2}\b', texto)
+    fechas = re.findall(r'\b(?:\d{4}-\d{2}-\d{2}|\d{2}/\d{2}/\d{4})\b', texto)
+    actual = bool(re.search(r'\b(?:actual(?:mente)?|hoy|ahora|en este momento|mas reciente|ultima version|a la fecha)\b', texto)
+                  or (not (year or version or fechas) and re.search(r'\bvigentes?\b', texto)))
+    historico = bool(re.search(r'\b(?:historico|historica|establecia|decia|ese mes|aquel mes|esa version|esta version|en esa fecha|en aquel momento)\b', texto))
+    finalidad = ('actual' if actual else 'version_especifica' if version else
+                 'periodo_especifico' if periodo or fechas or (year and not historico) else
+                 'historica' if historico else 'contenido')
+    if (anterior and finalidad == 'contenido'
+            and re.match(r'^(?:y\b|eso\b|esa\b|ese\b|en ese caso\b)', texto.strip(' ¿¡?!'))):
+        previous = interpretar_finalidad_documental(anterior)
+        if previous['finalidad'] != 'contenido':
+            return {**previous, 'seguimiento': True}
+    varios = (len(set(re.findall(r'\bversion\s+v?([0-9]+(?:\.[0-9]+)*)\b', texto))) > 1
+              or len(set(re.findall(r'\b(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\s+(?:de\s+)?\d{4}\b', texto))) > 1
+              or (not fechas and not periodo and not version and len(set(re.findall(r'\b(?:19|20)\d{2}\b', texto))) > 1))
+    return {'finalidad': finalidad, 'calidad': bool(re.search(r'\b(?:calidad|cumplimiento|cumple|consistencia|integridad|validacion)\b', texto)),
+            'version': version[1] if version else None,
+            'periodo': {'mes': periodo[1], 'ano': int(periodo[2])} if periodo else None,
+            'ano': int(year[0]) if year else None, 'fechas': fechas, 'varios_periodos_o_versiones': varios, 'seguimiento': False}
 
 
 def planear_rutas(
