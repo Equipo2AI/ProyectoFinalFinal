@@ -322,13 +322,13 @@ def _limpiar_frase(texto: str, limite: int = 160) -> str:
     return texto if len(texto) <= limite else texto[:limite].rstrip() + "…"
 
 
-def evaluar_relevancia(texto: str, nombre: str = "") -> Veredicto:
+def evaluar_relevancia(texto: str, nombre: str = "", *, modo: str | None = None) -> Veredicto:
     """Decide si un documento ya convertido a texto es relevante para el banco."""
     texto = (texto or "").strip()
     if not texto:
         return Veredicto(False, "sin_contenido", "El documento no tiene texto.")
 
-    modo = _modo()
+    modo = modo or _modo()
     if modo == "off":
         return Veredicto(True, "desactivado", "Filtro de relevancia desactivado.")
 
@@ -408,7 +408,7 @@ def mensaje_rechazo(nombre: str, veredicto: Veredicto) -> str:
     )
 
 
-def filtrar_documento(texto: str, nombre: str = "") -> str:
+def filtrar_documento(texto: str, nombre: str = "", *, modo: str | None = None) -> str:
     """Devuelve el texto si es relevante; si no, un mensaje de rechazo.
 
     Las salidas de estado (errores, "sin texto legible") pasan sin cambios.
@@ -417,7 +417,7 @@ def filtrar_documento(texto: str, nombre: str = "") -> str:
     if not contenido.strip() or contenido.lstrip().startswith(_PREFIJOS_ESTADO):
         return contenido
 
-    veredicto = evaluar_relevancia(contenido, nombre)
+    veredicto = evaluar_relevancia(contenido, nombre, modo=modo)
     logger.info(
         "Relevancia de %s: %s (método=%s, señales=%s)",
         nombre or "documento",

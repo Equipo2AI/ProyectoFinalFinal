@@ -5,8 +5,7 @@ identidad. Cuando existe una sesión autenticada, las tools de documentos solo
 pueden leer rutas que estén dentro de ese directorio. Así el LLM no puede
 convertir en una lectura arbitraria del disco una ruta mencionada en el chat.
 
-Sin token (CLI, pruebas directas o desarrollo local) se conserva el acceso a
-rutas locales para no romper los flujos que no pasan por la UI.
+Las rutas privadas exigen registro y sesion, tambien en CLI y llamadas directas.
 """
 
 from __future__ import annotations
@@ -70,37 +69,15 @@ def _subject_from_token(token: str | None) -> str | None:
         return str(principal().get("subject") or "").strip() or None
 
 
-def authorize_file_access(
-    path: str | Path,
-    *,
-    subject: str | None = None,
-    token: str | None = None,
-    allow_unauthenticated: bool = True,
-) -> Path:
-    """Valida que ``path`` pueda leerse con la identidad actual.
-
-    Si se recibe ``subject`` se usa directamente. Si no, se intenta resolver
-    desde ``token`` o desde ``PROYECTO_AUTH_TOKEN``. Un token inválido siempre
-    se rechaza; solo la ausencia total de identidad permite el modo local.
-    """
-    resuelta = Path(path).expanduser().resolve()
-    if subject is not None:
-        identidad = str(subject).strip()
-        if not identidad:
-            raise ValueError("Falta la identidad para autorizar el archivo.")
-    else:
-        identidad = _subject_from_token(token)
-
-    if not identidad:
-        if allow_unauthenticated:
-            return resuelta
-        raise PermissionError(
-            "Acceso denegado: se requiere una identidad autenticada para leer el archivo."
-        )
-
-    raiz = subject_upload_root(identidad)
-    if not resuelta.is_relative_to(raiz):
-        raise PermissionError(
-            "Acceso denegado: el archivo no pertenece a las cargas del usuario autenticado."
-        )
-    return resuelta
+def authorize_file_access(path: str | Path, *, subject: str | None = None,
+                          token: str | None = None, allow_unauthenticated: bool = False) -> Path:
+    """Compatibilidad de interfaz; ninguna opcion permite acceso anonimo."""
+    from contextlib import nullcontext
+    from proyecto.security.local_auth import authenticated, principal
+    from proyecto.security.document_access import authorize_file
+    with authenticated(token) if token is not None else nullcontext():
+        user = principal()
+        if subject is not None and subject != user['subject']:
+            raise PermissionError('Identidad documental no autorizada.')
+        _, entry = authorize_file(str(path))
+        return Path(entry['path'])

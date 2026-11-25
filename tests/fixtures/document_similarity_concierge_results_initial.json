@@ -1,0 +1,519 @@
+{
+  "dataset": "concierge-synthetic-2026-11-24.1",
+  "model": "bge-large:latest",
+  "model_digest": "b3d71c92805938e2c9d78e6f35e82d7cc1bd77e05b47dd2ab3016240f4021c15",
+  "algorithm": "cosine-mean-nearest-600chars-overlap100-24-v1",
+  "original_references_preserved": true,
+  "reference_metadata": [
+    {
+      "name": "01_Normativa_Data_Governance_COMPLICADA.pdf",
+      "sha256": "6f9be6b155586b2fcb5276ef1b9f42bd90fa998ae1befdbd0951c44537030a89"
+    },
+    {
+      "name": "01_Normativa_Data_Governance_LIMPIA.pdf",
+      "sha256": "467dd702ac976d1d3693b1ddd6ac69af50ec0b04696cfc74a28ed89d3dc2adda"
+    },
+    {
+      "name": "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf",
+      "sha256": "399d3d6ba3a5b70452eccfe8cecb798615caf7666123f64c12df09a1b95fefdb"
+    },
+    {
+      "name": "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf",
+      "sha256": "a99e3b95599cecc0ec10febb5aa47f816fa76133afb2421138322e19a6e15725"
+    },
+    {
+      "name": "referencia_identificacion_simulada.pdf",
+      "sha256": "7f76dfb3593b44c15275ea5ba201c6bfefc6c4de8e9d3d0f101aeeabc8eaa247",
+      "synthetic": true,
+      "document_type": "identificacion"
+    },
+    {
+      "name": "referencia_constancia_curp_simulada.pdf",
+      "sha256": "13351f8efc71b840fad5bd2f409a544f93485dcaea263839a5b6ad25f23b2f88",
+      "synthetic": true,
+      "document_type": "curp"
+    },
+    {
+      "name": "referencia_domicilio_simulada.pdf",
+      "sha256": "04c4eae17c55735a1c6b0a1f794c45a22348bcb12d8e2d2adf5b398962d77f4b",
+      "synthetic": true,
+      "document_type": "domicilio"
+    }
+  ],
+  "previous_thresholds": {
+    "accept": 0.7874881012226205,
+    "reject": 0.6864000014989039
+  },
+  "calibration": {
+    "accept": 0.8379651425075912,
+    "reject": 0.7676865214691387,
+    "examples": [
+      {
+        "id": "cal_estado_a",
+        "expected": "aceptado",
+        "similarities": {
+          "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.7027540230991536,
+          "01_Normativa_Data_Governance_LIMPIA.pdf": 0.6906049302709321,
+          "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.8382150253674701,
+          "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.8409422380891325,
+          "referencia_identificacion_simulada.pdf": 0.687607012082105,
+          "referencia_constancia_curp_simulada.pdf": 0.6810042667006986,
+          "referencia_domicilio_simulada.pdf": 0.6859958172269636
+        },
+        "sha256": "ff6895c4b8ed72a46c152dfd8e6c6c77d1d3e1585927795ca39302d0e7ba252c"
+      },
+      {
+        "id": "cal_estado_b",
+        "expected": "aceptado",
+        "similarities": {
+          "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.7807540114925178,
+          "01_Normativa_Data_Governance_LIMPIA.pdf": 0.7758525283895248,
+          "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.8081947857481088,
+          "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.805654408271261,
+          "referencia_identificacion_simulada.pdf": 0.8050641963008242,
+          "referencia_constancia_curp_simulada.pdf": 0.7867210045962543,
+          "referencia_domicilio_simulada.pdf": 0.6974283095140941
+        },
+        "sha256": "dd6983cce58516b8779e0e5cddf40e75a95f711e088e2f545efd0b2674b66ebe"
+      },
+      {
+        "id": "cal_gobierno_a",
+        "expected": "aceptado",
+        "similarities": {
+          "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.8095671718818618,
+          "01_Normativa_Data_Governance_LIMPIA.pdf": 0.8085901954536034,
+          "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.7353359634685916,
+          "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.7280585924739964,
+          "referencia_identificacion_simulada.pdf": 0.733544465028438,
+          "referencia_constancia_curp_simulada.pdf": 0.7243318576738628,
+          "referencia_domicilio_simulada.pdf": 0.657979601356253
+        },
+        "sha256": "c33237c917afa6413e7f2a2542093ca567f332eecb374250242779efa9b004c3"
+      },
+      {
+        "id": "cal_gobierno_b",
+        "expected": "aceptado",
+        "similarities": {
+          "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.7851183487269684,
+          "01_Normativa_Data_Governance_LIMPIA.pdf": 0.7874881012226205,
+          "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.6857205933627749,
+          "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.7134604225463588,
+          "referencia_identificacion_simulada.pdf": 0.7171330305588388,
+          "referencia_constancia_curp_simulada.pdf": 0.6945810620973335,
+          "referencia_domicilio_simulada.pdf": 0.6511602234669617
+        },
+        "sha256": "62c8cb7f0f15ae3346e84c77cf1be07ef20df484a38c7dba082bae5b5bd1fd47"
+      },
+      {
+        "id": "cal_ajeno_a",
+        "expected": "rechazado",
+        "similarities": {
+          "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.634951664178463,
+          "01_Normativa_Data_Governance_LIMPIA.pdf": 0.6864000014989039,
+          "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.6161083520901559,
+          "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.6164456270094225,
+          "referencia_identificacion_simulada.pdf": 0.5870702944201313,
+          "referencia_constancia_curp_simulada.pdf": 0.5739251227147902,
+          "referencia_domicilio_simulada.pdf": 0.6279912120486802
+        },
+        "sha256": "4574e3f650c3b005c98dcad05622db0730cb5193e26895262b6c63148a4b01e1"
+      },
+      {
+        "id": "cal_ajeno_b",
+        "expected": "rechazado",
+        "similarities": {
+          "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.6379535715826387,
+          "01_Normativa_Data_Governance_LIMPIA.pdf": 0.6436576024053303,
+          "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.6590760357547334,
+          "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.650866361414421,
+          "referencia_identificacion_simulada.pdf": 0.5895404281294131,
+          "referencia_constancia_curp_simulada.pdf": 0.6008848566045527,
+          "referencia_domicilio_simulada.pdf": 0.618423036249333
+        },
+        "sha256": "c40c8cca318014b1662e291d1afba4a3052262f75226e21c2870aedb99990d3f"
+      },
+      {
+        "id": "cal_ajeno_c",
+        "expected": "rechazado",
+        "similarities": {
+          "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.6743370449847987,
+          "01_Normativa_Data_Governance_LIMPIA.pdf": 0.6574060790530092,
+          "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.6668563597662763,
+          "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.6719209831945729,
+          "referencia_identificacion_simulada.pdf": 0.624614611565908,
+          "referencia_constancia_curp_simulada.pdf": 0.6231363843297125,
+          "referencia_domicilio_simulada.pdf": 0.668628497941115
+        },
+        "sha256": "a4319f75239e5971777b80db1e09f3a24dc11b63ede87ec12b3a4d73f7fe28c4"
+      },
+      {
+        "id": "cal_identificacion_c",
+        "expected": "aceptado",
+        "similarities": {
+          "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.7434653301313132,
+          "01_Normativa_Data_Governance_LIMPIA.pdf": 0.7359190126502186,
+          "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.6847039537172107,
+          "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.6860346080789628,
+          "referencia_identificacion_simulada.pdf": 0.8087134595458405,
+          "referencia_constancia_curp_simulada.pdf": 0.755571594436798,
+          "referencia_domicilio_simulada.pdf": 0.7054284503195923
+        },
+        "sha256": "65bfad79b77ff89e9899391f25bc8a37ba0358509554af731a111803d0210184"
+      },
+      {
+        "id": "cal_identificacion_d",
+        "expected": "aceptado",
+        "similarities": {
+          "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.6890503844131906,
+          "01_Normativa_Data_Governance_LIMPIA.pdf": 0.6598172884750019,
+          "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.6275822506776003,
+          "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.6333530660462976,
+          "referencia_identificacion_simulada.pdf": 0.7676865214691388,
+          "referencia_constancia_curp_simulada.pdf": 0.7313818315589706,
+          "referencia_domicilio_simulada.pdf": 0.6965120427728382
+        },
+        "sha256": "2203d5b6da3411c48c204d3276b3a7739f11d13fcf4ad718e21d9816975a2d64"
+      },
+      {
+        "id": "cal_curp_c",
+        "expected": "aceptado",
+        "similarities": {
+          "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.7467611698138106,
+          "01_Normativa_Data_Governance_LIMPIA.pdf": 0.7427039624989498,
+          "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.7562298976003042,
+          "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.7413124411411335,
+          "referencia_identificacion_simulada.pdf": 0.7869471864423971,
+          "referencia_constancia_curp_simulada.pdf": 0.8271914360162418,
+          "referencia_domicilio_simulada.pdf": 0.7866158171087118
+        },
+        "sha256": "1020126362c395815702fd9f348694b280adbaaccd401a21ba1097e60b222222"
+      },
+      {
+        "id": "cal_curp_d",
+        "expected": "aceptado",
+        "similarities": {
+          "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.76714024072632,
+          "01_Normativa_Data_Governance_LIMPIA.pdf": 0.7589756122425741,
+          "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.7515236195523307,
+          "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.7706059610899187,
+          "referencia_identificacion_simulada.pdf": 0.863028658796859,
+          "referencia_constancia_curp_simulada.pdf": 0.827559237922059,
+          "referencia_domicilio_simulada.pdf": 0.7821449430247804
+        },
+        "sha256": "911be2ae372c32a48eac639174303ecf6f4818ea870b41d66d3b207c3e94aadb"
+      },
+      {
+        "id": "cal_domicilio_c",
+        "expected": "aceptado",
+        "similarities": {
+          "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.7213153225586189,
+          "01_Normativa_Data_Governance_LIMPIA.pdf": 0.7001720336980108,
+          "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.6948798678713883,
+          "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.7417872186525134,
+          "referencia_identificacion_simulada.pdf": 0.7988610136094526,
+          "referencia_constancia_curp_simulada.pdf": 0.7954006900962207,
+          "referencia_domicilio_simulada.pdf": 0.7953277204686656
+        },
+        "sha256": "3232262c154528b12141128c00c711402b3afbdce9893416839e027ee4ed8b21"
+      },
+      {
+        "id": "cal_domicilio_d",
+        "expected": "aceptado",
+        "similarities": {
+          "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.6988618410169252,
+          "01_Normativa_Data_Governance_LIMPIA.pdf": 0.6905455283646493,
+          "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.701783330830766,
+          "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.7201283991898826,
+          "referencia_identificacion_simulada.pdf": 0.7695305240702373,
+          "referencia_constancia_curp_simulada.pdf": 0.7542598321345624,
+          "referencia_domicilio_simulada.pdf": 0.8127355212963441
+        },
+        "sha256": "075d1d74de3ad827fe3aa842790b74e53248ea6ef316c20afa73f2cdd9b768ed"
+      },
+      {
+        "id": "cal_ajeno_d",
+        "expected": "rechazado",
+        "similarities": {
+          "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.7223485893903432,
+          "01_Normativa_Data_Governance_LIMPIA.pdf": 0.7036528984990086,
+          "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.6617944029227667,
+          "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.6768690742466791,
+          "referencia_identificacion_simulada.pdf": 0.7610683925466337,
+          "referencia_constancia_curp_simulada.pdf": 0.7240115228034907,
+          "referencia_domicilio_simulada.pdf": 0.7258135439793661
+        },
+        "sha256": "b4449d345b72c4c4c88ead96734b277066328b19919a0566e9e58d0bd7ec5251"
+      },
+      {
+        "id": "cal_ajeno_e",
+        "expected": "rechazado",
+        "similarities": {
+          "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.7671573659511669,
+          "01_Normativa_Data_Governance_LIMPIA.pdf": 0.761571463265346,
+          "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.763381394683779,
+          "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.7575862815819892,
+          "referencia_identificacion_simulada.pdf": 0.8067769186930935,
+          "referencia_constancia_curp_simulada.pdf": 0.8049362754344491,
+          "referencia_domicilio_simulada.pdf": 0.8379651425075911
+        },
+        "sha256": "c97f68f25221e06bda7e58a90c8ed5cc243338f20a8ac506106d2c6491955561"
+      }
+    ],
+    "method": "conservative-overlap",
+    "overlap": true
+  },
+  "validation": [
+    {
+      "id": "val_identificacion_a",
+      "expected": [
+        "aceptado",
+        "indeterminado"
+      ],
+      "decision": "indeterminado",
+      "model": "bge-large:latest",
+      "similarities": {
+        "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.7569872686233909,
+        "01_Normativa_Data_Governance_LIMPIA.pdf": 0.7425372954125949,
+        "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.7237975587432872,
+        "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.7459772302054887,
+        "referencia_identificacion_simulada.pdf": 0.7988174006099102,
+        "referencia_constancia_curp_simulada.pdf": 0.7806456137530251,
+        "referencia_domicilio_simulada.pdf": 0.7615734166303154
+      },
+      "thresholds": {
+        "accept": 0.8379651425075912,
+        "reject": 0.7676865214691387
+      },
+      "chunks": 2,
+      "message": "La similitud no permite confirmar el tipo documental. No se ha rechazado por irrelevancia; aporta mas evidencia o solicita revision.",
+      "seconds": 0.318
+    },
+    {
+      "id": "val_identificacion_b",
+      "expected": [
+        "aceptado",
+        "indeterminado"
+      ],
+      "decision": "aceptado",
+      "model": "bge-large:latest",
+      "similarities": {
+        "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.7771389987537343,
+        "01_Normativa_Data_Governance_LIMPIA.pdf": 0.7597440122524264,
+        "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.7005412211506443,
+        "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.7149757775428918,
+        "referencia_identificacion_simulada.pdf": 0.905228812154845,
+        "referencia_constancia_curp_simulada.pdf": 0.865835352449312,
+        "referencia_domicilio_simulada.pdf": 0.8329275453807138
+      },
+      "thresholds": {
+        "accept": 0.8379651425075912,
+        "reject": 0.7676865214691387
+      },
+      "chunks": 1,
+      "message": "Documento compatible con las referencias internas de tipos admitidos.",
+      "seconds": 0.255
+    },
+    {
+      "id": "val_curp_a",
+      "expected": [
+        "aceptado",
+        "indeterminado"
+      ],
+      "decision": "aceptado",
+      "model": "bge-large:latest",
+      "similarities": {
+        "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.7551525551027253,
+        "01_Normativa_Data_Governance_LIMPIA.pdf": 0.7484958916194252,
+        "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.722133332733021,
+        "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.7347981963411024,
+        "referencia_identificacion_simulada.pdf": 0.8877256580419283,
+        "referencia_constancia_curp_simulada.pdf": 0.8990625869203758,
+        "referencia_domicilio_simulada.pdf": 0.8654912482821041
+      },
+      "thresholds": {
+        "accept": 0.8379651425075912,
+        "reject": 0.7676865214691387
+      },
+      "chunks": 1,
+      "message": "Documento compatible con las referencias internas de tipos admitidos.",
+      "seconds": 0.252
+    },
+    {
+      "id": "val_curp_b",
+      "expected": [
+        "aceptado",
+        "indeterminado"
+      ],
+      "decision": "aceptado",
+      "model": "bge-large:latest",
+      "similarities": {
+        "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.7605778078591494,
+        "01_Normativa_Data_Governance_LIMPIA.pdf": 0.7580506931685866,
+        "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.7340302253805008,
+        "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.7590543574863463,
+        "referencia_identificacion_simulada.pdf": 0.8772963784050569,
+        "referencia_constancia_curp_simulada.pdf": 0.9067363038171592,
+        "referencia_domicilio_simulada.pdf": 0.8665183070683053
+      },
+      "thresholds": {
+        "accept": 0.8379651425075912,
+        "reject": 0.7676865214691387
+      },
+      "chunks": 1,
+      "message": "Documento compatible con las referencias internas de tipos admitidos.",
+      "seconds": 0.262
+    },
+    {
+      "id": "val_domicilio_a",
+      "expected": [
+        "aceptado",
+        "indeterminado"
+      ],
+      "decision": "aceptado",
+      "model": "bge-large:latest",
+      "similarities": {
+        "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.7248664319436322,
+        "01_Normativa_Data_Governance_LIMPIA.pdf": 0.6968754791159848,
+        "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.6878181720769506,
+        "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.7164488351167836,
+        "referencia_identificacion_simulada.pdf": 0.8356918850358556,
+        "referencia_constancia_curp_simulada.pdf": 0.8020805589142466,
+        "referencia_domicilio_simulada.pdf": 0.8481210462851375
+      },
+      "thresholds": {
+        "accept": 0.8379651425075912,
+        "reject": 0.7676865214691387
+      },
+      "chunks": 1,
+      "message": "Documento compatible con las referencias internas de tipos admitidos.",
+      "seconds": 0.222
+    },
+    {
+      "id": "val_domicilio_b",
+      "expected": [
+        "aceptado",
+        "indeterminado"
+      ],
+      "decision": "aceptado",
+      "model": "bge-large:latest",
+      "similarities": {
+        "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.7235021553286153,
+        "01_Normativa_Data_Governance_LIMPIA.pdf": 0.7156641291435959,
+        "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.7391298237684709,
+        "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.7367471252209897,
+        "referencia_identificacion_simulada.pdf": 0.8232580748949389,
+        "referencia_constancia_curp_simulada.pdf": 0.8128499106733943,
+        "referencia_domicilio_simulada.pdf": 0.9173776048638423
+      },
+      "thresholds": {
+        "accept": 0.8379651425075912,
+        "reject": 0.7676865214691387
+      },
+      "chunks": 1,
+      "message": "Documento compatible con las referencias internas de tipos admitidos.",
+      "seconds": 0.234
+    },
+    {
+      "id": "val_ajeno_a",
+      "expected": [
+        "rechazado",
+        "indeterminado"
+      ],
+      "decision": "rechazado",
+      "model": "bge-large:latest",
+      "similarities": {
+        "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.7198567020616704,
+        "01_Normativa_Data_Governance_LIMPIA.pdf": 0.7118372315254331,
+        "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.7033133823892572,
+        "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.7160707708355197,
+        "referencia_identificacion_simulada.pdf": 0.7629966031680869,
+        "referencia_constancia_curp_simulada.pdf": 0.7635061946205584,
+        "referencia_domicilio_simulada.pdf": 0.7624649349337165
+      },
+      "thresholds": {
+        "accept": 0.8379651425075912,
+        "reject": 0.7676865214691387
+      },
+      "chunks": 1,
+      "message": "El documento no alcanza la similitud necesaria con las referencias internas de tipos admitidos.",
+      "seconds": 0.202
+    },
+    {
+      "id": "val_ajeno_b",
+      "expected": [
+        "rechazado",
+        "indeterminado"
+      ],
+      "decision": "indeterminado",
+      "model": "bge-large:latest",
+      "similarities": {
+        "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.721761332320821,
+        "01_Normativa_Data_Governance_LIMPIA.pdf": 0.7200221874732537,
+        "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.7137166790530636,
+        "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.7249690604058425,
+        "referencia_identificacion_simulada.pdf": 0.8115945011546464,
+        "referencia_constancia_curp_simulada.pdf": 0.7938198997170827,
+        "referencia_domicilio_simulada.pdf": 0.8359674447663548
+      },
+      "thresholds": {
+        "accept": 0.8379651425075912,
+        "reject": 0.7676865214691387
+      },
+      "chunks": 1,
+      "message": "La similitud no permite confirmar el tipo documental. No se ha rechazado por irrelevancia; aporta mas evidencia o solicita revision.",
+      "seconds": 0.195
+    },
+    {
+      "id": "val_limite_a",
+      "expected": [
+        "indeterminado"
+      ],
+      "decision": "aceptado",
+      "model": "bge-large:latest",
+      "similarities": {
+        "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.7600934054610963,
+        "01_Normativa_Data_Governance_LIMPIA.pdf": 0.7456303165491928,
+        "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.7335795381415038,
+        "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.7714692662287478,
+        "referencia_identificacion_simulada.pdf": 0.8495815745496034,
+        "referencia_constancia_curp_simulada.pdf": 0.7996084036165154,
+        "referencia_domicilio_simulada.pdf": 0.72269413072807
+      },
+      "thresholds": {
+        "accept": 0.8379651425075912,
+        "reject": 0.7676865214691387
+      },
+      "chunks": 2,
+      "message": "Documento compatible con las referencias internas de tipos admitidos.",
+      "seconds": 0.253
+    },
+    {
+      "id": "val_limite_b",
+      "expected": [
+        "indeterminado"
+      ],
+      "decision": "aceptado",
+      "model": "bge-large:latest",
+      "similarities": {
+        "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.8129648893322077,
+        "01_Normativa_Data_Governance_LIMPIA.pdf": 0.773119566082905,
+        "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.7844752311282267,
+        "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.7992479648876916,
+        "referencia_identificacion_simulada.pdf": 0.8712010615738442,
+        "referencia_constancia_curp_simulada.pdf": 0.8433039115550921,
+        "referencia_domicilio_simulada.pdf": 0.8730097308954979
+      },
+      "thresholds": {
+        "accept": 0.8379651425075912,
+        "reject": 0.7676865214691387
+      },
+      "chunks": 1,
+      "message": "Documento compatible con las referencias internas de tipos admitidos.",
+      "seconds": 0.227
+    }
+  ],
+  "safety_checks_passed": false,
+  "boundary_expectations_met": false,
+  "seconds": 5.65,
+  "applied": false
+}

@@ -1,0 +1,23 @@
+{
+  "version": "structural-holdout-1",
+  "purpose": "Evaluación nueva posterior a congelar los criterios existentes. Sin calibración ni ajuste de reglas con estos resultados. Textos enteramente ficticios; no son documentos oficiales.",
+  "cases": [
+    {"id":"ine_lineas","expected":"aceptado","type":"ine","text":"IDENTIFICACION OFICIAL INE - SIMULACION\nNombre: PERSONA DE ENSAYO LAGO\nClave de elector: ETIQUETA SIN VALOR PERSONAL\nVigencia: 2031-08-31"},
+    {"id":"ine_parrafo","expected":"aceptado","type":"ine","text":"CREDENCIAL PARA VOTAR - SIMULACION. Titular: PERSONA DE ENSAYO MONTE. Numero de credencial: REGISTRO FICTICIO SIN USO OFICIAL. Vigente hasta: 2022-06-30."},
+    {"id":"curp_registro","expected":"aceptado","type":"curp","text":"CONSTANCIA DE CURP - SIMULACION\nPersona registrada: PERSONA FICTICIA NUBE\nValor de la CURP: ETIQUETA DE ENSAYO SIN CLAVE AUTENTICA\nEntidad de registro: OFICINA FICTICIA"},
+    {"id":"curp_emision","expected":"aceptado","type":"curp","text":"CONSTANCIA CURP - SIMULACION. Nombre: PERSONA FICTICIA RIO. CURP: ETIQUETA FICTICIA NO UTILIZABLE. Fecha de expedicion: 2025-12-07."},
+    {"id":"domicilio_luz","expected":"aceptado","type":"domicilio","text":"RECIBO DE LUZ - SIMULACION\nTitular: PERSONA FICTICIA PINO\nDomicilio del servicio: UBICACION INVENTADA DEL ENSAYO\nFecha de emision: 2026-04-09\nConcepto: suministro electrico"},
+    {"id":"domicilio_telefono","expected":"aceptado","type":"domicilio","text":"COMPROBANTE DE DOMICILIO - SIMULACION. Recibo de telefonia fija. Persona: SUJETO FICTICIO ROBLE. Direccion: UBICACION INVENTADA. Emision: 2026-05-10."},
+    {"id":"curp_breve","expected":"aceptado","type":"curp","text":"CONSTANCIA CURP\nNombre: Z\nCURP: Q\nEmision: 2025-03-09"},
+    {"id":"cometa_nueva","expected":"rechazado","text":"TALLER DE COMETAS DE PAPEL. Cortar una figura de rombo, pegar las varillas y fijar una cuerda. La cola mantiene el equilibrio mientras el viento eleva el juguete. Material de manualidades sin documentos bancarios."},
+    {"id":"lista_requisitos","expected":"indeterminado","text":"LISTA DE REQUISITOS PARA SUCURSAL. CONSTANCIA CURP. Persona: SUJETO FICTICIO SAUCE. CURP: ETIQUETA DE PRUEBA. Fecha de emision: 2026-01-11. Estos campos enumeran lo que falta aportar, no una constancia entregada."},
+    {"id":"plantilla_vacia","expected":"indeterminado","text":"PLANTILLA SIN COMPLETAR. COMPROBANTE DE DOMICILIO\nRecibo de luz\nTitular:\nDomicilio:\nEmision:"},
+    {"id":"mencion_curp","expected":"indeterminado","text":"AVISO DE PRIVACIDAD DE BIBLIOTECA. El registro no solicita CURP ni constancia CURP. Persona: SUJETO FICTICIO CEDRO. CURP: ETIQUETA OMITIDA EN ESTE EJEMPLO. Emision: 2026-02-08. Es una nota informativa sobre recoleccion de datos, no una constancia."},
+    {"id":"articulo_con_campos","expected":"indeterminado","text":"ARTICULO EDUCATIVO SOBRE CONSTANCIA CURP. Persona: SUJETO FICTICIO FRESNO. CURP: ETIQUETA DE EJEMPLO. Entidad de registro: OFICINA INVENTADA. El articulo enumera campos para explicar su significado; no constituye una constancia."},
+    {"id":"credencial_biblioteca","expected":"rechazado","text":"CREDENCIAL DE BIBLIOTECA - SIMULACION\nTitular: LECTOR FICTICIO OLMO\nNumero de registro: ETIQUETA DE PRESTAMO\nVigencia: 2030-03-31\nDomicilio: LUGAR INVENTADO\nAutoriza solamente el prestamo de novelas y revistas."},
+    {"id":"tipos_mezclados","expected":"indeterminado","text":"CONSTANCIA CURP. COMPROBANTE DE DOMICILIO. Recibo de luz. Persona: SUJETO FICTICIO ABETO. CURP: ETIQUETA DE PRUEBA. Domicilio: LUGAR INVENTADO. Emision: 2026-06-12."},
+    {"id":"extraccion_parcial","expected":"indeterminado","incomplete":true,"text":"CONSTANCIA CURP\nPersona: SUJETO FICTICIO CIPRES\nCURP: ETIQUETA INVENTADA\nEmision: 2026-02-12\nPagina restante sin lectura."},
+    {"id":"solo_encabezado","expected":"indeterminado","text":"IDENTIFICACION OFICIAL INE - SIMULACION\nNo se recuperaron los campos de la credencial; texto insuficiente para reconocer estructura."},
+    {"id":"fechas_contradictorias","expected":"indeterminado","text":"IDENTIFICACION INE - SIMULACION\nPersona: SUJETO FICTICIO HAYA\nNumero de registro: ETIQUETA INVENTADA\nVigencia: 2028-01-01\nVigencia: 2034-01-01"}
+  ]
+}

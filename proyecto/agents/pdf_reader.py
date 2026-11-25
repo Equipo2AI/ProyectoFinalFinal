@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import re
 import tempfile
+from contextvars import ContextVar
 from pathlib import Path
 
 from proyecto.config.models import modelo_pdf
@@ -19,6 +20,7 @@ _PREFIJO_ERROR = "No se pudo convertir el documento a Markdown:"
 _MAX_PDF_BYTES = 25 * 1024 * 1024
 _MAX_MARKDOWN_CHARS = 200_000
 _MODOS = {"auto", "texto", "ocr", "describir"}
+_PDF_SOURCE = ContextVar('authorized_pdf_source', default='')
 
 
 def _env_int(nombre: str, defecto: int, minimo: int = 1) -> int:
@@ -89,13 +91,19 @@ def _texto_pagina(page) -> str:
 def _ocr_pagina(page, numero: int, modelo: str, prompt: str, directorio: Path) -> str:
     """Rasteriza una página y la envía al modelo de visión local."""
     from proyecto.agents.document_intelligence_agent import _vision
+    from proyecto.security.document_access import authorize_file
+    authorize_file(_PDF_SOURCE.get())  # antes incluso de rasterizar la pagina
 
     dpi = _env_int("DOCUMENT_PDF_DPI", 150, 72)
     escala = dpi / 72
     imagen = page.render(scale=escala).to_pil()
     ruta = directorio / f"pagina_{numero:04d}.png"
     imagen.save(ruta, format="PNG")
-    return _vision(prompt, str(ruta), modelo)
+    # La referencia padre se instala solo dentro de pdf_to_markdown autorizado.
+    authorize_file(_PDF_SOURCE.get())
+    result = _vision(prompt, str(ruta), modelo)
+    authorize_file(_PDF_SOURCE.get())
+    return result
 
 
 def _nota_omision(paginas: list[int], maximo: int) -> str:
@@ -117,7 +125,23 @@ def _nota_omision(paginas: list[int], maximo: int) -> str:
     )
 
 
-def pdf_to_markdown(
+def pdf_to_markdown(file_path: str, modo: str = 'auto', paginas: str | None = None, modelo: str | None = None) -> str:
+    """La ruta publica tambien exige registro de sesion, incluso fuera de MCP."""
+    from proyecto.security.local_auth import principal
+    from proyecto.security.document_access import authorize_file, _document_io
+    principal()
+    with _document_io():
+        identifier, entry = authorize_file(file_path)
+        source = _PDF_SOURCE.set(identifier)
+        try:
+            result = _pdf_to_markdown(entry['path'], modo, paginas, modelo)
+            authorize_file(identifier)
+            return result
+        finally:
+            _PDF_SOURCE.reset(source)
+
+
+def _pdf_to_markdown(
     file_path: str,
     modelo: str | None = None,
     modo: str = "auto",

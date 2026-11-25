@@ -1,0 +1,32 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+5 0 obj
+<< /Length 788 >>
+stream
+BT /F1 10 Tf 35 800 Td 13 TL (SIMULACION - SOLO PRUEBAS - SIN VALIDEZ OFICIAL. Datos inventados; sin documentos) Tj T* (reales, escudos, sellos, firmas ni codigos oficiales.) Tj T* (EJEMPLO DIDACTICO DE CONSTANCIA CURP) Tj T* (Representacion textual de una constancia de Clave Unica de Registro de Poblacion.) Tj T* (Persona: SUJETO FICTICIO BETA. CURP: VALOR OMITIDO, NO SE GENERA CLAVE PERSONAL.) Tj T* (Fecha ilustrativa de expedicion: 2026-04-06.) Tj T* (Entidad registradora: NO APLICA A ESTA SIMULACION.) Tj T* (La constancia tiene campos de registro poblacional e identificacion, no movimientos) Tj T* (financieros. Permite reconocer el tipo de documento solicitado cuando otra) Tj T* (identificacion no incluye el dato. No contiene codigo QR, sello ni validacion RENAPO.) Tj T* ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000000311 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1150
+%%EOF

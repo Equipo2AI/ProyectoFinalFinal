@@ -285,6 +285,11 @@ def redactar_respuesta(
     ``llamar_modelo`` se inyecta en los tests para no depender de Ollama.
     """
     respaldo = respuesta if perfil.mostrar_sql else quitar_sql(respuesta)
+    if set(resultados) == {'data_steward'} or (
+        set(resultados) == {'data_analyst'} and re.search(r'\b(?:tablas?|vistas?)\b', consulta, re.I)
+    ):
+        return respaldo
+
     evidencia = _evidencia(resultados)
     contenido = (
         f"Consulta del usuario:\n{consulta}\n\n"

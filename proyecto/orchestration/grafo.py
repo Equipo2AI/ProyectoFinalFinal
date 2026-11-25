@@ -217,6 +217,7 @@ def _merge_dicts(actual: dict, nuevo: dict) -> dict:
 
 
 class EstadoGrafo(TypedDict, total=False):
+    document_references: list[str]
     """Estado compartido por todos los nodos del grafo."""
 
     consulta: str
@@ -383,13 +384,32 @@ def fuera_de_alcance(
     dominio y referencias conversacionales. Ante duda conserva el flujo actual.
     """
     texto = _normalizar(consulta or "")
+    # El tema financiero no legitima una finalidad creativa. Esta decision
+    # compartida precede a las excepciones por PDF, contexto y vocabulario.
+    for creativa in re.finditer(
+        r"(?:^|[;!?¿]|\b(?:y|luego|despues)\b)\s*"
+        r"(?:(?:por favor|puedes|podrias|quiero que|necesito que|me puedes|ayudame a)\s+){0,3}"
+        r"(?:inventa(?:r|me)?|inventes|escrib(?:e|ir|eme)|crea(?:r|me)?|"
+        r"genera(?:r|me)?|redacta(?:r|me)?|narra(?:r|me)?|cuentame|haz|hacer)\b"
+        r"\s+(?:(?:un|una|el|la|unos|unas|breve|pequena|original|nueva|nuevo|otra|otro|mi|su)\s+){0,4}"
+        r"(?:historias?|cuentos?|poemas?|cancion(?:es)?|chistes?)\b", texto,
+    ):
+        if not re.search(r"\b(?:no|sin|evita)\s+$", texto[:creativa.start()]):
+            return True
+    if re.search(
+        r"\bpor que (?:el )?cielo\b.{0,40}\bazul\b|"
+        r"\b(?:que es|explica|describe) (?:la )?fotosintesis\b|"
+        r"\b(?:cual es|dime) (?:la )?capital de (?:francia|italia|japon|alemania)\b", texto,
+    ):
+        return True
     if (
         imagen_pendiente
         or _tiene_ruta_imagen(consulta)
         or _tiene_ruta_documento(consulta)
     ):
         return False
-    if _RE_KYC_AML.search(texto) and not hay_contexto:
+    if (_RE_KYC_AML.search(texto) and not hay_contexto
+            and not re.search(r'\b(?:que es|que establece|normativa|norma|ley|reglamento|obligaciones|requisitos)\b', texto)):
         return True
     if (
         _tabla_mencionada(consulta)
@@ -428,9 +448,63 @@ def fuera_de_alcance(
     return bool(peticion and tema_ajeno)
 
 
+def interpretar_finalidad_documental(consulta: str, anterior: str = "") -> dict:
+    """Finalidad del adjunto activo, sin inferencia ni atribuir vigencia al PDF.
+
+    Compartida por el controlador documental y MCP. No reemplaza las rutas
+    explicitas a SQLite o fuentes normativas oficiales.
+    """
+    texto = _normalizar(consulta)
+    version = re.search(r'\bversion\s+v?([0-9]+(?:\.[0-9]+)*)\b', texto)
+    # Demostrativos no son identificadores de version: "esta version".
+    periodo = re.search(r'\b(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\s+(?:de\s+)?(\d{4})\b', texto)
+    year = re.search(r'\b(?:19|20)\d{2}\b', texto)
+    fechas = re.findall(r'\b(?:\d{4}-\d{2}-\d{2}|\d{2}/\d{2}/\d{4})\b', texto)
+    actual = bool(re.search(r'\b(?:actual(?:mente)?|hoy|ahora|en este momento|mas reciente|ultima version|a la fecha)\b', texto)
+                  or (not (year or version or fechas) and re.search(r'\bvigentes?\b', texto)))
+    historico = bool(re.search(r'\b(?:historico|historica|establecia|decia|ese mes|aquel mes|esa version|esta version|en esa fecha|en aquel momento)\b', texto))
+    finalidad = ('actual' if actual else 'version_especifica' if version else
+                 'periodo_especifico' if periodo or fechas or (year and not historico) else
+                 'historica' if historico else 'contenido')
+    if (anterior and finalidad == 'contenido'
+            and re.match(r'^(?:y\b|eso\b|esa\b|ese\b|en ese caso\b)', texto.strip(' ¿¡?!'))):
+        previous = interpretar_finalidad_documental(anterior)
+        if previous['finalidad'] != 'contenido':
+            return {**previous, 'seguimiento': True}
+    varios = (len(set(re.findall(r'\bversion\s+v?([0-9]+(?:\.[0-9]+)*)\b', texto))) > 1
+              or len(set(re.findall(r'\b(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\s+(?:de\s+)?\d{4}\b', texto))) > 1
+              or (not fechas and not periodo and not version and len(set(re.findall(r'\b(?:19|20)\d{2}\b', texto))) > 1))
+    return {'finalidad': finalidad, 'calidad': bool(re.search(r'\b(?:calidad|cumplimiento|cumple|consistencia|integridad|validacion)\b', texto)),
+            'version': version[1] if version else None,
+            'periodo': {'mes': periodo[1], 'ano': int(periodo[2])} if periodo else None,
+            'ano': int(year[0]) if year else None, 'fechas': fechas, 'varios_periodos_o_versiones': varios, 'seguimiento': False}
+
 def _pide_otra_fuente(texto: str) -> bool:
     """True solo si el usuario nombra explícitamente otra fuente."""
     return bool(_RE_OTRA_FUENTE.search(texto or ""))
+
+
+def intencion_micuenta(consulta: str, *, seguimiento: bool = False) -> str | None:
+    """Señal acotada de trámite; no cambia el alcance de otras consultas."""
+    text = _normalizar(consulta)
+    product = bool(re.search(r'\bmi\s*cuenta\b', text) and re.search(r'\b(?:banamex|apertura|abrir|requisitos|expediente|documentos|archivos)\b', text))
+    evaluation = bool(re.search(r'\b(?:cumpl\w*|evalu\w*|revis\w*|falt\w*|complet\w*|verific\w*)\b', text))
+    files = bool(re.search(r'\b(?:mis |estos |los )?(?:archivos|documentos|expediente|adjuntos)\b', text))
+    missing_followup = bool(re.search(
+        r'\b(?:que|cuales)\s+(?:(?:documentos|requisitos)\s+)?(?:me\s+)?falt(?:a|an)\b|'
+        r'\bme\s+falt(?:a|an)\s+(?:algun(?:os)?\s+)?(?:documentos?|requisitos?)\b', text))
+    individual_pdf = bool(re.search(r'\bpdf\b|\.pdf\b|\b(?:este|ese) documento\b', text))
+    if missing_followup and not individual_pdf:
+        if seguimiento:
+            return 'expediente'
+        return 'requisitos' if product else 'aclaracion_expediente'
+    if product and evaluation and files:
+        return 'expediente'
+    if seguimiento and re.search(r'\b(?:mi|el) expediente\b', text):
+        return 'expediente'
+    if product and re.search(r'\b(?:requisitos|necesito|necesita|requiere|abrir|apertura)\b', text):
+        return 'requisitos'
+    return None
 
 
 def planear_rutas(
@@ -463,6 +537,8 @@ def planear_rutas(
     from proyecto.mcp_servers.data_analyst_backend import nombre_buscado
     if nombre_buscado(consulta):
         return ["data_analyst"]
+    if _RE_KYC_AML.search(texto) and not fuera_de_alcance(consulta):
+        return ['normatividad_rag']  # informacion con evidencia, no aprobacion KYC/AML
 
     pistas = _pistas_plan(
         consulta,
@@ -817,6 +893,8 @@ def planear_rutas_hibrido(
     Las reglas siguen siendo el fallback y el filtro de alcance. El LLM recibe
     las señales léxicas como guía, nunca como una obligación.
     """
+    if intencion_micuenta(consulta) == 'requisitos':
+        return ['normatividad_rag'], [consulta], 'reglas', 'Requisitos documentales MiCuenta; consultar evidencia normativa'
     if fuera_de_alcance(
         consulta,
         hay_contexto=bool(ultimo_agente or contexto_documentos),
@@ -1485,29 +1563,27 @@ def _nodo_documento(estado: EstadoGrafo) -> dict:
     if not ruta:
         ruta_documento = _ruta_documento(consulta)
         if ruta_documento:
-            salida, traza, estado_llamada = _ejecutar_mcp(
-                "document_intelligence_server",
-                "convertir_documento_markdown",
-                {"file_path": ruta_documento},
-                "mcp_convertir_documento_markdown",
-            )
-            if salida.startswith("No se pudo convertir el documento"):
-                estado_llamada = "error"
-            return {
-                "resultados": {
-                    "document_intelligence": {
-                        "agente": "document_intelligence",
-                        "respuesta": salida,
-                        "estado": estado_llamada,
-                    }
-                },
-                "trazas": [traza],
-                "errores": (
-                    [f"document_intelligence: {salida}"]
-                    if estado_llamada == "error"
-                    else []
-                ),
-            }
+            salida, traza, status = _ejecutar_mcp(
+                'document_intelligence_server', 'preparar_documento_consultable',
+                {'file_path': ruta_documento, 'texto': ''}, 'preparar_documento_consultable')
+            context = _json_dict(salida)
+            traces = [traza]
+            if status == 'error' or not context:
+                response = {'message': 'No se pudo preparar el documento autorizado.', 'code': 'ERROR_TECNICO'}
+            elif context.get('code'):
+                response = context
+            else:
+                salida, traza, status = _ejecutar_mcp(
+                    'document_intelligence_server', 'responder_pregunta_documental',
+                    {'pregunta': consulta, 'documento': context, 'anterior': ''}, 'responder_pregunta_documental')
+                traces.append(traza)
+                response = _json_dict(salida) or {'message': 'Respuesta documental no verificable.', 'code': 'ERROR_TECNICO'}
+            message = response.get('message', 'No se pudo consultar el documento.')
+            failed = response.get('code') in {'ERROR_TECNICO', 'ACCESO_DENEGADO'}
+            return {'resultados': {'document_intelligence': {
+                'agente': 'document_intelligence', 'respuesta': message,
+                'estado': 'error' if failed else 'ok', 'respuesta_verificada': True}},
+                'trazas': traces, 'errores': ['document_intelligence: fallo documental'] if failed else []}
 
         respuesta = (
             "Proporciona la ruta local de una imagen o documento "
@@ -1565,6 +1641,7 @@ def _nodo_documento(estado: EstadoGrafo) -> dict:
                 "agente": "document_intelligence",
                 "respuesta": salida,
                 "estado": estado_llamada,
+                "respuesta_verificada": True,
             }
         },
         "trazas": [traza],
@@ -1774,6 +1851,15 @@ def _decidir_verificacion(estado: EstadoGrafo) -> str:
     return "reintentar" if estado.get("reintento") else "sintetizar"
 
 
+def _autorizar_contexto_documental(estado):
+    from proyecto.security.document_access import authorize_file
+    refs = estado.get('document_references') or []
+    if estado.get('contexto_documentos') and not refs:
+        raise PermissionError('Contexto documental sin referencias autorizadas.')
+    for ref in refs:
+        authorize_file(ref)
+
+
 def _respuesta_directa(estado: EstadoGrafo) -> str:
     if fuera_de_alcance(
         estado.get("consulta") or "",
@@ -1781,6 +1867,7 @@ def _respuesta_directa(estado: EstadoGrafo) -> str:
         imagen_pendiente=estado.get("imagen_pendiente"),
     ):
         return RESPUESTA_FUERA_DE_ALCANCE
+    _autorizar_contexto_documental(estado)
     historial = _normalizar_historial(estado.get("historial") or [])
     if not historial:
         historial = [{"role": "user", "content": estado.get("consulta") or ""}]
@@ -1902,6 +1989,8 @@ def _sintetizar_cooperativo(
     resultados: dict[str, dict],
 ) -> str | None:
     """Integra varios especialistas con el orquestador; None si no aplica."""
+    if any(r.get('respuesta_verificada') for r in resultados.values()):
+        return None
     modo = os.getenv("ORCHESTRATION_SYNTHESIS", "auto").strip().lower()
     if modo in {"rules", "reglas", "off", "none", "0"}:
         return None
@@ -2037,6 +2126,8 @@ def _nodo_sintetizar(estado: EstadoGrafo) -> dict:
 
     if plan == ["document_intelligence"]:
         resultado = resultados.get("document_intelligence") or {}
+        if resultado.get('respuesta_verificada'):
+            return {'respuesta': resultado['respuesta'], 'redactada': True}
         if resultado.get("estado") != "error" and resultado.get("respuesta"):
             return {
                 "respuesta": _agregar_evidencia_normativa(
@@ -2241,6 +2332,8 @@ def _nodo_redactar(estado: EstadoGrafo) -> dict:
         return texto
 
     consulta = estado.get("consulta") or ""
+    if any(r.get('respuesta_verificada') for r in resultados.values()):
+        return {}
     if estado.get("redactada") or not debe_redactar(
         respuesta, trazas, resultados, consulta
     ):
@@ -2326,6 +2419,7 @@ def ejecutar_grafo(
     ultimo_agente: str | None = None,
     perfil: dict | None = None,
     perfil_respuesta: dict | None = None,
+    document_references: list[str] | None = None,
 ) -> EstadoGrafo:
     """Ejecuta el grafo para una consulta y devuelve el estado final.
 
@@ -2336,6 +2430,7 @@ def ejecutar_grafo(
         "consulta": consulta,
         "historial": list(historial or []),
         "contexto_documentos": contexto_documentos,
+        "document_references": list(document_references or []),
         "contexto_analista": contexto_analista,
         "modelo": modelo or modelo_de("orchestrator"),
         "perfil": dict(perfil or {}),

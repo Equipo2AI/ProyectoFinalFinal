@@ -1,0 +1,577 @@
+{
+  "dataset": "structural-holdout-1",
+  "fingerprint": {
+    "proyecto\\config\\preparar_referencias_concierge.py": "768a895640911673f635261e04e612d4437d28b2d95b2d9be92986e5e85e5fd6",
+    "proyecto\\agents\\document_requirements.py": "52eec1b0e76c54b4ae42ed961d884f64722ad5614753c9bd11486b6cf093c1c6",
+    "tests\\fixtures\\document_similarity_concierge_structural_validation.json": "edf3d1b12eeebb8d0c204f134484c011cdc0b3436e22db4e5b359a136309d18d"
+  },
+  "model": "bge-large:latest",
+  "model_digest": "b3d71c92805938e2c9d78e6f35e82d7cc1bd77e05b47dd2ab3016240f4021c15",
+  "thresholds": {
+    "accept": 0.8379651425075912,
+    "reject": 0.7676865214691387
+  },
+  "method": "prospective structural decisions on fresh synthetic holdout; no tuning after results",
+  "results": [
+    {
+      "id": "ine_lineas",
+      "expected": "aceptado",
+      "prospective_decision": "aceptado",
+      "current_decision": "indeterminado",
+      "similarities": {
+        "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.7015307914941408,
+        "01_Normativa_Data_Governance_LIMPIA.pdf": 0.7056859095312733,
+        "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.6719784228431379,
+        "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.6652803062117356,
+        "referencia_identificacion_simulada.pdf": 0.7840778588298345,
+        "referencia_constancia_curp_simulada.pdf": 0.7863458704303385,
+        "referencia_domicilio_simulada.pdf": 0.7462808139096645
+      },
+      "structure": {
+        "type": "ine",
+        "readable": true,
+        "reference_type_matches": false,
+        "field_evidence_sufficient": true,
+        "recognition": {
+          "type": "ine",
+          "multiple_types": false,
+          "purpose_uncertain": false,
+          "specific_fields": true,
+          "sufficient": true
+        },
+        "authenticity_verified": false,
+        "validity_evaluated": false
+      },
+      "basis": "estructura_validada",
+      "message": "Tipo documental reconocido por estructura validada; no certifica autenticidad, titularidad, vigencia ni cumplimiento."
+    },
+    {
+      "id": "ine_parrafo",
+      "expected": "aceptado",
+      "prospective_decision": "aceptado",
+      "current_decision": "indeterminado",
+      "similarities": {
+        "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.7048814495879016,
+        "01_Normativa_Data_Governance_LIMPIA.pdf": 0.6797908853770971,
+        "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.6821823345172134,
+        "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.641266405542002,
+        "referencia_identificacion_simulada.pdf": 0.7269979112241186,
+        "referencia_constancia_curp_simulada.pdf": 0.7436320760868155,
+        "referencia_domicilio_simulada.pdf": 0.7068073639532966
+      },
+      "structure": {
+        "type": "ine",
+        "readable": true,
+        "reference_type_matches": false,
+        "field_evidence_sufficient": true,
+        "recognition": {
+          "type": "ine",
+          "multiple_types": false,
+          "purpose_uncertain": false,
+          "specific_fields": true,
+          "sufficient": true
+        },
+        "authenticity_verified": false,
+        "validity_evaluated": false
+      },
+      "basis": "estructura_validada",
+      "message": "Tipo documental reconocido por estructura validada; no certifica autenticidad, titularidad, vigencia ni cumplimiento."
+    },
+    {
+      "id": "curp_registro",
+      "expected": "aceptado",
+      "prospective_decision": "aceptado",
+      "current_decision": "aceptado",
+      "similarities": {
+        "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.7334247521450517,
+        "01_Normativa_Data_Governance_LIMPIA.pdf": 0.6990325482247777,
+        "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.6793141727998078,
+        "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.6668365010969268,
+        "referencia_identificacion_simulada.pdf": 0.793864411594463,
+        "referencia_constancia_curp_simulada.pdf": 0.8930475871131681,
+        "referencia_domicilio_simulada.pdf": 0.7456813315908204
+      },
+      "structure": {
+        "type": "curp",
+        "readable": true,
+        "reference_type_matches": true,
+        "field_evidence_sufficient": true,
+        "recognition": {
+          "type": "curp",
+          "multiple_types": false,
+          "purpose_uncertain": false,
+          "specific_fields": true,
+          "sufficient": true
+        },
+        "authenticity_verified": false,
+        "validity_evaluated": false
+      },
+      "basis": "estructura_validada",
+      "message": "Tipo documental reconocido por estructura validada; no certifica autenticidad, titularidad, vigencia ni cumplimiento."
+    },
+    {
+      "id": "curp_emision",
+      "expected": "aceptado",
+      "prospective_decision": "aceptado",
+      "current_decision": "indeterminado",
+      "similarities": {
+        "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.6136395553255423,
+        "01_Normativa_Data_Governance_LIMPIA.pdf": 0.6059132486772081,
+        "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.6222277798316874,
+        "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.6095136095702284,
+        "referencia_identificacion_simulada.pdf": 0.7040368241277157,
+        "referencia_constancia_curp_simulada.pdf": 0.8278569152513253,
+        "referencia_domicilio_simulada.pdf": 0.6859391566975033
+      },
+      "structure": {
+        "type": "curp",
+        "readable": true,
+        "reference_type_matches": true,
+        "field_evidence_sufficient": true,
+        "recognition": {
+          "type": "curp",
+          "multiple_types": false,
+          "purpose_uncertain": false,
+          "specific_fields": true,
+          "sufficient": true
+        },
+        "authenticity_verified": false,
+        "validity_evaluated": false
+      },
+      "basis": "estructura_validada",
+      "message": "Tipo documental reconocido por estructura validada; no certifica autenticidad, titularidad, vigencia ni cumplimiento."
+    },
+    {
+      "id": "domicilio_luz",
+      "expected": "aceptado",
+      "prospective_decision": "aceptado",
+      "current_decision": "aceptado",
+      "similarities": {
+        "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.6777166220327319,
+        "01_Normativa_Data_Governance_LIMPIA.pdf": 0.6874787980787532,
+        "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.693861961016331,
+        "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.689075752094052,
+        "referencia_identificacion_simulada.pdf": 0.7549758630486804,
+        "referencia_constancia_curp_simulada.pdf": 0.7354898119448884,
+        "referencia_domicilio_simulada.pdf": 0.8391690953936579
+      },
+      "structure": {
+        "type": "domicilio",
+        "readable": true,
+        "reference_type_matches": true,
+        "field_evidence_sufficient": true,
+        "recognition": {
+          "type": "domicilio",
+          "multiple_types": false,
+          "purpose_uncertain": false,
+          "specific_fields": true,
+          "sufficient": true
+        },
+        "authenticity_verified": false,
+        "validity_evaluated": false
+      },
+      "basis": "estructura_validada",
+      "message": "Tipo documental reconocido por estructura validada; no certifica autenticidad, titularidad, vigencia ni cumplimiento."
+    },
+    {
+      "id": "domicilio_telefono",
+      "expected": "aceptado",
+      "prospective_decision": "aceptado",
+      "current_decision": "indeterminado",
+      "similarities": {
+        "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.6887332071579361,
+        "01_Normativa_Data_Governance_LIMPIA.pdf": 0.6685958295381897,
+        "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.7174985705601628,
+        "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.702221622447373,
+        "referencia_identificacion_simulada.pdf": 0.7718656309958382,
+        "referencia_constancia_curp_simulada.pdf": 0.7593371454189571,
+        "referencia_domicilio_simulada.pdf": 0.8256913945057073
+      },
+      "structure": {
+        "type": "domicilio",
+        "readable": true,
+        "reference_type_matches": true,
+        "field_evidence_sufficient": true,
+        "recognition": {
+          "type": "domicilio",
+          "multiple_types": false,
+          "purpose_uncertain": false,
+          "specific_fields": true,
+          "sufficient": true
+        },
+        "authenticity_verified": false,
+        "validity_evaluated": false
+      },
+      "basis": "estructura_validada",
+      "message": "Tipo documental reconocido por estructura validada; no certifica autenticidad, titularidad, vigencia ni cumplimiento."
+    },
+    {
+      "id": "curp_breve",
+      "expected": "aceptado",
+      "prospective_decision": "aceptado",
+      "current_decision": "indeterminado",
+      "similarities": {
+        "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.6006135963187368,
+        "01_Normativa_Data_Governance_LIMPIA.pdf": 0.5975041207779905,
+        "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.6260551821951746,
+        "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.5970527866268651,
+        "referencia_identificacion_simulada.pdf": 0.589202816574287,
+        "referencia_constancia_curp_simulada.pdf": 0.6861908286342283,
+        "referencia_domicilio_simulada.pdf": 0.5978194067834524
+      },
+      "structure": {
+        "type": "curp",
+        "readable": true,
+        "reference_type_matches": true,
+        "field_evidence_sufficient": true,
+        "recognition": {
+          "type": "curp",
+          "multiple_types": false,
+          "purpose_uncertain": false,
+          "specific_fields": true,
+          "sufficient": true
+        },
+        "authenticity_verified": false,
+        "validity_evaluated": false
+      },
+      "basis": "estructura_validada",
+      "message": "Tipo documental reconocido por estructura validada; no certifica autenticidad, titularidad, vigencia ni cumplimiento."
+    },
+    {
+      "id": "cometa_nueva",
+      "expected": "rechazado",
+      "prospective_decision": "rechazado",
+      "current_decision": "rechazado",
+      "similarities": {
+        "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.6681020205083497,
+        "01_Normativa_Data_Governance_LIMPIA.pdf": 0.679643516696384,
+        "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.7070179855040005,
+        "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.6974654856150939,
+        "referencia_identificacion_simulada.pdf": 0.6543202546892743,
+        "referencia_constancia_curp_simulada.pdf": 0.652338436181432,
+        "referencia_domicilio_simulada.pdf": 0.6712176305136477
+      },
+      "structure": {
+        "type": null,
+        "readable": true,
+        "reference_type_matches": false,
+        "field_evidence_sufficient": false,
+        "recognition": {
+          "type": null,
+          "multiple_types": false,
+          "purpose_uncertain": false,
+          "specific_fields": false,
+          "sufficient": false
+        },
+        "authenticity_verified": false,
+        "validity_evaluated": false
+      },
+      "basis": null,
+      "message": "El documento no alcanza la similitud necesaria con las referencias internas de tipos admitidos."
+    },
+    {
+      "id": "lista_requisitos",
+      "expected": "indeterminado",
+      "prospective_decision": "indeterminado",
+      "current_decision": "indeterminado",
+      "similarities": {
+        "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.6315361956996549,
+        "01_Normativa_Data_Governance_LIMPIA.pdf": 0.6345430908187455,
+        "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.6317987513626928,
+        "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.6204456324958886,
+        "referencia_identificacion_simulada.pdf": 0.6234278040454285,
+        "referencia_constancia_curp_simulada.pdf": 0.7279885711044011,
+        "referencia_domicilio_simulada.pdf": 0.6133188148103695
+      },
+      "structure": {
+        "type": "curp",
+        "readable": true,
+        "reference_type_matches": true,
+        "field_evidence_sufficient": false,
+        "recognition": {
+          "type": "curp",
+          "multiple_types": false,
+          "purpose_uncertain": true,
+          "specific_fields": true,
+          "sufficient": false
+        },
+        "authenticity_verified": false,
+        "validity_evaluated": false
+      },
+      "basis": null,
+      "message": "La evidencia estructural o semántica no permite una aceptación verificada. El umbral global no basta para rechazar un tipo documental reconocido. Se requiere revisión; no se determina integridad, vigencia ni autenticidad."
+    },
+    {
+      "id": "plantilla_vacia",
+      "expected": "indeterminado",
+      "prospective_decision": "indeterminado",
+      "current_decision": "indeterminado",
+      "similarities": {
+        "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.6856883128998574,
+        "01_Normativa_Data_Governance_LIMPIA.pdf": 0.7030407431402756,
+        "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.6891700292922097,
+        "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.6711156723628059,
+        "referencia_identificacion_simulada.pdf": 0.653837117928514,
+        "referencia_constancia_curp_simulada.pdf": 0.6497474922866816,
+        "referencia_domicilio_simulada.pdf": 0.7564636610749956
+      },
+      "structure": {
+        "type": "domicilio",
+        "readable": true,
+        "reference_type_matches": true,
+        "field_evidence_sufficient": false,
+        "recognition": {
+          "type": "domicilio",
+          "multiple_types": false,
+          "purpose_uncertain": true,
+          "specific_fields": false,
+          "sufficient": false
+        },
+        "authenticity_verified": false,
+        "validity_evaluated": false
+      },
+      "basis": null,
+      "message": "La evidencia estructural o semántica no permite una aceptación verificada. El umbral global no basta para rechazar un tipo documental reconocido. Se requiere revisión; no se determina integridad, vigencia ni autenticidad."
+    },
+    {
+      "id": "mencion_curp",
+      "expected": "indeterminado",
+      "prospective_decision": "aceptado",
+      "current_decision": "indeterminado",
+      "similarities": {
+        "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.721538540261939,
+        "01_Normativa_Data_Governance_LIMPIA.pdf": 0.6978792857887881,
+        "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.665674070185052,
+        "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.6576815378348851,
+        "referencia_identificacion_simulada.pdf": 0.7076838006938116,
+        "referencia_constancia_curp_simulada.pdf": 0.7637435898245646,
+        "referencia_domicilio_simulada.pdf": 0.6540929764821887
+      },
+      "structure": {
+        "type": "curp",
+        "readable": true,
+        "reference_type_matches": true,
+        "field_evidence_sufficient": true,
+        "recognition": {
+          "type": "curp",
+          "multiple_types": false,
+          "purpose_uncertain": false,
+          "specific_fields": true,
+          "sufficient": true
+        },
+        "authenticity_verified": false,
+        "validity_evaluated": false
+      },
+      "basis": "estructura_validada",
+      "message": "Tipo documental reconocido por estructura validada; no certifica autenticidad, titularidad, vigencia ni cumplimiento."
+    },
+    {
+      "id": "articulo_con_campos",
+      "expected": "indeterminado",
+      "prospective_decision": "aceptado",
+      "current_decision": "indeterminado",
+      "similarities": {
+        "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.6221524065107498,
+        "01_Normativa_Data_Governance_LIMPIA.pdf": 0.6021654227295518,
+        "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.5643255968592337,
+        "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.5418081830382214,
+        "referencia_identificacion_simulada.pdf": 0.5976081039453552,
+        "referencia_constancia_curp_simulada.pdf": 0.7190593555085798,
+        "referencia_domicilio_simulada.pdf": 0.5500103311283538
+      },
+      "structure": {
+        "type": "curp",
+        "readable": true,
+        "reference_type_matches": true,
+        "field_evidence_sufficient": true,
+        "recognition": {
+          "type": "curp",
+          "multiple_types": false,
+          "purpose_uncertain": false,
+          "specific_fields": true,
+          "sufficient": true
+        },
+        "authenticity_verified": false,
+        "validity_evaluated": false
+      },
+      "basis": "estructura_validada",
+      "message": "Tipo documental reconocido por estructura validada; no certifica autenticidad, titularidad, vigencia ni cumplimiento."
+    },
+    {
+      "id": "credencial_biblioteca",
+      "expected": "rechazado",
+      "prospective_decision": "rechazado",
+      "current_decision": "rechazado",
+      "similarities": {
+        "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.7394226699047083,
+        "01_Normativa_Data_Governance_LIMPIA.pdf": 0.680231481261411,
+        "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.6962201279446667,
+        "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.6866326007541449,
+        "referencia_identificacion_simulada.pdf": 0.7337059930875268,
+        "referencia_constancia_curp_simulada.pdf": 0.7378475874425031,
+        "referencia_domicilio_simulada.pdf": 0.7311441063696315
+      },
+      "structure": {
+        "type": null,
+        "readable": true,
+        "reference_type_matches": false,
+        "field_evidence_sufficient": false,
+        "recognition": {
+          "type": null,
+          "multiple_types": false,
+          "purpose_uncertain": false,
+          "specific_fields": false,
+          "sufficient": false
+        },
+        "authenticity_verified": false,
+        "validity_evaluated": false
+      },
+      "basis": null,
+      "message": "El documento no alcanza la similitud necesaria con las referencias internas de tipos admitidos."
+    },
+    {
+      "id": "tipos_mezclados",
+      "expected": "indeterminado",
+      "prospective_decision": "rechazado",
+      "current_decision": "rechazado",
+      "similarities": {
+        "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.6294182863174999,
+        "01_Normativa_Data_Governance_LIMPIA.pdf": 0.6284307502296816,
+        "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.6234892529699916,
+        "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.6058748524738438,
+        "referencia_identificacion_simulada.pdf": 0.6379023205694876,
+        "referencia_constancia_curp_simulada.pdf": 0.7633511714237727,
+        "referencia_domicilio_simulada.pdf": 0.6582824221484889
+      },
+      "structure": {
+        "type": null,
+        "readable": true,
+        "reference_type_matches": false,
+        "field_evidence_sufficient": false,
+        "recognition": {
+          "type": null,
+          "multiple_types": true,
+          "purpose_uncertain": false,
+          "specific_fields": false,
+          "sufficient": false
+        },
+        "authenticity_verified": false,
+        "validity_evaluated": false
+      },
+      "basis": null,
+      "message": "El documento no alcanza la similitud necesaria con las referencias internas de tipos admitidos."
+    },
+    {
+      "id": "extraccion_parcial",
+      "expected": "indeterminado",
+      "prospective_decision": "indeterminado",
+      "current_decision": "indeterminado",
+      "similarities": {
+        "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.6886983072253319,
+        "01_Normativa_Data_Governance_LIMPIA.pdf": 0.6657129216840265,
+        "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.674902304752806,
+        "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.6367441115566222,
+        "referencia_identificacion_simulada.pdf": 0.6678697000465932,
+        "referencia_constancia_curp_simulada.pdf": 0.7536594993674973,
+        "referencia_domicilio_simulada.pdf": 0.6549199456638571
+      },
+      "structure": {
+        "type": "curp",
+        "readable": false,
+        "reference_type_matches": true,
+        "field_evidence_sufficient": false,
+        "recognition": {
+          "type": "curp",
+          "multiple_types": false,
+          "purpose_uncertain": false,
+          "specific_fields": true,
+          "sufficient": false
+        },
+        "authenticity_verified": false,
+        "validity_evaluated": false
+      },
+      "basis": null,
+      "message": "La evidencia estructural o semántica no permite una aceptación verificada. El umbral global no basta para rechazar un tipo documental reconocido. Se requiere revisión; no se determina integridad, vigencia ni autenticidad."
+    },
+    {
+      "id": "solo_encabezado",
+      "expected": "indeterminado",
+      "prospective_decision": "indeterminado",
+      "current_decision": "indeterminado",
+      "similarities": {
+        "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.7718459133228609,
+        "01_Normativa_Data_Governance_LIMPIA.pdf": 0.7560711636003057,
+        "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.717274107939589,
+        "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.7250884655316565,
+        "referencia_identificacion_simulada.pdf": 0.7847043600757468,
+        "referencia_constancia_curp_simulada.pdf": 0.771364067806931,
+        "referencia_domicilio_simulada.pdf": 0.7431635865600691
+      },
+      "structure": {
+        "type": "ine",
+        "readable": true,
+        "reference_type_matches": true,
+        "field_evidence_sufficient": false,
+        "recognition": {
+          "type": "ine",
+          "multiple_types": false,
+          "purpose_uncertain": false,
+          "specific_fields": false,
+          "sufficient": false
+        },
+        "authenticity_verified": false,
+        "validity_evaluated": false
+      },
+      "basis": null,
+      "message": "La similitud no permite confirmar el tipo documental. No se ha rechazado por irrelevancia; aporta mas evidencia o solicita revision."
+    },
+    {
+      "id": "fechas_contradictorias",
+      "expected": "indeterminado",
+      "prospective_decision": "indeterminado",
+      "current_decision": "indeterminado",
+      "similarities": {
+        "01_Normativa_Data_Governance_COMPLICADA.pdf": 0.7455722620008765,
+        "01_Normativa_Data_Governance_LIMPIA.pdf": 0.718527263403767,
+        "02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf": 0.7109843602272754,
+        "02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf": 0.6780164063026128,
+        "referencia_identificacion_simulada.pdf": 0.8537134506062802,
+        "referencia_constancia_curp_simulada.pdf": 0.8150279530678373,
+        "referencia_domicilio_simulada.pdf": 0.7902845553249599
+      },
+      "structure": {
+        "type": "ine",
+        "readable": true,
+        "reference_type_matches": true,
+        "field_evidence_sufficient": false,
+        "recognition": {
+          "type": "ine",
+          "multiple_types": false,
+          "purpose_uncertain": false,
+          "specific_fields": false,
+          "sufficient": false
+        },
+        "authenticity_verified": false,
+        "validity_evaluated": false
+      },
+      "basis": null,
+      "message": "La evidencia estructural o semántica no permite una aceptación verificada. El umbral global no basta para rechazar un tipo documental reconocido. Se requiere revisión; no se determina integridad, vigencia ni autenticidad."
+    }
+  ],
+  "false_positives": 2,
+  "false_negatives": 0,
+  "unexpected_indeterminate": 0,
+  "passed": false,
+  "validated_types": [],
+  "extension_activated": false,
+  "seconds": 5.198,
+  "other_mismatches": [
+    "tipos_mezclados"
+  ],
+  "prospective_counts": {
+    "aceptado": 9,
+    "rechazado": 3,
+    "indeterminado": 5
+  },
+  "limitation": "Dos falsos positivos textuales y un rechazo de tipos mezclados. La hip?tesis estructural no queda validada; ning?n tipo nuevo se habilita. No hubo OCR, carga PDF ni prueba de interfaz."
+}

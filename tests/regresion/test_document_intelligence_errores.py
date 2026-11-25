@@ -20,7 +20,16 @@ def _prohibir_mcp(*args, **kwargs):
 
 
 def _sin_control_de_acceso(monkeypatch, modulo=servicio):
-    monkeypatch.setattr(modulo, "authorize_file_access", lambda *a, **k: None)
+    """Dobles de autorizacion para errores de formato; no certifican seguridad."""
+    from pathlib import Path
+    from contextlib import nullcontext
+    from proyecto.security import document_access as access, local_auth as auth
+    monkeypatch.setattr(modulo, "authorize_file_access", lambda path, **k: Path(path))
+    monkeypatch.setattr(auth, 'authenticated', lambda token: nullcontext())
+    monkeypatch.setattr(auth, 'principal', lambda *a: {'permissions': [], 'subject': 'fixture'})
+    monkeypatch.setattr(access, '_document_io', lambda *a, **k: nullcontext())
+    monkeypatch.setattr(access, 'authorize_file', lambda path: ('doc-simulado', {'path': str(path)}))
+    monkeypatch.setattr(servicio, '_identidad_documental', lambda *a: ('scope-simulado', 'token-simulado'))
 
 
 def _assert_error_legible(respuesta, formato: str):

@@ -33,7 +33,8 @@ data_governance_files/.semantic_chunks_cache.json
 AGENTS.md
 
 # Documentación interna: no se publica en el repo
-docs/
+docs/*
+!docs/reporte_validacion_preguntas.md
 
 # Datos locales de prueba (no se suben)
 files/Base Cards para TEC - Diccionario de Variables.csv
@@ -52,3 +53,8 @@ capa_semantica_financiera_v1/
 .ruff_cache/
 .pytest_cache/
 .local_auth/
+
+# Herramientas manuales locales: no forman parte del merge.
+tests/probar_*.py
+tests/rag_test.py
+tests/modelo-factura-ex.png

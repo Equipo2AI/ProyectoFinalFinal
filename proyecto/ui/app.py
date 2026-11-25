@@ -17,6 +17,7 @@ import streamlit as st
 from servicio import (
     preguntar_orquestador,
     procesar_documento,
+    procesar_adjuntos_chat,
     procesar_imagen_auto,
     reiniciar_orquestador,
 )
@@ -26,7 +27,6 @@ from agents.document_intelligence_agent import (
     MAX_DOCUMENT_BYTES,
     MAX_IMAGE_BYTES,
 )
-from security.file_access import new_upload_dir
 from ui import componentes, estilos
 
 TIPOS_ARCHIVO = sorted(
@@ -64,6 +64,10 @@ st.session_state.setdefault('tema', 'oscuro')
 estilos.aplicar(st.session_state.tema)
 from ui.login import identidad_actual, render_access
 render_access()
+from proyecto.security.local_auth import authenticated
+from proyecto.security.document_access import invalidate_visible_state
+with authenticated(st.session_state.auth_token):
+    invalidate_visible_state(st.session_state)
 
 for clave, valor in {
     "mensajes": [],
@@ -85,10 +89,7 @@ puede_consultar = True  # render_access ya valido la identidad
 
 
 def _limpiar_archivo() -> None:
-    directorio = st.session_state.get("upload_dir")
-    if directorio:
-        shutil.rmtree(directorio, ignore_errors=True)
-
+    # Los originales registrados se eliminan por clear_session_documents/logout.
     st.session_state.upload_dir = None
 
 
@@ -114,23 +115,18 @@ def _guardar_archivo_chat(archivo) -> tuple[str, str, str] | None:
         st.error(f"El archivo supera el límite de {etiqueta_limite}.")
         return None
 
-    directorio = st.session_state.get("upload_dir")
-    if not directorio:
-        identidad = identidad_actual(st.session_state.get("auth_token"))
-        if not identidad:
-            st.error("La sesión ya no es válida. Inicia sesión nuevamente.")
-            return None
-        directorio = str(new_upload_dir(identidad["subject"]))
-        st.session_state.upload_dir = directorio
-
-    destino = Path(directorio) / f"{tipo}_{uuid.uuid4().hex}{sufijo}"
-    destino.write_bytes(archivo.getvalue())
-    return str(destino), archivo.name, tipo
+    from proyecto.security.document_access import store_upload, binding, authorize_file
+    with authenticated(st.session_state.auth_token):
+        reference = store_upload(archivo.getvalue(), sufijo, archivo.name)
+        _, entry = authorize_file(reference)
+        st.session_state.document_history_binding = binding()
+    st.session_state.setdefault('history_document_ids', []).append(reference)
+    return (reference if tipo == 'documento' else entry['path']), archivo.name, tipo
 
 
 def iniciar(
     texto: str,
-    archivo_path: str | None = None,
+    archivo_path: str | list[tuple[str, str, str]] | None = None,
     archivo_nombre: str | None = None,
     archivo_tipo: str | None = None,
 ) -> None:
@@ -146,6 +142,13 @@ def iniciar(
 
 
 def limpiar() -> None:
+    from proyecto.security.document_access import clear_session_documents
+    with authenticated(st.session_state.auth_token):
+        cleanup = clear_session_documents()
+    if cleanup['pending']:
+        st.warning('Hay archivos temporales pendientes de eliminar; se reintentara su limpieza.')
+    for key in ('documento_consultable', 'document_history_binding', 'history_document_ids'):
+        st.session_state.pop(key, None)
     _limpiar_archivo()
     reiniciar_orquestador()
     st.session_state.mensajes = []
@@ -190,10 +193,26 @@ def panel_consola(artefacto: dict | None, pensando: bool) -> None:
 
     componentes.traza(_pasos(artefacto))
 
+    if artefacto.get('integridad_documental'):
+        with st.expander('Integridad documental: reglas verificables', expanded=True):
+            st.json(artefacto['integridad_documental'])
+    if artefacto.get('pertinencia_documental') or artefacto.get('metadatos_documentales'):
+        with st.expander('Tipo, período y pertinencia de la consulta', expanded=False):
+            st.json({'finalidad': artefacto.get('finalidad_documental'),
+                     'pertinencia': artefacto.get('pertinencia_documental'),
+                     'metadatos': artefacto.get('metadatos_documentales')})
+
     validacion = artefacto.get("validacion_documental")
     if validacion:
         with st.expander("Validación del tipo documental", expanded=False):
             st.json(validacion)
+    if artefacto.get("evidencia_documental"):
+        with st.expander("Evidencia del documento", expanded=False):
+            st.json(artefacto["evidencia_documental"])
+    if artefacto.get("calculo_documental"):
+        with st.expander("Cálculo verificable", expanded=False):
+            st.json(artefacto["calculo_documental"])
+
     aclaracion = artefacto.get("aclaracion") or {}
     if aclaracion.get("necesaria"):
         componentes.seccion("Aclaración")
@@ -363,9 +382,14 @@ with izquierda:
                             estado = "Analizando la consulta…"
                         componentes.pensando(estado)
 
+        if st.session_state.get("documento_consultable"):
+            if st.session_state.pop("documento_nuevo", False):
+                st.session_state.usar_documento = True
+            st.toggle("Consultar el documento adjunto", key="usar_documento", disabled=st.session_state.pensando,
+                      help="Desactívalo para volver al asistente general. Las consultas explícitas a SQLite o normativa conservan su ruta.")
         entrada = st.chat_input(
             "Hazme una consulta o adjunta un archivo",
-            accept_file=True,
+            accept_file="multiple",
             file_type=TIPOS_ARCHIVO,
             max_upload_size=MAX_ARCHIVO_BYTES // (1024 * 1024),
             disabled=not puede_consultar or st.session_state.pensando,
@@ -379,7 +403,15 @@ with izquierda:
                 archivos = list(entrada.files or [])
 
             if archivos:
-                guardado = _guardar_archivo_chat(archivos[0])
+                guardado = None
+                if len(archivos) > 8 or (len(archivos) > 1 and any(Path(a.name).suffix.lower() != '.pdf' for a in archivos)):
+                    st.error('Puedes adjuntar hasta ocho PDF juntos; otros formatos se procesan individualmente.')
+                else:
+                    guardados = [_guardar_archivo_chat(a) for a in archivos]
+                    guardado = guardados[0] if len(guardados) == 1 else None
+                    if all(guardados) and (len(guardados) > 1 or guardados[0][2] == 'documento' and Path(archivos[0].name).suffix.lower() == '.pdf'):
+                        iniciar(texto or 'Analiza los documentos adjuntos.', archivo_path=guardados,
+                                archivo_tipo='documentos')
                 if guardado:
                     ruta, nombre, tipo = guardado
                     predeterminado = (
@@ -442,7 +474,10 @@ if st.session_state.mensajes:
 if st.session_state.pensando:
     try:
         tipo_archivo = st.session_state.get("archivo_tipo")
-        if tipo_archivo == "imagen":
+        if tipo_archivo == "documentos":
+            artefacto = procesar_adjuntos_chat(st.session_state.archivo_actual,
+                                             st.session_state.consulta_actual or '')
+        elif tipo_archivo == "imagen":
             artefacto = procesar_imagen_auto(
                 st.session_state.archivo_actual,
                 st.session_state.consulta_actual or "",

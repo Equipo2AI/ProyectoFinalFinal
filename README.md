@@ -148,15 +148,16 @@ directamente. Los formatos no soportados y los archivos que exceden el límite
 (10 MB en imágenes, 25 MB en documentos) se rechazan con un mensaje legible
 que lista los formatos permitidos; el servicio no propaga el traceback a la UI.
 
-El texto completo de cada documento se guarda en un SQLite local
-(`proyecto/data/document_context.db`), aislado por el usuario autenticado
-(`subject`). Los archivos originales se guardan bajo
-`DOCUMENT_UPLOAD_ROOT` y la UI los elimina al limpiar la conversación o cerrar sesión.
-**No se indexan en Pinecone ni se comparten con otros usuarios.** El
-orquestador recibe un contexto acotado: el documento activo completo si cabe, o
-un resumen extractivo más las secciones relevantes. La retención y los límites
-se configuran con `DOCUMENT_CONTEXT_TTL_DAYS`, `DOCUMENT_CONTEXT_MAX_DOCS`,
-`DOCUMENT_CONTEXT_MAX_CHARS` y `DOCUMENT_CONTEXT_SUMMARY_CHARS`.
+Los documentos de usuario son temporales y vinculados al registro de la sesión.
+Sus originales se guardan en AppData; texto, fragmentos y vectores solo viven
+en memoria. El orquestador reutiliza la selección de secciones del equipo sin
+abrir `document_context.db`, sin historial entre sesiones y sin enviar contenido
+documental a la memoria persistente de largo plazo. La clase histórica de
+almacenamiento SQLite permanece en el módulo, pero no se instancia desde el
+flujo de usuario; tampoco se admite inyectarla al orquestador privado.
+**No se indexan documentos privados en Pinecone ni en las referencias internas.**
+Logout, limpiar chat y expiración revocan y limpian archivos registrados, con
+reintentos y los límites descritos en la sección de autorización documental.
 
 En el Data Analyst, `analizar_datos` recibe la pregunta en lenguaje natural y la
 resuelve con las herramientas SQL (`listar_tablas`, `describir_tabla`,
@@ -413,9 +414,10 @@ falta el YAML o `data_source.path`, el arranque falla con un mensaje claro.
 
 La memoria de largo plazo se configura en `proyecto/config/memory.yaml`, que es la
 fuente de todos sus parámetros, y está desactivada por defecto. Es independiente
-del contexto documental privado, que vive en
-SQLite local y se recorta por presupuesto de caracteres antes de llegar al
-modelo. El historial de chat también tiene una ventana propia
+del contexto documental privado, que vive solo en memoria de la sesión y se
+recorta por presupuesto de caracteres antes de llegar al modelo. Los turnos
+documentales no preparan ni actualizan resúmenes persistentes de esa memoria.
+El historial de chat también tiene una ventana propia
 (`CHAT_HISTORY_MESSAGES`, `CHAT_HISTORY_CHARS`).
 
 El modelo de cada agente y el de OCR de PDF se toman de
@@ -596,3 +598,440 @@ anónimo.
 La evidencia y los límites posteriores a la integración se conservan fuera del
 repositorio. La autenticación usa identidades reales y no habilita acceso
 anónimo.
+
+
+## Integracion documental segura y temporal
+
+### Filtro semántico de documentos adjuntos
+
+Los adjuntos documentales de Streamlit se convierten con MarkItDown/MCP y se
+comparan, antes del orquestador, con cuatro referencias internas mediante
+`bge-large:latest` local. No son normativa oficial ni se agregan a Pinecone/RAG.
+Este filtro identifica similitud de tipo; no certifica autenticidad, cumplimiento
+legal ni permisos para acceder a datos. Imágenes y OCR conservan su flujo previo;
+un PDF sin texto extraíble informa un error y no se clasifica como irrelevante.
+
+Preparación explícita, una vez por equipo/checkout, con los cuatro PDF legítimos
+en Downloads (ajusta las rutas si los guardaste en otro lugar):
+
+```powershell
+ollama pull bge-large:latest
+$pdf = Join-Path $env:USERPROFILE 'Downloads'
+.\.venv\Scripts\python.exe -m proyecto.agents.document_similarity --referencias "$pdf\01_Normativa_Data_Governance_COMPLICADA.pdf" "$pdf\01_Normativa_Data_Governance_LIMPIA.pdf" "$pdf\02_Estados_Cuenta_Banamex_Referencia_COMPLEJA.pdf" "$pdf\02_Estados_Cuenta_Banamex_Referencia_LIMPIA.pdf" --calibracion tests/fixtures/document_similarity_calibration.json
+```
+
+El registro guarda vectores normalizados, nombres, hashes de los PDF, identidad
+del modelo y evidencia de calibración en
+`%LOCALAPPDATA%\ProyectoFinalFinal\document_similarity\<id-del-proyecto>\references.json`.
+Ese archivo no copia PDF ni guarda texto o embeddings de uploads. No es una base vectorial.
+`PROYECTO_DOCUMENT_REFERENCES_DIR` permite otra ubicación privada; debe ser la misma
+para la preparación y Streamlit. No la pongas en el repositorio ni OneDrive.
+
+Se comparan hasta 24 fragmentos repartidos por el documento mediante coseno;
+cada fragmento aporta su mejor coincidencia con cada referencia y se promedian
+las coincidencias. Se toma la referencia con mayor puntuación. Los límites se
+calculan con ejemplos sintéticos etiquetados separados de la validación: mínimo
+de positivos para aceptar, máximo de negativos para rechazar. Entre ambos es
+indeterminado; si no hay separación en la calibración, no se habilita el filtro.
+Cambiar el modelo, las referencias o el algoritmo requiere preparar/calibrar otra
+vez. Los límites se guardan, no se recalculan por upload.
+
+Solo un resultado aceptado puede continuar al procesamiento generativo. Un indeterminado solicita más
+evidencia sin llamarlo irrelevante; los fallos de Ollama, extracción o caché son
+errores técnicos. La traza muestra decisión, modelo, similitudes y tiempo. Las
+similitudes no son porcentajes de confianza. La calibración actual es pequeña:
+no se garantiza generalización a todos los documentos financieros.
+
+Pruebas focalizadas, sin inferencia generativa:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/test_document_similarity.py -q -p no:cacheprovider
+# Opcional: requiere referencias preparadas y Ollama; ejecuta los cuatro PDF sintéticos por MCP.
+$env:VALIDAR_EMBEDDINGS_REAL = '1'
+.\.venv\Scripts\python.exe -m pytest tests/test_document_similarity.py -k lote_mcp_real -q -s -p no:cacheprovider
+Remove-Item Env:VALIDAR_EMBEDDINGS_REAL
+```
+
+### Preguntas sobre el adjunto aceptado
+
+Tras admitir un documento, Document Intelligence prepara fragmentos con
+`bge-large:latest` por MCP. Se conservan **en memoria de la sesión de Streamlit**,
+ligados al token autenticado, usuario, base y alcance de permisos. No se guardan
+en el caché de referencias, Pinecone ni otro índice persistente. Una nueva
+subida reemplaza el contexto anterior; limpiar el chat o cerrar sesión lo descarta.
+
+Las preguntas se comparan por coseno con todos los fragmentos y se recuperan
+los cuatro más próximos. La similitud ordena evidencia, pero no prueba que haya
+una respuesta: no se reutilizan los umbrales de admisión como si fueran límites
+de respuesta. Se comprueba apoyo textual; las preguntas claramente ajenas se
+detienen con las reglas existentes y los conceptos solicitados ausentes producen
+"sin evidencia". Una pregunta ambigua puede requerir reformularla o revisión
+del selector de evidencia; este filtro conservador no certifica todos los idiomas
+ni todas las paráfrasis posibles.
+
+MiMo usa la configuración y mitigación existentes para seleccionar **citas
+literales**, no para inventar una respuesta libre. Cada cita y su fragmento se
+validan antes de mostrarse. En PDF se indican páginas reales obtenidas mediante
+pdfplumber; otros formatos citan secciones de MarkItDown. Los fragmentos completos
+sin evidencia de respuesta no se muestran como si respondieran la pregunta.
+
+La suma de cargos utiliza `Decimal` sobre una columna inequívoca de una tabla
+extraída con separadores `|`, mostrando operandos y resultado. No se estima
+un total cuando faltan encabezados/importes, hay páginas sin texto o filas
+ambiguas. Otros diseños de tabla requieren extracción inequívoca: no se delega
+la aritmética al modelo. La evidencia y el cálculo aparecen en la traza.
+
+Los seguimientos reutilizan el adjunto y la última pregunta documental sin
+volver a subirlo. El control "Consultar el documento adjunto" permite regresar
+al asistente general. Las peticiones explícitas a SQLite, Data Analyst, Data
+Steward o normativa oficial mantienen su ruta aunque el control esté activo.
+La autorización existente se comprueba tanto en el servicio como en MCP; subir
+un PDF no amplía permisos ni convierte sus datos en normativa oficial.
+
+Pruebas nuevas, sin repetir el lote de admisión:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/test_document_questions.py -q -p no:cacheprovider
+```
+
+#### Alcance y resultados de las preguntas documentales
+
+El documento aceptado no autoriza cualquier finalidad. La ruta documental
+reutiliza `grafo.fuera_de_alcance` antes de recuperar evidencia o invocar MiMo.
+Solicitudes explícitas de inventar historias, cuentos o canciones se rechazan
+aunque mencionen compras, saldos o un PDF. Analizar un historial, resumir datos
+o verificar un texto no equivale a pedir ficción. Las preguntas de calidad del
+documento permanecen en su contexto; no se convierten en consultas a SQLite.
+Permitir esa pregunta no certifica cumplimiento sin criterios y evidencia.
+
+MCP comprueba la admisión del archivo real al preparar su contexto; no confía
+en el texto sustituido por el cliente. Reutiliza el clasificador, modelo y caché
+existentes: no regenera las cuatro referencias. Esta comprobación adicional es
+por subida, no por pregunta. Los contextos anteriores sin metadatos de admisión
+deben reconstruirse subiendo el documento otra vez; no se aprueban por defecto.
+
+El campo `code` distingue `DOCUMENTO_FUERA_DE_ALCANCE`,
+`PREGUNTA_FUERA_DE_ALCANCE`, `SIN_EVIDENCIA`, `ACCESO_DENEGADO` y
+`ERROR_TECNICO`; `OK` indica respuesta válida. Se conserva además
+`DOCUMENTO_INDETERMINADO` para no llamar rechazado a un archivo inconcluyente.
+Los fallos del modelo, de extracción o embeddings no se presentan como ausencia
+de datos. Autenticación, permisos y pertenencia del contexto se verifican antes
+de responder; una coincidencia semántica no amplía permisos.
+
+Estas reglas son conservadoras, no un clasificador universal del lenguaje:
+paráfrasis o intenciones mezcladas ambiguas pueden necesitar aclaración.
+
+#### Autorización del archivo y del contexto documental
+
+La subida documental se guarda ahora bajo el almacén privado de la autenticación
+local (`auth_directory()/documents/<huella-de-sesión>/`). El servidor crea un
+identificador opaco y registra ruta, propietario de sesión, alcance y SHA-256 en
+el registro de la sesión existente. Ese identificador no es otra credencial:
+siempre exige el token, identidad, permisos y vigencia del login actual.
+No se registra una ruta arbitraria enviada por el cliente.
+
+Antes de abrir un documento, servicio, herramientas MCP y respaldo local
+comprueban ese registro. `validar_tipo_documental` requiere `documento_id`;
+su argumento antiguo `texto` no acredita autorización y no se vectoriza.
+`file_path` de conversión/preparación admite el identificador o una ruta ya
+registrada para esa misma sesión, nunca una ruta ajena por sí sola.
+
+Orden: identidad y permiso del archivo → validación del formato/tamaño →
+extracción local controlada de Markdown y páginas → autorización de los datos
+identificados en **todas** esas representaciones → protección de campos
+personales → admisión por embeddings → preparación de fragmentos autorizados →
+alcance de la pregunta y recuperación → cálculo o selección de citas por MiMo.
+No se intenta adivinar la identidad de una persona por su nombre. Los números de
+cuenta/cliente se verifican con el autorizador existente; identificadores
+enmascarados, campos sin límites verificables o tablas de identidad ambiguas
+se deniegan conservadoramente, sin enviarlos a embeddings ni al LLM.
+
+Solo la huella del contexto se guarda en el registro privado; sus textos y
+vectores siguen en memoria de Streamlit. MCP verifica la huella completa, la
+sesión, el alcance y el archivo: modificar los fragmentos o una bandera de
+admisión en el cliente no da acceso. Se revalida antes y después de responder y
+entre lotes de embeddings. Antes de renderizar historial/artefactos se repite la
+comprobación; cambios de rol, permisos o clientes invalidan el contexto anterior.
+Expiración y logout se rigen por la autenticación existente, sin otro sistema.
+
+Los originales son temporales: logout y limpiar chat solicitan su eliminación;
+la expiración se limpia de forma oportunista al entrar al contexto autenticado,
+con hasta 64 intentos por llamada. Una extracción activa o un archivo bloqueado
+dejan el borrado pendiente para reintentar. Sin actividad de la aplicación no
+hay limpieza en segundo plano. Los huérfanos sin registro requieren revisión
+local conservadora; no se eliminan carpetas completas ni referencias internas.
+No se guardan vectores de uploads en una base nueva ni se incorporan a Pinecone.
+El usuario de Windows que administra el almacén sigue siendo confiable, como en
+el login local: esto no protege frente a un administrador del equipo. La
+autorización semántica de datos personales implícitos en texto libre no es un
+clasificador infalible, ni se certifica autenticidad del PDF frente a su emisor.
+Los formatos o titularidades ambiguos pueden requerir clasificación confiable o
+revisión; no se deben ampliar permisos para evitar esas denegaciones.
+
+Pruebas rápidas de seguridad, sin SQLite, navegador ni inferencias reales:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/test_document_access.py -q -p no:cacheprovider
+```
+
+Las pruebas reales opcionales anteriores se adaptaron a referencias registradas
+e identidades autorizadas, pero no se reejecutaron tras este cambio de seguridad.
+Las corridas históricas con rutas libres o identificadores sintéticos opacos no
+certifican el contrato nuevo. El flujo de visión/OCR de imágenes queda fuera de
+esta revisión documental; no se presenta como auditado por estas pruebas.
+
+#### Integridad de documentos admitidos (reglas, sin otro modelo)
+
+Después de autorizar, extraer, proteger los datos y comprobar la admisión,
+`preparar_documento_consultable` aplica las reglas de `document_questions.py`.
+El informe se incorpora al contexto firmado de la sesión, sin otro agente,
+almacén o historial. Se vuelve a comprobar el permiso en MCP para consultarlo.
+
+El perfil de conciliación de débito o estado de cuenta genérico exige importes de resumen
+etiquetados: `Saldo inicial`, `Total de abonos`/`Abonos`, `Total de cargos`/`Cargos`
+y `Saldo final` (también `Saldo al cierre`/`Saldo de cierre`), con separador `:`
+o `|` y un importe inequívoco. Son requisitos de esta comprobación contable,
+no una lista de obligaciones legales. Reutiliza el parser monetario existente
+y `Decimal`: saldo inicial + abonos - cargos = saldo final, sin tolerancias
+ni estimaciones. Se muestran operandos, resultado esperado y páginas/secciones.
+No verifica transacción por transacción ni atribuye una diferencia a fraude.
+
+Las fechas etiquetadas de emisión, inicio/fin y vencimiento/vigencia se leen
+en formato ISO `AAAA-MM-DD` o `DD/MM/AAAA`. Se comprueba su existencia en el
+calendario, contradicciones y vencimiento explícito a la fecha local del servidor.
+La fecha de evaluación queda registrada en el informe; se actualiza al consultar
+en otro día. Un estado de cuenta histórico no caduca por antigüedad. No se
+inventan vigencias y no se interpretan todos los formatos de fecha en prosa.
+La numeración explícita `Página N de M` permite señalar saltos o contradicciones;
+un salto no prueba por sí solo que se haya perdido físicamente una página.
+
+El resultado `integridad_documental` está separado de `validacion_documental`
+(admisión semántica) y de los códigos de autorización/errores técnicos. Contiene
+un estado principal y varias incidencias con estado, campo/regla, explicación
+y página cuando está disponible: `VALIDO`, `INCOMPLETO`, `VENCIDO`,
+`INCONSISTENTE`, `OBSERVACION` y `NO_EVALUABLE`. `VALIDO` solo significa que
+pasaron las reglas implementadas, nunca autenticidad, oficialidad o certificación.
+Un campo mencionado pero no parseable se distingue de uno no encontrado; con
+extracción parcial o texto insuficiente no se afirma que falte en el original.
+Los fallos de extracción que ya impiden la admisión conservan `ERROR_TECNICO`.
+
+La UI muestra el resumen al subir y el informe en la traza. Se pueden preguntar
+las incidencias sin LLM. Los problemas críticos bloquean conclusiones y totales
+globales; siguen disponibles citas literales autorizadas con advertencia. No
+hay todavía perfiles de campos obligatorios para políticas de gobierno de datos
+u otros tipos, ni requisitos de expedientes definidos en el flujo actual: no se
+declaran completos ni se inventan archivos faltantes. La función admite una
+lista de requisitos del servidor para cuando exista una operación definida;
+no recibe esa lista desde el documento o la pregunta del usuario.
+
+Pruebas nuevas focalizadas, sintéticas y con extracción/embeddings/LLM simulados
+(no ejecutan las comprobaciones anteriores):
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/test_document_questions.py tests/test_document_access.py -k integridad -q
+```
+
+#### Pertinencia contextual y temporal del adjunto
+
+La ruta segura del adjunto reutiliza el planificador de orquestación:
+`grafo.interpretar_finalidad_documental` identifica contenido, consulta histórica,
+período específico, versión específica, actualidad y la intención de verificar
+calidad/cumplimiento, sin otro clasificador LLM. El servicio registra esa finalidad;
+MCP la vuelve a calcular sobre la pregunta y seguimiento autorizados. Las consultas
+explícitas a SQLite o al corpus normativo conservan sus rutas existentes.
+
+Document Intelligence reconoce etiquetas en los primeros encabezados del texto
+protegido: débito, crédito, estado de cuenta genérico, normativa/reglamento,
+política de gobierno de datos y otro compatible. Este reconocimiento es limitado,
+no un clasificador universal ni una nueva decisión de admisión. Extrae versión,
+período, corte, límite de pago, emisión, vigencia declarada, ámbito, controles,
+referencias y artículos/secciones cuando sus etiquetas son reconocibles. Se conservan
+el texto literal y la página de cada dato dentro del contexto firmado de la sesión.
+
+La conciliación existente se aplica a débito/genéricos, no a crédito ni normativa.
+En crédito se comprueban fechas explícitas y contradicciones corte/límite de pago,
+sin interpretar un saldo deudor con la fórmula de débito. No existe un perfil
+completo de todos los conceptos crediticios. Normas y políticas tienen revisión
+general de fechas/páginas y consulta citada de secciones; no certificación legal
+ni perfiles completos de campos obligatorios. Otros compatibles permiten citas
+y análisis limitado, aunque su integridad global permanezca `NO_EVALUABLE`.
+
+Antes de recuperar fragmentos por embeddings o llamar al LLM se comprueba:
+
+- Un período/versión solicitado debe estar identificado y ser compatible; enero
+  no demuestra gastos de todo un año. Períodos contradictorios no se eligen por
+  inferencia. Se reconocen meses en español con año, rangos ISO/DD-MM expresados
+  como `AAAA-MM-DD a AAAA-MM-DD` o `DD/MM/AAAA a DD/MM/AAAA`, y campos explícitos
+  de inicio/fin. No se interpreta cualquier fecha escrita en prosa.
+- El saldo o pago de un estado histórico no acredita una obligación actual.
+- El PDF no prueba que una norma/política sea la última versión o siga vigente,
+  aunque declare una vigencia futura. La recuperación RAG existente aporta citas,
+  pero no un verificador de derogaciones, sustituciones o actualidad jurídica;
+  sin corroboración autorizada no se confirma vigencia. Los cuatro PDF de
+  referencia son ejemplos sintéticos, nunca fuentes oficiales.
+- Si falta precisar período o finalidad, se devuelve `REQUIERE_ACLARACION`.
+  Si falta evidencia compatible o actualizada, `SIN_EVIDENCIA`. Estos códigos
+  siguen separados del estado de integridad y la admisión del archivo.
+
+Las respuestas históricas se delimitan al período/versión del documento. Se mantienen
+las citas, cálculos, filtros de alcance, autorización previa y posterior, aislamiento
+y limpieza temporal. El panel de trazas muestra metadatos, finalidad y pertinencia.
+Los embeddings ordenan evidencia; no demuestran vigencia ni actualidad financiera.
+
+Pruebas exclusivamente nuevas, sintéticas y con funciones simuladas:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/test_document_questions.py -k pertinencia -q
+```
+
+#### Concierge: evaluación de requisitos MiCuenta desde el chat
+
+El chat normal de Streamlit acepta hasta ocho PDF por conversación. El usuario
+adjunta los documentos y pregunta «¿Estos documentos cumplen los requisitos
+para abrir MiCuenta Banamex?», sin seleccionar agente, modo ni pantalla especial.
+El orquestador distingue requisitos generales (ruta normativa), evaluación del
+expediente (`evaluar_expediente_micuenta`) y consulta individual de un PDF.
+Los seguimientos reutilizan referencias autorizadas; con varios archivos no se
+elige uno arbitrariamente para una consulta individual. Sin contexto suficiente
+se solicita aclaración o se consultan requisitos.
+
+`proyecto/config/micuenta_requirements.json` es una matriz fija del servidor,
+versionada `2026-11-24.1`, para MiCuenta Banamex en sucursal: persona física
+mexicana **sin actividad empresarial**. Registra producto, canal, perfil,
+condiciones y fuente oficial consultada el 24 de noviembre de 2026:
+https://www.banamex.com/personas/cuentas/micuenta-debito.
+
+La herramienta MCP `evaluar_expediente_micuenta(documentos: list[str])` del
+servidor Document Intelligence recibe hasta ocho referencias ya registradas de
+la misma sesión (límite técnico, no requisito bancario). Autoriza todo el lote
+antes de extraer cualquier archivo y revalida antes de devolver el resultado.
+No acepta rutas libres, metadatos, políticas, perfiles ni fecha de evaluación
+aportados por el cliente. No guarda un expediente ni un historial persistente.
+
+Las reglas comprueban INE y fecha completa de vencimiento declarada; recibo de
+luz, telefonía fija, predial o televisión de paga con campo domiciliario presente
+y emisión no futura de hasta tres meses calendario; constancia CURP solo si se
+puede determinar que la INE no contiene ese dato. Si no se puede determinar esa
+condición, se devuelve `NO_VERIFICABLE`. El RFC conserva su condición oficial de
+actividad empresarial, pero no aplica al perfil habilitado y no se implementa
+su validación fiscal en esta etapa.
+
+La extracción reutiliza autorización y control de datos de Document Intelligence,
+en modo `texto`, sin inferencias OCR. El reconocimiento requiere encabezados y
+campos etiquetados con `:`; fechas `AAAA-MM-DD` o `DD/MM/AAAA`. No se inventa una
+fecha a partir de la vigencia anual de una INE. Ausencia de un campo en extracción
+no demuestra ausencia en el original: la condición CURP solo se determina con
+campo legible presente o ausencia expresamente indicada. Estas son reglas sobre
+texto declarado, no validación ante INE/RENAPO ni cotejo de titularidad.
+
+Solo salen tipos, presencia de campos, fechas mínimas y ubicaciones numéricas.
+No se devuelven valores de CURP, nombres, domicilios ni nombres de archivo.
+Los estados son `PRESENTE`, `VALIDO_SEGUN_REGLAS`, `FALTANTE` y `NO_VERIFICABLE`.
+Presencia y cumplimiento se separan: INE vencida = `PRESENTE`, `cumple=false`,
+incidencia `VENCIDO`; un recibo antiguo conserva `ANTIGUEDAD_EXCEDIDA`. Un requisito
+no aplicable lleva `aplica=false`, sin estado de evaluación; no se cuenta como
+faltante. Se devuelven `completo_segun_reglas`, `aprobacion_bancaria=null` y
+`titularidad_verificada=false`. Completo no equivale a aprobación bancaria.
+
+El expediente utiliza perfiles acotados de INE, constancia CURP y comprobante:
+reconocer el tipo no implica cumplir sus requisitos. Un documento reconocido pero
+incompleto permanece `PRESENTE`, con incidencias y campos no verificables; un tipo
+incierto o una extracción insuficiente permanece `NO_VERIFICABLE`. No se afirma
+que falta un requisito cuando un archivo desconocido podría corresponder a él.
+Esta ruta no exige el coseno global ni ejecuta embeddings. La traza informa
+`metodo=perfil_documental_acotado`, `decision=reconocido/indeterminado` y
+`admision_semantica=NO_EVALUADA`; no habilita análisis LLM por reconocer el tipo.
+Los documentos individuales de estados de cuenta y normativa mantienen su filtro
+original; las cuatro referencias activas, vectores, caché y umbrales no cambian.
+
+Verificaciones completadas el 25 de noviembre de 2026:
+
+- Streamlit AppTest con login aislado, carga múltiple real, orquestador y MCP
+  STDIO reales: expediente sintético completo; domicilio `FALTANTE` al omitirlo;
+  INE `PRESENTE`, `cumple=false`, incidencia literal `VENCIDO` en el chat.
+- Seguimiento «¿Qué documentos me faltan?» por MCP real, sin volver a adjuntar
+  ni cambiar las referencias autorizadas. Las cinco variantes de intención y
+  la consulta individual se comprobaron además con pruebas focalizadas;
+  el procesamiento del PDF individual fue simulado en esa regresión.
+- Dieciséis casos focalizados de reconocimiento y requisitos aprobados. Incluyen
+  extracción real de PDF y casos incompletos con textos sintéticos; no todos
+  son pruebas del chat ni ejecuciones STDIO.
+
+No se ejecutó revisión visual en navegador. Las pruebas no certifican autenticidad,
+titularidad ni aprobación bancaria, ni soporte universal de variantes u OCR.
+
+#### Seguridad y ADMIN / Data Steward: evidencia final
+
+USER no puede ejecutar `inspeccionar_dataset`, `validar_calidad_datos` ni
+`evaluar_calidad`: se comprobó denegación en backend y MCP STDIO reales, sin
+catálogos, estadísticas ni registros en la respuesta. Dos USER autenticados con
+sesiones distintas no pudieron preparar ni reutilizar los documentos privados
+del otro; `preparar_documento_consultable` y `evaluar_expediente_micuenta`
+devolvieron `ACCESO_DENEGADO` por STDIO real, sin contenido protegido.
+
+ADMIN se comprobó con una **contraparte temporal autorizada**, de rol auditor y
+con exactamente el alcance y permisos del auditor existente. No se usó el login
+habitual del auditor, no se ampliaron permisos ni se crearon usuarios permanentes.
+Las contrapartes USER también fueron temporales con los alcances ya configurados.
+Todas las sesiones de prueba fueron revocadas y las identidades habituales
+permanecieron intactas.
+
+El orquestador ejecutó las tres herramientas anteriores de Data Steward por MCP
+STDIO real. Sobre `raw_clientes` se verificaron contra SQL independiente de lectura:
+5.015 filas, 240 con algún nulo, 200 CURP nulas, 40 códigos de segmento nulos,
+40 segmentos nulos y 15 duplicados exactos. Los cinco hallazgos esperados
+coincidieron, sin diferencias. Son cifras de esa ejecución, no valores fijos de
+la aplicación. La respuesta mostró agregados y metadatos sin valores personales;
+SQLite conservó su SHA-256. No se verificó aquí la presentación visual de ADMIN.
+
+Detalle y límites: `docs/reporte_validacion_preguntas.md`.
+Pasos manuales: `docs/guion_demostracion_rubrica.md`.
+
+#### Referencias semánticas Concierge: preparación experimental no activada
+
+Se prepararon tres PDF exclusivamente textuales en
+`tests/fixtures/document_similarity_concierge_references/`: identificación,
+constancia CURP y comprobante domiciliario, con marca visible de simulación,
+etiquetas ficticias y sin imágenes, sellos, firmas o claves personales reales.
+Son entradas del experimento semántico anterior, no el kit final verificado de
+MiCuenta. Este utiliza `ine_completa.pdf`, `curp_completa.pdf` y
+`domicilio_completo.pdf` de `tests/fixtures/concierge_final_pdf_holdout/`, y
+`tests/fixtures/concierge_demo/identificacion_vencida_simulada.pdf`.
+
+Los datos de referencia, calibración y evaluación están separados en
+`document_similarity_concierge.json`; se conserva el conjunto inicial y su
+reporte para no ocultar intentos fallidos. Los reportes `*_results*.json`
+contienen puntuaciones reales frente a las siete referencias candidatas,
+decisiones, tiempos y el digest de `bge-large:latest`; nunca vectores privados.
+Las cuatro referencias originales no se volvieron a vectorizar.
+
+El preparador administrativo reutiliza chunking, coseno, embeddings, calibración
+y caché existentes. Trabaja con un candidato privado en AppData y respaldo del
+activo; solo `--aplicar` permite reemplazarlo si pasan los controles. No acepta
+documentos de usuarios como referencias. El calibrador mantiene el comportamiento
+estricto por defecto; el modo administrativo optativo deja el solapamiento y
+los ejemplos de calibración indeterminados dentro de una banda conservadora,
+sin forzar aceptación ni ajustar con las puntuaciones del lote final.
+
+**La ampliación candidata global sigue desactivada.** El candidato semántico inicial propuso aceptación
+desde 0.8379651425075912 y rechazo hasta 0.7676865214691387. Una guía ajena para
+armar una cometa obtuvo 0.859898 y fue aceptada; los controles bloquearon la
+promoción. Identificación quedó indeterminada (0.801636), CURP aceptada
+(0.935236) y domicilio aceptado (0.942365), con ejemplos sintéticos distintos
+de las referencias. Esos resultados describen un candidato fallido, no la
+capacidad certificada del filtro activo. El caché activo sigue con cuatro
+referencias y sus umbrales anteriores; se comprobó identidad byte a byte con
+su respaldo. No se bajaron umbrales para hacer pasar controles.
+
+Antes de activar se requiere mejorar y contrastar la separación del dominio
+frente a negativos difíciles, reservando otro lote final independiente. La
+similitud no acredita autenticidad, vigencia o cumplimiento de requisitos;
+las notas incompletas y listas de documentos requieren además la interpretación
+contextual y las reglas de expediente existentes.
+
+El módulo `proyecto.config.preparar_referencias_concierge` es experimental y
+administrativo; no debe ejecutarse con `--aplicar` para demostrar Concierge.
+El reconocimiento acotado del expediente no supone que ese candidato haya sido
+aprobado. Los reportes conservan los falsos positivos de las etapas posteriores;
+no se sobrescribieron para presentarlos como éxitos. Los tests unitarios del
+calibrador usan puntuaciones simuladas, separadas de las mediciones reales.

@@ -167,9 +167,11 @@ def _error_legible(error: Exception) -> str:
 
 
 def _error_documento(error: Exception) -> str:
+    detail = (str(error) if isinstance(error, ValueError) and str(error).startswith('Formato no soportado:')
+              else f'{type(error).__name__}.')
     return (
         "No se pudo convertir el documento a Markdown: "
-        f"{_detalle_error(error)}"
+        f"{detail}"
     )
 
 
@@ -228,12 +230,26 @@ def _quiere_descripcion(consulta: str) -> bool:
     return any(palabra in texto for palabra in PALABRAS_DESCRIPCION)
 
 
+def _imagen_autorizada(reference: str, prompt: str) -> str:
+    from proyecto.security.document_access import authorize_file, authorize_content, _document_io
+    from proyecto.security.local_auth import principal
+    from proyecto.agents.document_questions import _sanitize
+    principal()
+    with _document_io():
+        identifier, entry = authorize_file(reference)
+        text = _vision(prompt, entry['path'], MODELO_VISION_POR_DEFECTO)
+        authorize_file(identifier)
+        authorize_content(text)
+        return _sanitize(text, principal()['permissions'])
+
+
 @tool
 def ocr_image(image_path: str) -> str:
     """Extrae el texto visible de una imagen local (factura, recibo, comprobante)."""
     try:
-        authorize_file_access(image_path)
-        return _vision(PROMPT_OCR, image_path, MODELO_VISION_POR_DEFECTO)
+        return _imagen_autorizada(image_path, PROMPT_OCR)
+    except PermissionError:
+        raise
     except Exception as error:  # noqa: BLE001 - se devuelve al agente como texto
         return _error_legible(error)
 
@@ -242,8 +258,9 @@ def ocr_image(image_path: str) -> str:
 def describe_an_image(image_path: str) -> str:
     """Describe una imagen local y, si es un comprobante, resume sus datos visibles."""
     try:
-        authorize_file_access(image_path)
-        return _vision(PROMPT_DESCRIPCION, image_path, MODELO_VISION_POR_DEFECTO)
+        return _imagen_autorizada(image_path, PROMPT_DESCRIPCION)
+    except PermissionError:
+        raise
     except Exception as error:  # noqa: BLE001 - se devuelve al agente como texto
         return _error_legible(error)
 
@@ -261,12 +278,10 @@ def document_to_markdown(
     ``ocr`` o ``describir``; ``paginas`` acepta rangos como ``1-5,8``.
     """
     try:
-        authorize_file_access(file_path)
-        return _convertir_documento(
-            _resolver_documento(file_path),
-            modo=modo,
-            paginas=paginas,
-        )
+        from proyecto.security.document_access import extract_authorized
+        return extract_authorized(file_path, modo=modo, paginas=paginas)[2]
+    except PermissionError:
+        raise
     except Exception as error:  # noqa: BLE001 - se devuelve al agente como texto
         return _error_documento(error)
 
@@ -290,7 +305,7 @@ class DocumentIntelligenceAgent:
         ruta_documento = _extraer_ruta_documento(consulta)
         if ruta_documento:
             texto = document_to_markdown.invoke({"file_path": ruta_documento})
-            return filtrar_documento(texto, Path(ruta_documento).name)
+            return texto
         ruta = _extraer_ruta_imagen(consulta)
         if not ruta:
             return (
@@ -302,7 +317,7 @@ class DocumentIntelligenceAgent:
             texto = describe_an_image.invoke({"image_path": ruta})
         else:
             texto = ocr_image.invoke({"image_path": ruta})
-        return filtrar_documento(texto, Path(ruta).name)
+        return texto
 
     def __repr__(self) -> str:
         return (
