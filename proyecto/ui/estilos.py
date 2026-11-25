@@ -321,12 +321,33 @@ html, body, .stApp { background-color: var(--papel) !important; }
   padding: 16px 26px 10px !important;
   display: flex !important;
   flex-direction: column !important;
+  flex-wrap: nowrap !important;
+  align-items: stretch !important;
   gap: 0 !important;
   scrollbar-width: thin;
   scrollbar-color: rgba(236, 240, 244, 0.2) transparent;
   -ms-overflow-style: auto;
 }
 .st-key-chat_scroll:has(.hero) { justify-content: center; }
+.st-key-chat_scroll:has([data-testid="stChatMessage"]) .st-key-chat_empty {
+  display: none !important;
+}
+.st-key-chat_scroll:not(:has([data-testid="stChatMessage"])) .st-key-chat_history {
+  display: none !important;
+}
+.st-key-chat_history {
+  display: flex !important;
+  flex: 0 0 auto !important;
+  flex-direction: column !important;
+  gap: 0 !important;
+  width: 100% !important;
+  min-width: 0 !important;
+}
+.st-key-chat_history [class*="st-key-chat_message_"] {
+  flex: 0 0 auto !important;
+  width: 100% !important;
+  min-width: 0 !important;
+}
 
 .hero {
   position: relative;
@@ -477,6 +498,7 @@ html, body, .stApp { background-color: var(--papel) !important; }
   width: fit-content;
   min-width: 0;
   max-width: min(94%, 740px);
+  flex: 0 0 auto !important;
   gap: 10px;
   align-items: flex-start;
   margin-bottom: 12px;
