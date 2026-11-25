@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from ui.estilos_claro import CSS as CSS_CLARO
+from ui.tema_claro import aplicar_ajustes
 
 CSS = """
 <style>
@@ -1207,6 +1207,8 @@ html, body, .stApp { background-color: var(--papel) !important; }
 }
 </style>
 """
+
+CSS_CLARO = aplicar_ajustes(CSS)
 
 # Reglas de layout/ajustes que deben ser idénticas en ambos temas.
 CSS_COMPARTIDO = """

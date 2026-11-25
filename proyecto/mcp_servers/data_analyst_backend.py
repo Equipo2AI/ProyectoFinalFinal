@@ -5,15 +5,19 @@ import difflib
 import json
 import os
 import re
+import sqlite3
 import unicodedata
+from pathlib import Path
 
 from dotenv import load_dotenv
 from langchain_core.tools import tool
 from sqlalchemy import create_engine, event, inspect
+from sqlalchemy.engine import make_url
 
 from proyecto.charts import generar_grafica
 from proyecto.config.models import modelo_de
 from proyecto.guardrails import redactar_pii, verificar_cifras as verificar_cifras_texto
+from proyecto.mcp_servers.metadata_cache import MetadataCache
 from proyecto.mcp_servers.sql_guard import (
     ResultadoValidacionSQL,
     validar_sql as validar_sql_guard,
@@ -22,7 +26,7 @@ from proyecto.metrics import Metrica
 from proyecto.metrics import catalogo_metricas as listar_catalogo_metricas
 from proyecto.metrics import obtener_metrica
 from proyecto.periods import resolver_periodo as resolver_periodo_determinista
-from proyecto.security.local_auth import audit, es_modo_demo, principal
+from proyecto.security.local_auth import audit, principal
 
 load_dotenv()
 
@@ -50,9 +54,11 @@ Eres un Data Analyst bancario. Respondes preguntas con datos consultando
 una base de datos SQL de solo lectura.
 
 Proceso:
-1. Si no conoces las tablas, usa listar_tablas (también te dice el motor SQL).
-2. Antes de escribir SQL, usa describir_tabla en cada tabla o vista que vayas
-   a usar. Usa solo columnas y relaciones que existan.
+1. Si el prompt ya incluye el catálogo de metadatos, úsalo. Si no, usa
+   listar_tablas (también te dice el motor SQL).
+2. Si el catálogo ya incluye las columnas, no llames describir_tabla; úsala
+   solo si necesitas relaciones, el conteo de filas o una tabla que no
+   aparezca. Usa solo columnas y relaciones que existan.
 3. Prefiere las vistas (vw_*) cuando existan: ya traen los JOIN resueltos.
 4. Antes de filtrar por texto (WHERE tipo = ...), usa valores_columna para
    conocer los valores exactos de esa columna.
@@ -60,16 +66,30 @@ Proceso:
    catálogo, solo lectura, PII y el filtro del cliente autenticado.
 6. Ejecuta una sola consulta SELECT con ejecutar_consulta. Prefiere
    agregaciones (COUNT, SUM, AVG, GROUP BY) y usa LIMIT al listar filas.
-7. Si la pregunta coincide con una métrica certificada, usa catalogo_metricas
-   y consultar_metrica antes de escribir SQL libre. Usa resolver_periodo para
-   fechas y resolver_valor para categorías ambiguas.
+7. Si la pregunta coincide con una métrica certificada, usa consultar_metrica
+   antes de escribir SQL libre. Si el prompt no trae las métricas, consulta
+   catalogo_metricas primero. Usa resolver_periodo para fechas y
+   resolver_valor para categorías ambiguas.
 8. No generes imágenes ni código de gráficas: entrega el SQL y los datos; el
    orquestador se encarga de dibujar si el usuario lo pidió.
 9. Antes de cerrar, usa verificar_cifras si quieres contrastar tu redacción
    contra los datos. No publiques cifras que no aparezcan en la evidencia.
 10. Si la herramienta devuelve un error, corrige la consulta y reintenta
-    (máximo 3 intentos).
-11. Responde en español: la conclusión, los números que la respaldan y la
+    (máximo 3 intentos). Si el error es `alcance_corregible`, agrega el
+    filtro `num_cte = <cliente>` o explica que el agregado global no está
+    disponible; no respondas "Acceso denegado".
+11. En cuanto ejecutar_consulta o consultar_metrica devuelva filas, úsalo
+    solo si cubre la métrica, el periodo y los filtros pedidos. Si no los
+    cubre, no lo presentes como respuesta final: pide una aclaración breve o
+    explica el supuesto. No sigas explorando dimensiones que no se pidieron.
+12. No conviertas expresiones relativas como «últimos meses» en un número
+    fijo. Usa resolver_periodo; si el periodo sigue siendo ambiguo, pregunta
+    antes de ejecutar. Si decides asumir, declara el supuesto y ofrece
+    alternativas.
+13. Si el usuario pide una cuenta o producto específico (por ejemplo, cuenta
+    personal o tarjeta), filtra por ese producto; no devuelvas todos los
+    productos como si fueran la respuesta.
+14. Responde en español: la conclusión, los números que la respaldan y la
     consulta SQL que usaste.
 
 Reglas:
@@ -80,8 +100,9 @@ Reglas:
 - Los conteos del esquema corresponden a una proyeccion de alcance, no al
   universo global de la base. No confundas una tabla filtrada con un catalogo.
 - No modifiques datos ni afirmes haberlo hecho.
-- Si la pregunta es ambigua (no dice qué métrica, periodo o tabla), pide
-  aclaración o explica el supuesto que usaste.
+- Si la pregunta es ambigua (no dice qué métrica, periodo, producto o tabla),
+  pide aclaración o explica el supuesto que usaste. No elijas un periodo fijo
+  ni un producto arbitrario para evitar preguntar.
 - Si la base no tiene la información pedida, dilo explícitamente.
 """
 
@@ -165,6 +186,71 @@ def _normalizar(texto: str) -> str:
     return "".join(c for c in normalizado if not unicodedata.combining(c))
 
 
+_TERMINOS_CAMPOS_SALARIALES = (
+    ("sueldo", ("sueldo", "sueldos")),
+    ("salario", ("salario", "salarios")),
+    ("ingreso", ("ingreso", "ingresos")),
+    ("nomina", ("nomina", "nominas")),
+)
+
+
+def _campos_salariales_mencionados(consulta: str) -> list[str]:
+    """Detecta campos que la base sintética no tiene, sin esperar al LLM."""
+    texto = _normalizar(consulta)
+    return [
+        campo
+        for campo, variantes in _TERMINOS_CAMPOS_SALARIALES
+        if any(
+            re.search(rf"\b{re.escape(variante)}\b", texto)
+            for variante in variantes
+        )
+    ]
+
+
+def _columnas_esquema(engine) -> set[str]:
+    """Nombres normalizados de todas las columnas disponibles."""
+    inspector = inspect(engine)
+    columnas: set[str] = set()
+    for tabla in [*inspector.get_table_names(), *inspector.get_view_names()]:
+        for columna in inspector.get_columns(tabla):
+            columnas.add(_normalizar(str(columna["name"])))
+    return columnas
+
+
+def _respuesta_campos_inexistentes(
+    campos: list[str], columnas: set[str]
+) -> str | None:
+    """Explica que el campo pedido no existe y ofrece los proxies reales."""
+    if not campos:
+        return None
+    existentes = [
+        campo
+        for campo in campos
+        if any(campo in columna for columna in columnas)
+    ]
+    if existentes:
+        return None
+
+    proxies = [
+        proxy
+        for proxy in ("saldo_mes", "saldo_txn", "importe_firmado")
+        if proxy in columnas
+    ]
+    proxy_texto = ""
+    if proxies:
+        proxy_texto = (
+            " Puedo usar "
+            + ", ".join(f"`{proxy}`" for proxy in proxies)
+            + " para saldos o importes de movimientos, pero no representan "
+            "un sueldo."
+        )
+    return (
+        f"La base sintética no tiene columnas de {', '.join(campos)}, así que "
+        "no puedo calcular esa métrica ni presentarla como sueldo."
+        f"{proxy_texto} Si buscas otra métrica, indícala."
+    )
+
+
 def _sqlite_solo_lectura(conexion_dbapi, _registro) -> None:
     conexion_dbapi.execute("PRAGMA query_only = ON")
 
@@ -187,6 +273,28 @@ def _respuesta_terminal(nombre: str, contenido: str) -> str | None:
             and isinstance(datos.get("columnas"), list) and datos.get("filas") == []):
         return "No se encontraron resultados dentro de tu alcance autorizado para los filtros solicitados."
     return None
+
+
+def _datos_de_tool(nombre: str, contenido: str) -> dict | None:
+    """Devuelve los datos si una tool de consulta produjo un resultado válido.
+
+    El agente puede seguir explorando dimensiones aunque ya tenga una respuesta
+    válida. Detenerse en la primera consulta exitosa evita ciclos largos y el
+    límite de recursión de LangGraph.
+    """
+    if nombre not in {"ejecutar_consulta", "consultar_metrica"}:
+        return None
+    if not isinstance(contenido, str):
+        return None
+    try:
+        datos = json.loads(contenido)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(datos, dict) or datos.get("error"):
+        return None
+    if not isinstance(datos.get("columnas"), list) or not isinstance(datos.get("filas"), list):
+        return None
+    return datos
 
 
 class DataAnalystSQLBackend:
@@ -217,6 +325,7 @@ class DataAnalystSQLBackend:
         self._cliente_actual: int | None = None
         self._ultimo_resultado: dict | None = None
         self._ultimo_sql: str | None = None
+        self._metadata_cache = MetadataCache()
         self._tools = self._crear_herramientas()
         self.herramientas = [t.name for t in self._tools]
 
@@ -239,11 +348,22 @@ class DataAnalystSQLBackend:
         self._rol_actual, self._cliente_actual = _normalizar_perfil(perfil)
 
     def _perfil_actual(self) -> dict[str, object]:
-        """El perfil orienta al hub; solo la sesion real concede permisos."""
+        """El perfil orienta al orquestador; solo la sesion real concede permisos."""
         user = principal()
         customers = user['customers']
         return {'rol': 'superusuario' if user['role'] == 'auditor' else 'usuario',
                 'cliente_id': customers[0] if user['role'] == 'normal' and len(customers) == 1 else None}
+
+    def _respuesta_campo_inexistente(self, consulta: str) -> str | None:
+        """Evita que el LLM convierta salarios en saldos por deriva semántica."""
+        campos = _campos_salariales_mencionados(consulta)
+        if not campos:
+            return None
+        try:
+            columnas = _columnas_esquema(self._get_engine())
+        except Exception:  # noqa: BLE001 - sin catálogo se conserva el flujo normal
+            return None
+        return _respuesta_campos_inexistentes(campos, columnas)
 
     @staticmethod
     def _auditar(action: str, allowed: bool, sql: str | None = None) -> None:
@@ -279,7 +399,7 @@ class DataAnalystSQLBackend:
         )
         try:
             validacion = self.validar_sql(sql, perfil=perfil_validacion)
-        except Exception as error:  # noqa: BLE001 - se devuelve al hub
+        except Exception as error:  # noqa: BLE001 - se devuelve al orquestador
             self._auditar("sql_validation", False, sql)
             return {"error": f"{type(error).__name__}: {error}"}
         if not validacion.ok:
@@ -330,6 +450,31 @@ class DataAnalystSQLBackend:
         self._auditar("sql_execute", True, sql)
         return resultado
 
+    def _prompt_agente(
+        self, rol: str = "", cliente_id: int | None = None
+    ) -> str:
+        prompt = _prompt_sesion(rol, cliente_id) + (
+            "\nLa base ya está limitada al alcance autenticado; 'mi' se "
+            "refiere a ese alcance, no a un ID escrito en el chat. No pidas "
+            "más identidad. Solo un auditor con permiso explícito de un campo "
+            "personal puede usarlo si la herramienta se lo entrega para su "
+            "auditoría."
+        )
+        if os.getenv(
+            "DATA_ANALYST_PROMPT_CATALOG", "1"
+        ).strip().lower() not in {"0", "off", "false", "no"}:
+            resumen = self._resumen_metadatos()
+            if resumen:
+                prompt += (
+                    "\n\n"
+                    + resumen
+                    + "\n\nEl catálogo anterior ya está cargado y autorizado. "
+                    "No llames listar_tablas ni catalogo_metricas. Usa "
+                    "describir_tabla solo si necesitas relaciones, el conteo "
+                    "de filas o una tabla que no aparezca en el catálogo."
+                )
+        return prompt
+
     def _get_agente(self, rol: str = "", cliente_id: int | None = None):
         clave = f"{rol}:{cliente_id}" if rol else "normal"
         if clave not in self._agentes:
@@ -342,7 +487,7 @@ class DataAnalystSQLBackend:
                 reasoning=False,
                 timeout=45,
             )
-            # La gráfica la genera el orquestador o el hub con una tool
+            # La gráfica la genera el orquestador con una tool
             # determinista. El agente interno no debe recibir el PNG en base64
             # ni incrustarlo en su respuesta.
             herramientas = [
@@ -350,19 +495,33 @@ class DataAnalystSQLBackend:
                 for herramienta in self._tools
                 if herramienta.name != "graficar_consulta"
             ]
-            prompt = _prompt_sesion(rol, cliente_id) + (
-                "\nLa base ya está limitada al alcance autenticado; 'mi' se "
-                "refiere a ese alcance, no a un ID escrito en el chat. No pidas "
-                "más identidad. Solo un auditor con permiso explícito de un campo "
-                "personal puede usarlo si la herramienta se lo entrega para su "
-                "auditoría."
-            )
+            prompt = self._prompt_agente(rol, cliente_id)
             self._agentes[clave] = create_agent(
                 model=llm,
                 tools=herramientas,
                 system_prompt=prompt,
             )
         return self._agentes[clave]
+
+    def _respuesta_con_datos(self, datos: dict, nombre_tool: str) -> str:
+        """Presenta el primer resultado exitoso sin esperar otra vuelta del LLM."""
+        from proyecto.agents.banking_queries import format_result
+
+        if nombre_tool == "consultar_metrica":
+            metrica = str(datos.get("metrica") or "").strip()
+            descripcion = str(datos.get("descripcion") or "").strip()
+            titulo = f"Métrica: {metrica}" if metrica else "Resultado de la consulta"
+            if descripcion:
+                titulo += f" — {descripcion}"
+        else:
+            titulo = "Resultado de la consulta"
+
+        sql = str(datos.get("sql") or self._ultimo_sql or "").strip()
+        respuesta = format_result(titulo, datos, sql or "SQL no disponible.")
+        unidad = str(datos.get("unidad") or "").strip()
+        if unidad:
+            respuesta += f"\n\nUnidad: {unidad}."
+        return respuesta
 
     def procesar(self, consulta: str, contexto: str = "", perfil: dict | None = None) -> str:
         from proyecto.security.local_auth import authorize_request
@@ -384,6 +543,9 @@ class DataAnalystSQLBackend:
         sesion = self._perfil_actual()
         rol, cliente_id = sesion['rol'], sesion['cliente_id']
         audit('analizar_datos', True, user['subject'])
+        respuesta_campo = self._respuesta_campo_inexistente(consulta)
+        if respuesta_campo:
+            return respuesta_campo
         if nombre:
             # La relacion num_cte/nombre debe provenir de la tabla de personas
             # dentro del alcance autenticado. No consultar ni mostrar perfiles.
@@ -422,27 +584,45 @@ class DataAnalystSQLBackend:
             )
         from contextlib import closing
         from langchain_core.messages import ToolMessage
+        from langgraph.errors import GraphRecursionError
         from langsmith import tracing_context
-        with tracing_context(enabled=False):
-            # Revisar la salida del nodo tools antes de volver al modelo. Una
-            # denegacion o un SELECT vacio ya concluyen la consulta; no son SQL
-            # defectuoso que deba reformularse o reintentarse.
-            with closing(self._get_agente(rol, cliente_id).stream(
-                {"messages": [{"role": "user", "content": contenido}]},
-                config={"recursion_limit": 25},
-                stream_mode="values",
-            )) as estados:
-                for resultado in estados:
-                    terminales = []
-                    for mensaje in reversed(resultado["messages"]):
-                        if not isinstance(mensaje, ToolMessage):
-                            break
-                        terminal = _respuesta_terminal(mensaje.name, mensaje.content)
-                        if terminal:
-                            terminales.append(terminal)
-                    if terminales:
-                        return next((t for t in terminales if t.startswith("Acceso denegado:")), terminales[0])
-        return resultado["messages"][-1].content
+
+        ultimo_estado = None
+        try:
+            with tracing_context(enabled=False):
+                # Revisar la salida del nodo tools antes de volver al modelo.
+                # Una denegacion, un SELECT vacio o una consulta con filas ya
+                # concluyen la consulta; no son SQL defectuoso que deba
+                # reformularse o seguirse explorando.
+                with closing(self._get_agente(rol, cliente_id).stream(
+                    {"messages": [{"role": "user", "content": contenido}]},
+                    config={"recursion_limit": 25},
+                    stream_mode="values",
+                )) as estados:
+                    for resultado in estados:
+                        ultimo_estado = resultado
+                        terminales = []
+                        for mensaje in reversed(resultado["messages"]):
+                            if not isinstance(mensaje, ToolMessage):
+                                break
+                            terminal = _respuesta_terminal(mensaje.name, mensaje.content)
+                            if terminal:
+                                terminales.append(terminal)
+                                continue
+                            datos = _datos_de_tool(mensaje.name, mensaje.content)
+                            if datos is not None:
+                                return self._respuesta_con_datos(datos, mensaje.name)
+                        if terminales:
+                            return next((t for t in terminales if t.startswith("Acceso denegado:")), terminales[0])
+        except GraphRecursionError:
+            return (
+                "No pude completar la consulta dentro del límite de pasos. "
+                "Reformula la pregunta con una métrica, un periodo o una tabla "
+                "más específicos."
+            )
+        if ultimo_estado is None:
+            return "No pude completar la consulta. Reformula la pregunta con más detalle."
+        return ultimo_estado["messages"][-1].content
 
     @staticmethod
     def _misma_base(url_db: str | None, user: dict) -> bool:
@@ -500,6 +680,198 @@ class DataAnalystSQLBackend:
         tablas = [t for t in inspector.get_table_names() if t not in excluidas]
         vistas = [v for v in inspector.get_view_names() if v not in excluidas]
         return tablas, vistas
+
+    def _permitir_pii(self) -> bool:
+        return "dim_cliente_persona" not in self._excluidas()
+
+    @staticmethod
+    def _cache_permissions_key() -> str:
+        """Incluye los campos PII que cambian las columnas de la proyección."""
+        user = principal()
+        permisos = sorted(
+            str(permiso)
+            for permiso in (user.get("permissions") or [])
+            if str(permiso) == "audit" or str(permiso).startswith("pii:")
+        )
+        return ",".join(permisos)
+
+    def _cache_db_key(self) -> str:
+        """Identifica la base y su versión de esquema sin depender de los datos."""
+        if not self.url_db:
+            return "sin-db"
+        try:
+            url = make_url(self.url_db)
+        except Exception:  # noqa: BLE001 - una URL inválida no debe romper la tool
+            return f"url:{self.url_db}"
+        if url.drivername == "sqlite" and url.database:
+            ruta = Path(url.database).expanduser()
+            try:
+                ruta = ruta.resolve()
+                stat = ruta.stat()
+                # schema_version cambia con DDL, no con INSERT/UPDATE. Así el
+                # esquema se reutiliza aunque los datos cambien.
+                conexion = sqlite3.connect(f"{ruta.as_uri()}?mode=ro", uri=True)
+                try:
+                    version = conexion.execute(
+                        "PRAGMA schema_version"
+                    ).fetchone()[0]
+                finally:
+                    conexion.close()
+                return f"sqlite:{ruta}:inode={stat.st_ino}:schema={version}"
+            except (OSError, sqlite3.Error):
+                try:
+                    stat = ruta.stat()
+                    return (
+                        f"sqlite:{ruta}:inode={stat.st_ino}:"
+                        f"mtime={stat.st_mtime_ns}:size={stat.st_size}"
+                    )
+                except OSError:
+                    return f"sqlite:{ruta}"
+        return f"{url.drivername}:{url}"
+
+    def _metadata_key(self, tipo: str, **partes: object) -> str:
+        extras = "|".join(
+            f"{clave}={valor}" for clave, valor in sorted(partes.items())
+        )
+        return f"{tipo}|{self._cache_db_key()}|{extras}"
+
+    @staticmethod
+    def _catalogo_key() -> str:
+        """Cambia cuando cambia el código que define el catálogo."""
+        try:
+            ruta = Path(listar_catalogo_metricas.__code__.co_filename)
+            stat = ruta.stat()
+            version = f"{stat.st_mtime_ns}:{stat.st_size}"
+        except Exception:  # noqa: BLE001 - sin metadatos, se usa una versión fija
+            version = "v1"
+        return f"catalogo_metricas|{version}"
+
+    def _listar_tablas_cache(self, engine) -> dict:
+        """Tablas/vistas desde caché; solo inspecciona la base si no existe."""
+        clave = self._metadata_key(
+            "listar_tablas", pii=int(self._permitir_pii())
+        )
+        cacheado = self._metadata_cache.get(clave)
+        if (
+            isinstance(cacheado, dict)
+            and isinstance(cacheado.get("tablas"), list)
+            and isinstance(cacheado.get("vistas"), list)
+        ):
+            return cacheado
+        tablas, vistas = self._objetos_disponibles(inspect(engine))
+        datos = {
+            "motor": engine.dialect.name,
+            "tablas": tablas,
+            "vistas": vistas,
+        }
+        self._metadata_cache.set(clave, datos)
+        return datos
+
+    def _esquema_tabla(
+        self,
+        engine,
+        tabla: str,
+        *,
+        inspector=None,
+        tablas: list[str] | None = None,
+        vistas: list[str] | None = None,
+        permisos: str | None = None,
+    ) -> dict | None:
+        """Esquema cacheado de una tabla; no incluye el conteo de filas."""
+        permisos = (
+            permisos if permisos is not None else self._cache_permissions_key()
+        )
+        clave = self._metadata_key(
+            "describir_tabla", tabla=tabla, permisos=permisos
+        )
+        cacheado = self._metadata_cache.get(clave)
+        if isinstance(cacheado, dict) and isinstance(
+            cacheado.get("columnas"), list
+        ):
+            return cacheado
+
+        inspector = inspector or inspect(engine)
+        if tablas is None or vistas is None:
+            tablas, vistas = self._objetos_disponibles(inspector)
+        if tabla not in tablas + vistas:
+            return None
+
+        columnas = inspector.get_columns(tabla)
+        esquema = {
+            "tabla": tabla,
+            "es_vista": tabla in vistas,
+            "columnas": [
+                {"nombre": c["name"], "tipo": str(c["type"])}
+                for c in columnas
+            ],
+            "relaciones": [
+                {
+                    "columnas": fk["constrained_columns"],
+                    "referencia": f"{fk['referred_table']}({', '.join(fk['referred_columns'])})",
+                }
+                for fk in inspector.get_foreign_keys(tabla)
+            ],
+        }
+        self._metadata_cache.set(clave, esquema)
+        return esquema
+
+    def _catalogo_metricas_cache(self) -> list[dict]:
+        clave = self._catalogo_key()
+        cacheado = self._metadata_cache.get(clave)
+        if isinstance(cacheado, dict) and isinstance(
+            cacheado.get("metricas"), list
+        ):
+            return cacheado["metricas"]
+        datos = {"metricas": listar_catalogo_metricas()}
+        self._metadata_cache.set(clave, datos)
+        return datos["metricas"]
+
+    def _resumen_metadatos(self) -> str:
+        """Catálogo compacto para que el LLM no tenga que pedirlo por tools."""
+        try:
+            engine = self._get_engine()
+            datos = self._listar_tablas_cache(engine)
+            permisos = self._cache_permissions_key()
+            lineas = [
+                "Catálogo de metadatos ya cargado y autorizado para esta sesión:"
+            ]
+            for tipo, nombres in (
+                ("TABLA", datos.get("tablas", [])),
+                ("VISTA", datos.get("vistas", [])),
+            ):
+                for tabla in nombres:
+                    esquema = self._esquema_tabla(
+                        engine, tabla, permisos=permisos
+                    )
+                    if not esquema:
+                        continue
+                    columnas = ", ".join(
+                        str(columna.get("nombre"))
+                        for columna in esquema.get("columnas", [])
+                        if isinstance(columna, dict) and columna.get("nombre")
+                    )
+                    lineas.append(f"- {tipo} `{tabla}`: {columnas}")
+
+            metricas = self._catalogo_metricas_cache()
+            if metricas:
+                lineas.append("Métricas certificadas:")
+                for metrica in metricas:
+                    if not isinstance(metrica, dict):
+                        continue
+                    nombre = metrica.get("nombre")
+                    if not nombre:
+                        continue
+                    unidad = metrica.get("unidad") or ""
+                    dimensiones = metrica.get("dimensiones") or []
+                    dims = (
+                        ": " + ", ".join(str(d) for d in dimensiones)
+                        if dimensiones
+                        else ""
+                    )
+                    lineas.append(f"- {nombre} ({unidad}){dims}")
+            return "\n".join(lineas) if len(lineas) > 1 else ""
+        except Exception:  # noqa: BLE001 - sin catálogo se conserva el flujo normal
+            return ""
 
     def _filtro_sesion(
         self, tabla: str, columnas: list[str]
@@ -628,12 +1000,7 @@ class DataAnalystSQLBackend:
             """Lista las tablas y vistas de la base de datos y el motor SQL (sqlite, postgresql...)."""
             try:
                 engine = self._get_engine()
-                tablas, vistas = self._objetos_disponibles(inspect(engine))
-                return _json({
-                    "motor": engine.dialect.name,
-                    "tablas": tablas,
-                    "vistas": vistas,
-                })
+                return _json(self._listar_tablas_cache(engine))
             except Exception as error:
                 return _json({"error": f"{type(error).__name__}: {error}"})
 
@@ -642,19 +1009,29 @@ class DataAnalystSQLBackend:
             """Devuelve columnas, tipos, número de filas y relaciones de una tabla o vista. Úsala antes de escribir SQL."""
             try:
                 engine = self._get_engine()
-                inspector = inspect(engine)
-                tablas, vistas = self._objetos_disponibles(inspector)
-                if tabla not in tablas + vistas:
+                esquema = self._esquema_tabla(
+                    engine,
+                    tabla,
+                    permisos=self._cache_permissions_key(),
+                )
+                if esquema is None:
+                    datos = self._listar_tablas_cache(engine)
                     return _json({
                         "error": f"La tabla '{tabla}' no existe o no está disponible.",
-                        "tablas": tablas,
-                        "vistas": vistas,
+                        "tablas": datos.get("tablas", []),
+                        "vistas": datos.get("vistas", []),
                     })
 
-                columnas = inspector.get_columns(tabla)
+                # El conteo de filas no se cachea: cambia con los datos y con
+                # el alcance de la sesión. El esquema sí es reutilizable.
+                columnas_nombres = [
+                    str(columna.get("nombre"))
+                    for columna in esquema.get("columnas", [])
+                    if isinstance(columna, dict) and columna.get("nombre")
+                ]
                 nombre_seguro = engine.dialect.identifier_preparer.quote(tabla)
                 filtro, parametros = self._filtro_sesion(
-                    tabla, [c["name"] for c in columnas]
+                    tabla, columnas_nombres
                 )
                 with engine.connect() as conexion:
                     filas = conexion.exec_driver_sql(
@@ -662,22 +1039,7 @@ class DataAnalystSQLBackend:
                         parametros,
                     ).scalar()
 
-                return _json({
-                    "tabla": tabla,
-                    "es_vista": tabla in vistas,
-                    "filas": filas,
-                    "columnas": [
-                        {"nombre": c["name"], "tipo": str(c["type"])}
-                        for c in columnas
-                    ],
-                    "relaciones": [
-                        {
-                            "columnas": fk["constrained_columns"],
-                            "referencia": f"{fk['referred_table']}({', '.join(fk['referred_columns'])})",
-                        }
-                        for fk in inspector.get_foreign_keys(tabla)
-                    ],
-                })
+                return _json({**esquema, "filas": filas})
             except Exception as error:
                 return _json({"error": f"{type(error).__name__}: {error}"})
 
@@ -765,7 +1127,7 @@ class DataAnalystSQLBackend:
                     titulo=titulo,
                     orden=orden,
                 )
-            except Exception as error:  # noqa: BLE001 - se devuelve al hub
+            except Exception as error:  # noqa: BLE001 - se devuelve al orquestador
                 return _json({"error": f"{type(error).__name__}: {error}"})
 
             return _json({
@@ -779,7 +1141,7 @@ class DataAnalystSQLBackend:
         @tool
         def catalogo_metricas() -> str:
             """Lista métricas certificadas, su unidad y las dimensiones permitidas."""
-            return _json({"metricas": listar_catalogo_metricas()})
+            return _json({"metricas": self._catalogo_metricas_cache()})
 
         @tool
         def consultar_metrica(
@@ -809,7 +1171,7 @@ class DataAnalystSQLBackend:
                     limite=limite,
                     orden=str(orden or "desc").strip().lower(),
                 )
-            except Exception as error:  # noqa: BLE001 - se devuelve al hub
+            except Exception as error:  # noqa: BLE001 - se devuelve al orquestador
                 return _json({"error": f"{type(error).__name__}: {error}"})
 
             datos = self._consultar(sql)
@@ -836,7 +1198,7 @@ class DataAnalystSQLBackend:
                     expresion, hoy=hoy or None
                 )
                 return _json(periodo.model_dump())
-            except Exception as error:  # noqa: BLE001 - se devuelve al hub
+            except Exception as error:  # noqa: BLE001 - se devuelve al orquestador
                 return _json({"error": f"{type(error).__name__}: {error}"})
 
         @tool

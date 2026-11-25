@@ -1,0 +1,44 @@
+# US-04 · Visualizar resultados analíticos (P1)
+#
+# Clientes por segmento: Banca masiva 3,750 · preferente 1,000 · patrimonial 250.
+# CA-02 (título, ejes y etiquetas del PNG) se verifica sin LLM en
+# tests/historias/test_us04_graficas.py, porque las reglas no leen la imagen.
+predeterminados:
+  identidad: analista
+  agente_esperado: data_analyst
+  metricas: [reglas, criterio]
+  etiquetas: [data_analyst, graficas]
+
+casos:
+  - id: us04-grafica-clientes-por-segmento
+    cubre: [US-04.CA-01, US-04.CA-04]
+    pregunta: Haz una gráfica de barras del número de clientes por segmento.
+    debe_tener_grafica: true
+    debe_tener_sql: true
+    debe_contener_alguno: ["3,750", "3750"]
+    criterio: >
+      La respuesta acompaña la gráfica con las mismas cifras de la consulta
+      (3,750 Banca masiva, 1,000 Banca preferente y 250 Banca patrimonial) y
+      no agrega cifras que no estén en el resultado.
+    etiquetas: [smoke]
+
+  - id: us04-grafica-serie-mensual-propia
+    cubre: [US-04.CA-01, US-04.CA-04]
+    identidad: cliente_1
+    pregunta: Grafica el saldo de mi cuenta de ahorro por mes en 2026.
+    debe_tener_grafica: true
+    debe_tener_sql: true
+    criterio: >
+      La respuesta presenta la evolución mensual del saldo de la cuenta de
+      ahorro del cliente (enero a junio de 2026) y solo usa sus datos.
+
+  - id: us04-no-graficable-conserva-tabla
+    cubre: [US-04.CA-03]
+    pregunta: Haz una gráfica del número total de clientes de la base.
+    debe_tener_grafica: false
+    alertas_esperadas: ["No se pudo generar la gráfica", "gráfica"]
+    debe_contener_alguno: ["5,000", "5000"]
+    criterio: >
+      Un solo número no admite una gráfica útil. La respuesta conserva el
+      resultado (5,000 clientes) y explica que no se generó la gráfica, en
+      lugar de inventar categorías.

@@ -1,28 +1,23 @@
 """Orquestación explícita en grafo con LangGraph.
 
-El grafo reemplaza el enrutamiento opaco del hub por un flujo con estado
+El grafo reemplaza el enrutamiento opaco anterior por un flujo con estado
 compartido:
 
-    planear -> despachar -> especialista -> despachar -> ... -> verificar
-       ^                                                        |
-       └──────────────────── reintento (máx. 1) ────────────────┘
-                                                                |
-                                                           sintetizar
+    interpretar -> planear -> despachar -> especialista -> ... -> verificar
+       |             ^                                                |
+       |             └──────────── reintento (máx. 1) ────────────────┘
+       |                                                              |
+       └──────────── aclaración (sin especialistas) ──────────── sintetizar
 
 Cada especialista lee el estado común y deja allí su resultado. El verificador
 puede pedir un reintento de los especialistas que fallaron, y el sintetizador
 compone la respuesta final sin inventar datos.
 
-El modo se controla con ``ORCHESTRATION_MODE``:
-- ``graph`` (por defecto): usa este grafo.
-- ``hub``: usa el orquestador anterior como respaldo.
 """
 
 from __future__ import annotations
 
 import base64
-import hashlib
-from functools import lru_cache
 import json
 import operator
 import os
@@ -30,29 +25,35 @@ import re
 from pathlib import Path
 from typing import Annotated, Any, TypedDict
 
-from proyecto.config.ollama_runtime import ChatOllama
 from langgraph.graph import END, START, StateGraph
 
 from proyecto.agents import data_steward_agent
-from proyecto.guardrails import limpiar_base64
+from proyecto.agents.data_steward_agent import evaluar_alcance_data_steward
 from proyecto.agents.document_intelligence_agent import (
     PALABRAS_DESCRIPCION,
     PATRON_RUTA_DOCUMENTO,
     PATRON_RUTA_IMAGEN,
 )
 from proyecto.config.models import modelo_de
-from proyecto.orchestration.hubs import HubDataAnalyst
-from proyecto.orchestration.orquestador import (
+from proyecto.config.ollama_runtime import ChatOllama
+from proyecto.guardrails import limpiar_base64
+from proyecto.orchestration.comun import (
     _es_consulta_normativa,
     _llamar_mcp,
     _normalizar,
 )
-from proyecto.orchestration.tareas import (
-    ContextoHub,
-    DominioTarea,
-    EstadoResultado,
-    ResultadoTarea,
-    Tarea,
+from proyecto.orchestration.interpretacion import (
+    formatear_aclaracion,
+    interpretar_consulta,
+)
+from proyecto.orchestration.perfil_respuesta import (
+    HERRAMIENTAS_EVIDENCIA,
+    HERRAMIENTAS_LITERALES,
+    debe_redactar,
+    instrucciones_estilo,
+    perfil_desde_dict,
+    quitar_sql,
+    redactar_respuesta,
 )
 
 _ESPECIALISTAS = {
@@ -60,7 +61,6 @@ _ESPECIALISTAS = {
     "data_analyst",
     "normatividad_rag",
     "document_intelligence",
-    "compliance",
 }
 
 _ETIQUETAS = {
@@ -68,7 +68,6 @@ _ETIQUETAS = {
     "data_analyst": "Data Analyst",
     "normatividad_rag": "Normatividad",
     "document_intelligence": "Document Intelligence",
-    "compliance": "Compliance",
 }
 
 _RE_TABLA = re.compile(
@@ -77,8 +76,8 @@ _RE_TABLA = re.compile(
 )
 _RE_METADATA = re.compile(
     r"\b(?:tabla|tablas|columna|columnas|esquema|estructura|metadatos?|"
-    r"filas?|registros?|faltantes?|nulos?|duplicad\w*|calidad|"
-    r"relacion\w*|foreign\s+keys?)\b",
+    r"filas?|registros|faltantes?|nulos?|duplicad\w*|repetid\w*|"
+    r"negativos?|calidad|relacion\w*|foreign\s+keys?)\b",
     re.IGNORECASE,
 )
 _RE_ANALITICA = re.compile(
@@ -88,19 +87,47 @@ _RE_ANALITICA = re.compile(
     r"tendencia|comparacion|comparar)\b",
     re.IGNORECASE,
 )
-_RE_CALIDAD = re.compile(
-    r"\b(?:duplicad\w*|faltantes?|nulos?|calidad|problemas?|"
-    r"inconsistencias?)\b",
+# Términos que piden una métrica, no solo un conteo de metadatos. Sirven para
+# no mandar al LLM preguntas como "¿cuántas filas tiene raw_clientes?".
+_RE_ANALITICA_FUERTE = re.compile(
+    r"\b(?:total|suma|sumar|promedio|media|saldo|saldos|monto|montos|"
+    r"distribucion|distribuyen|ranking|top|porcentaje|metricas?|"
+    r"transacciones?|movimientos?|tendencia|comparacion|comparar)\b",
     re.IGNORECASE,
 )
-_RE_COMPLIANCE = re.compile(
-    r"\b(?:kyc|aml|lavado|compliance|regulatori[oa]|"
-    r"reportes?\s+regulatori[oa]s?|sanciones?)\b",
+_RE_CONECTOR_MULTI = re.compile(
+    r"\b(?:y|ademas|tambien|junto|mientras|compara|comparar|relaciona|"
+    r"relacionar)\b",
+    re.IGNORECASE,
+)
+_RE_CALIDAD = re.compile(
+    r"\b(?:duplicad\w*|repetid\w*|faltantes?|nulos?|negativos?|calidad|"
+    r"problemas?|inconsistencias?)\b",
+    re.IGNORECASE,
+)
+_RE_KYC_AML = re.compile(
+    r"\b(?:kyc|aml|lavado(?:\s+de\s+dinero)?|prevencion\s+de\s+lavado)\b",
     re.IGNORECASE,
 )
 _RE_DOCUMENTO = re.compile(
     r"\b(?:factura|recibo|comprobante|documento|imagen|ocr|"
     r"folio|emisor|subtotal|iva)\b",
+    re.IGNORECASE,
+)
+# Palabras que apuntan a un archivo físico, no a un documento normativo.
+_RE_DOCUMENTO_ADJUNTO = re.compile(
+    r"\b(?:factura|recibo|comprobante|imagen|ocr|adjunto|archivo)\b",
+    re.IGNORECASE,
+)
+# "El archivo de clientes" suele ser un dataset, no un adjunto. Solo se trata
+# como archivo físico si hay una pista explícita (factura, PDF, ruta, etc.).
+_RE_ARCHIVO_EXPLICITO = re.compile(
+    r"\b(?:adjunto|factura|recibo|comprobante|imagen|ocr|pdf|docx|xlsx|"
+    r"pptx|csv|ruta)\b",
+    re.IGNORECASE,
+)
+_RE_FORMATO_ARCHIVO = re.compile(
+    r"\b(?:pdf|docx|xlsx|pptx|csv)\b",
     re.IGNORECASE,
 )
 _RE_DOCUMENTO_AMPLIO = re.compile(
@@ -112,22 +139,48 @@ _RE_SEGUIMIENTO = re.compile(
     r"filtra|filtras|muestra|dame|agrega|quita|cambia)\b",
     re.IGNORECASE,
 )
+# Referencias explícitas al resultado anterior. Sirven para conservar al
+# especialista previo en seguimientos como "compáralo con la política".
+_RE_REFERENCIA_ANTERIOR = re.compile(
+    r"\b(?:compara\w*|comparalo|comparala|respecto|con\s+eso|con\s+esto|"
+    r"anterior|mismo|tambien|ademas|y\s+eso)\b",
+    re.IGNORECASE,
+)
 _RE_BANCARIA = re.compile(
     r"\b(?:cuentas?|movimientos?|saldos?|gaste|gastos|retiros|estado de cuenta|"
-    r"perfil|rfc|promotores|sucursales)\b", re.IGNORECASE,
+    r"perfil|rfc|promotores|sucursales)\b",
+    re.IGNORECASE,
+)
+# Banamex/Citibanamex es una fuente documental del corpus. Las preguntas
+# informativas sobre la marca van a RAG; las consultas analíticas siguen su
+# ruta de datos para no perder filtros, saldos o conteos.
+_RE_BANAMEX = re.compile(r"\b(?:banamex|citibanamex)\b", re.IGNORECASE)
+# Fuentes que compiten con el documento activo. Si el usuario las pide de
+# forma explícita, se respeta el especialista; si no, manda el documento.
+_RE_OTRA_FUENTE = re.compile(
+    r"\b(?:base\s+de\s+datos|sql|dataset|datasets|csv|raw_|dim_|fact_|vw_|"
+    r"normativa|normatividad|politica|politicas|manual|manuales|ley|leyes|"
+    r"regulatori[oa])\b",
+    re.IGNORECASE,
 )
 
 PROMPT_DIRECTO = """
-Eres el nodo de respuesta directa de un sistema multi-agente bancario.
+Eres el nodo de respuesta conversacional de un sistema multi-agente bancario.
 
-Responde en español, de forma breve y clara. Solo atiende saludos,
-aclaraciones generales o preguntas que no correspondan a un especialista.
-Si la consulta requiere datos, normativa, imágenes o compliance, dilo y pide
-que se reformule para enviarla al especialista adecuado.
+Atiende saludos, aclaraciones, preguntas sobre el documento activo y consultas
+generales que no requieran un especialista. No actúes como un filtro de alcance
+ni conviertas una consulta de datos en una negativa: el planificador decide qué
+especialista interviene.
+
+El sistema sí puede consultar saldos, movimientos, productos, crédito, seguros
+e inversiones mediante data_analyst, y normativa mediante normatividad_rag. Si
+el usuario pregunta qué puedes hacer, descríbelo con esas capacidades; no digas
+que saldo, crédito, seguros o inversiones están fuera de tu alcance ni pidas
+reformular solo porque mencionan esos temas.
 
 Si recibes contexto documental de un archivo ya procesado, úsalo como
-evidencia y responde con él; no pidas reformular la consulta ni vuelvas a
-procesar el archivo.
+evidencia y responde con él. Si la pregunta pide un dato que no está en el
+documento, dilo y ofrece consultarlo en la base de datos; no inventes.
 
 No inventes cifras, leyes, fuentes, tablas ni datos personales. Si no tienes
 contexto suficiente, dilo explícitamente.
@@ -154,6 +207,7 @@ def _merge_dicts(actual: dict, nuevo: dict) -> dict:
 
 
 class EstadoGrafo(TypedDict, total=False):
+    document_references: list[str]
     """Estado compartido por todos los nodos del grafo."""
 
     consulta: str
@@ -162,11 +216,20 @@ class EstadoGrafo(TypedDict, total=False):
     contexto_analista: str
     modelo: str
     perfil: dict
+    # Estilo de redacción: {"estilo", "mostrar_sql", "origen"} (perfil_respuesta.py).
+    perfil_respuesta: dict
     imagen_pendiente: str | None
     ultimo_agente: str | None
+    # Lectura previa de la consulta y, si hace falta, pregunta de aclaración.
+    interpretacion: dict
+    aclaracion: dict
+    supuestos: list[str]
 
     plan: list[str]
     rutas: list[str]
+    subpreguntas: list[str]
+    plan_origen: str
+    plan_razon: str
     pendientes: list[str]
     siguiente: str
     reintento: bool
@@ -179,6 +242,8 @@ class EstadoGrafo(TypedDict, total=False):
     errores: Annotated[list[str], operator.add]
 
     respuesta: str
+    # True si la respuesta ya se generó con las instrucciones de estilo.
+    redactada: bool
 
 
 def _texto(content: Any) -> str:
@@ -259,15 +324,43 @@ def _es_inventario_sql(texto: str) -> bool:
     )
 
 
+def _archivo_como_datos(consulta: str, texto: str, metadata: bool) -> bool:
+    """Distingue "el archivo de clientes" (dataset) de un adjunto real."""
+    return bool(
+        metadata
+        and re.search(r"\barchivos?\b", texto)
+        and not _RE_ARCHIVO_EXPLICITO.search(texto)
+        and not _RE_FORMATO_ARCHIVO.search(texto)
+        and not _tiene_ruta_imagen(consulta)
+        and not _tiene_ruta_documento(consulta)
+    )
+
+
+def _conector_analitico(texto: str) -> bool:
+    """True si un "y" une una cláusula con una señal analítica.
+
+    "Filas y columnas" enumera metadatos; "filas y cuántos clientes" sí pide
+    una segunda consulta analítica.
+    """
+    for coincidencia in _RE_CONECTOR_MULTI.finditer(texto):
+        antes = texto[max(0, coincidencia.start() - 40) : coincidencia.start()]
+        despues = texto[coincidencia.end() : coincidencia.end() + 40]
+        if _RE_ANALITICA.search(antes) or _RE_ANALITICA.search(despues):
+            return True
+    return False
+
+
 RESPUESTA_FUERA_DE_ALCANCE = (
-    "Esa consulta queda fuera de mi especialidad. Puedo ayudarte con servicios "
-    "financieros, cuentas y movimientos, análisis y calidad de datos bancarios, "
-    "normatividad y cumplimiento."
+    "Esa consulta queda fuera del alcance del asistente. Puedo ayudarte con "
+    "servicios financieros, cuentas y movimientos, análisis y calidad de datos "
+    "bancarios, normatividad, documentos e imágenes."
 )
 
 
 def fuera_de_alcance(
-    consulta: str, *, hay_contexto: bool = False,
+    consulta: str,
+    *,
+    hay_contexto: bool = False,
     imagen_pendiente: str | None = None,
 ) -> bool:
     """Filtro conservador de intenciones explicitas; desconocido no significa ajeno.
@@ -294,34 +387,48 @@ def fuera_de_alcance(
         r"\b(?:cual es|dime) (?:la )?capital de (?:francia|italia|japon|alemania)\b", texto,
     ):
         return True
-    if imagen_pendiente or _tiene_ruta_imagen(consulta) or _tiene_ruta_documento(consulta):
+    if (
+        imagen_pendiente
+        or _tiene_ruta_imagen(consulta)
+        or _tiene_ruta_documento(consulta)
+    ):
         return False
-    if (_tabla_mencionada(consulta) or _es_consulta_normativa(consulta)
-            or _RE_BANCARIA.search(texto)
-            or _RE_COMPLIANCE.search(texto) or _RE_DOCUMENTO.search(texto)):
+    if (_RE_KYC_AML.search(texto) and not hay_contexto
+            and not re.search(r'\b(?:que es|que establece|normativa|norma|ley|reglamento|obligaciones|requisitos)\b', texto)):
+        return True
+    if (
+        _tabla_mencionada(consulta)
+        or _es_consulta_normativa(consulta)
+        or _RE_BANCARIA.search(texto)
+        or _RE_DOCUMENTO.search(texto)
+    ):
         return False
     if re.search(
         r"\b(?:banc\w*|financier\w*|cuentas?|clientes?|movimientos?|saldos?|"
         r"transacciones?|credit\w*|tarjetas?|prestamos?|intereses|comisiones?|"
         r"inversion\w*|ahorr\w*|hipotecas?|pagos?|fraudes?|riesgos?|costos?|presupuest\w*|"
         r"sql|datasets?|csv|datos|tablas?|columnas?|grafic\w*|agentes?|"
-        r"orquestador|ollama|mimo)\b", texto,
+        r"orquestador|ollama|mimo)\b",
+        texto,
     ):
         return False
     if hay_contexto and re.search(
-        r"\b(?:eso|esto|esa|ese|anterior|mismo|segun|al respecto)\b", texto,
+        r"\b(?:eso|esto|esa|ese|anterior|mismo|segun|al respecto)\b",
+        texto,
     ):
         return False
     peticion = re.search(
         r"\b(?:por que|que|como|cuantos?|cual|explica\w*|dime|dame|"
-        r"escribe\w*|crea|prepara\w*|cuentame|hablame)\b", texto,
+        r"escribe\w*|crea|prepara\w*|cuentame|hablame)\b",
+        texto,
     )
     tema_ajeno = re.search(
         r"\bcielo\b.{0,60}\bazul\b|\bfotosintesis\b|"
         r"\b(?:planetas?|dinosaurios?|astronomia)\b|"
         r"\b(?:receta|cocinar|preparar)\b.{0,60}\b(?:pizza|pastel|tarta|pasta)\b|"
         r"\b(?:poema|cuento|cancion|chiste)\b|"
-        r"\bcapital de (?:francia|italia|japon|alemania)\b", texto,
+        r"\bcapital de (?:francia|italia|japon|alemania)\b",
+        texto,
     )
     return bool(peticion and tema_ajeno)
 
@@ -357,6 +464,10 @@ def interpretar_finalidad_documental(consulta: str, anterior: str = "") -> dict:
             'periodo': {'mes': periodo[1], 'ano': int(periodo[2])} if periodo else None,
             'ano': int(year[0]) if year else None, 'fechas': fechas, 'varios_periodos_o_versiones': varios, 'seguimiento': False}
 
+def _pide_otra_fuente(texto: str) -> bool:
+    """True solo si el usuario nombra explícitamente otra fuente."""
+    return bool(_RE_OTRA_FUENTE.search(texto or ""))
+
 
 def planear_rutas(
     consulta: str,
@@ -369,14 +480,17 @@ def planear_rutas(
     Es un planificador determinista y auditable. La intención es que el grafo
     no dependa de que un modelo pequeño acierte la ruta; el LLM se reserva para
     la respuesta directa y para los especialistas que ya la usan internamente.
+
+    una consulta puede requerir metadatos, analítica, documentos y normativa a
+    la vez. El orden es el de dependencia: primero datos, luego documento y al
+    final la evidencia normativa.
     """
-    if fuera_de_alcance(consulta, hay_contexto=bool(ultimo_agente or contexto_documentos),
-                       imagen_pendiente=imagen_pendiente):
+    if fuera_de_alcance(
+        consulta,
+        hay_contexto=bool(ultimo_agente or contexto_documentos),
+        imagen_pendiente=imagen_pendiente,
+    ):
         return ["directo"]
-    if imagen_pendiente or _tiene_ruta_imagen(consulta):
-        return ["document_intelligence"]
-    if _tiene_ruta_documento(consulta):
-        return ["document_intelligence"]
 
     texto = _normalizar(consulta or "")
 
@@ -385,51 +499,419 @@ def planear_rutas(
     from proyecto.mcp_servers.data_analyst_backend import nombre_buscado
     if nombre_buscado(consulta):
         return ["data_analyst"]
+    if _RE_KYC_AML.search(texto) and not fuera_de_alcance(consulta):
+        return ['normatividad_rag']  # informacion con evidencia, no aprobacion KYC/AML
 
-    # Si ya hay un documento procesado, las preguntas sobre su contenido se
-    # responden con el contexto documental; no deben desviarse a SQL.
-    if contexto_documentos and (
-        _RE_DOCUMENTO.search(texto)
-        or (
-            ultimo_agente == "document_intelligence"
-            and _RE_DOCUMENTO_AMPLIO.search(texto)
-        )
-    ):
-        return ["directo"]
+    pistas = _pistas_plan(
+        consulta,
+        ultimo_agente=ultimo_agente,
+        imagen_pendiente=imagen_pendiente,
+        contexto_documentos=contexto_documentos,
+    )
 
-    tabla = _tabla_mencionada(consulta)
-    metadata = bool(_RE_METADATA.search(texto))
-    analitica = bool(_RE_ANALITICA.search(texto))
-    normativa = _es_consulta_normativa(consulta) or bool(re.search(r'\b(?:portal|terminos|historial crediticio)\b', texto))
-    compliance = bool(_RE_COMPLIANCE.search(texto))
+    # Un documento activo es una fuente, no un router. Las preguntas de
+    # seguimiento sobre el documento van a "directo"; las que piden datos,
+    # metadatos o normativa deben llegar a su especialista aunque haya un
+    # documento abierto. Solo se queda en "directo" cuando la consulta no
+    # aporta una señal de dominio distinta.
+    if contexto_documentos and not _pide_otra_fuente(texto):
+        rutas_contexto: list[str] = []
+        if pistas.get("metadata"):
+            rutas_contexto.append("data_steward")
+        if pistas.get("analitica") or pistas.get("bancaria"):
+            if pistas.get("documento"):
+                rutas_contexto.append("directo")
+            else:
+                rutas_contexto.append("data_analyst")
+        if pistas.get("normativa") and not pistas.get("documento"):
+            rutas_contexto.append("normatividad_rag")
+        if not rutas_contexto:
+            rutas_contexto.append("directo")
+        return list(dict.fromkeys(rutas_contexto))
+    metadata = bool(pistas.get("metadata"))
+    analitica = bool(pistas.get("analitica"))
+    analitica_fuerte = bool(pistas.get("analitica_fuerte"))
+    bancaria = bool(pistas.get("bancaria"))
+    normativa = bool(pistas.get("normativa"))
+    documento = bool(pistas.get("documento"))
     inventario_sql = _es_inventario_sql(texto)
+    archivo_datos = _archivo_como_datos(consulta, texto, metadata)
+    conector_analitico = _conector_analitico(texto)
 
-    if normativa:
-        return ['normatividad_rag']
-    bancaria = bool(_RE_BANCARIA.search(texto))
-    dataset = bool(tabla or re.search(r'\b(?:csv|archivo|dataset|pii|calidad|faltantes|nulos|duplicados|columnas)\b', texto))
-    if bancaria and not dataset:
-        return ['data_analyst']
     rutas: list[str] = []
-    if normativa:
-        rutas.append("normatividad_rag")
     if metadata and not inventario_sql:
         rutas.append("data_steward")
 
-    # Si la consulta menciona una tabla concreta y pide metadatos (por ejemplo
-    # "cuántas filas tiene raw_clientes"), Data Steward es el especialista
-    # correcto; no hace falta mandarla también al Data Analyst.
-    if inventario_sql or (analitica and not (metadata and tabla)):
+    # Un conteo de filas de una tabla concreta es Data Steward. Una métrica
+    # fuerte ("saldo promedio") o un conector ("y", "además") sí justifica
+    # sumar al Data Analyst.
+    if inventario_sql:
         rutas.append("data_analyst")
+    elif analitica or bancaria:
+        if not (
+            metadata
+            and not analitica_fuerte
+            and (
+                not conector_analitico
+                or archivo_datos
+                or bool(_RE_CALIDAD.search(texto))
+            )
+        ):
+            rutas.append("data_analyst")
 
-    if compliance and not rutas:
-        rutas.append("compliance")
+    if documento:
+        rutas.append("document_intelligence")
+    if normativa:
+        rutas.append("normatividad_rag")
 
-    if not rutas and ultimo_agente and _es_seguimiento(consulta):
-        if ultimo_agente in _ESPECIALISTAS:
-            rutas.append(ultimo_agente)
+    # Seguimiento que compara con una fuente nueva: conserva al especialista
+    # anterior para no perder el resultado que se está comparando.
+    if (
+        ultimo_agente in _ESPECIALISTAS
+        and ultimo_agente not in rutas
+        and _RE_REFERENCIA_ANTERIOR.search(texto)
+    ):
+        rutas.insert(0, ultimo_agente)
+
+    if not rutas and ultimo_agente in _ESPECIALISTAS and _es_seguimiento(consulta):
+        rutas.append(ultimo_agente)
 
     return list(dict.fromkeys(rutas)) or ["directo"]
+
+
+_PROMPT_PLANIFICADOR = """
+Eres el planificador de un sistema multiagente bancario. Tu única tarea es
+decidir qué especialistas deben intervenir para responder la consulta. No
+respondas la consulta.
+
+Especialistas:
+- data_steward: estructura, metadatos, tablas, columnas, calidad, nulos,
+  duplicados y relaciones.
+- data_analyst: métricas, conteos, saldos, promedios, rankings, transacciones,
+  clientes y cuentas.
+- normatividad_rag: leyes, políticas, manuales, glosario, aviso de privacidad y
+  normativa.
+- document_intelligence: imágenes, facturas, recibos, OCR y documentos locales
+  (PDF, DOCX, XLSX, PPTX, CSV, HTML).
+- directo: saludos, aclaraciones, preguntas sobre un documento activo o
+  consultas conversacionales. Nunca lo uses para saldos, movimientos, métricas,
+  requisitos, normativa o cualquier tema que requiera un especialista.
+
+Las pistas léxicas son sugerencias calculadas por reglas. Úsalas como guía,
+pero decide según la intención completa de la consulta. Si hay varias
+intenciones, incluye todos los especialistas necesarios. No incluyas
+especialistas que no aporten evidencia. No inventes dominios.
+
+Devuelve SOLO JSON válido con esta forma:
+{
+  "plan": ["agente"],
+  "subpreguntas": ["subpregunta concreta"],
+  "razon": "explicación breve"
+}
+"""
+
+_ALIAS_AGENTES = {
+    "data steward": "data_steward",
+    "data_steward": "data_steward",
+    "steward": "data_steward",
+    "data analyst": "data_analyst",
+    "data_analyst": "data_analyst",
+    "analyst": "data_analyst",
+    "analista": "data_analyst",
+    "normatividad": "normatividad_rag",
+    "normatividad rag": "normatividad_rag",
+    "normatividad_rag": "normatividad_rag",
+    "normativa": "normatividad_rag",
+    "document intelligence": "document_intelligence",
+    "document_intelligence": "document_intelligence",
+    "documento": "document_intelligence",
+    "documentos": "document_intelligence",
+    "directo": "directo",
+    "direct": "directo",
+}
+
+
+def _pistas_plan(
+    consulta: str,
+    *,
+    ultimo_agente: str | None = None,
+    imagen_pendiente: str | None = None,
+    contexto_documentos: str = "",
+) -> dict[str, Any]:
+    """Señales léxicas para el planificador; no son la decisión final."""
+    texto = _normalizar(consulta or "")
+    tabla = _tabla_mencionada(consulta)
+    metadata = bool(_RE_METADATA.search(texto) or tabla)
+    calidad = bool(_RE_CALIDAD.search(texto))
+    analitica = bool(_RE_ANALITICA.search(texto))
+    analitica_fuerte = bool(_RE_ANALITICA_FUERTE.search(texto))
+    bancaria = bool(_RE_BANCARIA.search(texto))
+    banamex = bool(_RE_BANAMEX.search(texto))
+    normativa = bool(
+        _es_consulta_normativa(consulta)
+        or re.search(r"\b(?:portal|terminos|historial crediticio)\b", texto)
+        or (banamex and not (analitica or bancaria))
+    )
+    menciona_archivo = bool(
+        _tiene_ruta_imagen(consulta)
+        or _tiene_ruta_documento(consulta)
+        or _RE_DOCUMENTO_ADJUNTO.search(texto)
+    )
+    if _archivo_como_datos(consulta, texto, metadata):
+        menciona_archivo = False
+    menciona_formato = bool(_RE_FORMATO_ARCHIVO.search(texto))
+    documento_adjunto = bool(
+        imagen_pendiente or menciona_archivo or menciona_formato
+    )
+    documento = bool(documento_adjunto or _RE_DOCUMENTO.search(texto))
+    # "Documento de política" es normativa, no un archivo que haya que abrir.
+    # Un archivo pendiente tampoco convierte una pregunta normativa en lectura
+    # del archivo si el usuario no lo menciona.
+    if documento and normativa and not menciona_archivo:
+        documento = False
+    # "Factura" o "gastos" no convierten una consulta documental en una
+    # consulta SQL. Solo se conserva la intención de datos si el usuario
+    # nombra una fuente o una métrica de la base.
+    pide_datos = bool(
+        tabla
+        or re.search(
+            r"\b(?:base\s+de\s+datos|sql|dataset|csv|saldo|movimientos?|"
+            r"transacciones?|cuentas?|clientes?)\b",
+            texto,
+        )
+    )
+    if documento and not pide_datos:
+        bancaria = False
+        analitica = False
+        analitica_fuerte = False
+
+    # "Saldos negativos", "IDs repetidos" o "valores faltantes" son revisiones
+    # de calidad: las resuelve Data Steward aunque la palabra "saldos" o
+    # "clientes" también parezca analítica. Si además piden una métrica
+    # explícita, se conserva la ruta analítica.
+    if metadata and calidad and not re.search(
+        r"\b(?:promedio|total|suma|ranking|top|distribucion|porcentaje|"
+        r"monto|montos|comparacion|comparar)\b",
+        texto,
+    ):
+        analitica = False
+        analitica_fuerte = False
+        bancaria = False
+
+    # "¿Por cuánto tiempo se conserva...?" es una pregunta normativa, no una
+    # consulta de conteo. "¿Cuántos clientes...?" sí conserva Data Analyst.
+    if (
+        normativa
+        and not analitica_fuerte
+        and not bancaria
+        and re.search(
+            r"\b(?:por\s+)?cuanto\s+tiempo\b|\b(?:plazo|vigencia|duracion)\b",
+            texto,
+        )
+    ):
+        analitica = False
+
+    dominios: list[str] = []
+    if metadata:
+        dominios.append("data_steward")
+    if analitica or bancaria:
+        dominios.append("data_analyst")
+    if normativa:
+        dominios.append("normatividad_rag")
+    if documento:
+        dominios.append("document_intelligence")
+
+    return {
+        "texto": texto,
+        "tabla": tabla,
+        "metadata": metadata,
+        "analitica": analitica,
+        "analitica_fuerte": analitica_fuerte,
+        "bancaria": bancaria,
+        "banamex": banamex,
+        "normativa": normativa,
+        "documento": documento,
+        "dominios": list(dict.fromkeys(dominios)),
+        "ultimo_agente": ultimo_agente,
+        "hay_contexto_documental": bool(contexto_documentos),
+    }
+
+
+def _normalizar_agente_plan(valor: Any) -> str | None:
+    clave = _normalizar(str(valor or "")).replace("-", "_")
+    clave = re.sub(r"\s+", " ", clave).strip()
+    return _ALIAS_AGENTES.get(clave)
+
+
+def _validar_plan_llm(datos: Any) -> tuple[list[str], list[str], str] | None:
+    if not isinstance(datos, dict):
+        return None
+    plan_bruto = datos.get("plan")
+    if not isinstance(plan_bruto, list):
+        return None
+
+    plan: list[str] = []
+    for valor in plan_bruto:
+        agente = _normalizar_agente_plan(valor)
+        if agente and agente not in plan:
+            plan.append(agente)
+    if not plan:
+        return None
+    if "directo" in plan and len(plan) > 1:
+        plan = [agente for agente in plan if agente != "directo"]
+
+    subpreguntas_brutas = datos.get("subpreguntas")
+    if not isinstance(subpreguntas_brutas, list):
+        subpreguntas_brutas = []
+    subpreguntas = [
+        str(valor).strip()
+        for valor in subpreguntas_brutas
+        if str(valor).strip()
+    ][:8]
+    razon = str(datos.get("razon") or "").strip()[:500]
+    return plan, subpreguntas, razon
+
+
+def _leer_json_modelo(texto: str) -> Any:
+    limpio = (texto or "").strip()
+    if limpio.startswith("```"):
+        limpio = re.sub(r"^```(?:json)?\s*", "", limpio, flags=re.IGNORECASE)
+        limpio = re.sub(r"\s*```$", "", limpio)
+    try:
+        return json.loads(limpio)
+    except (TypeError, ValueError):
+        coincidencia = re.search(r"\{.*\}", limpio, flags=re.DOTALL)
+        if not coincidencia:
+            return None
+        try:
+            return json.loads(coincidencia.group(0))
+        except (TypeError, ValueError):
+            return None
+
+
+def _plan_llm(
+    consulta: str,
+    pistas: dict[str, Any],
+    modelo: str | None = None,
+) -> tuple[list[str], list[str], str] | None:
+    """Pide un plan al LLM; devuelve None si no hay un plan válido."""
+    mensajes = [
+        {"role": "system", "content": _PROMPT_PLANIFICADOR},
+        {
+            "role": "user",
+            "content": (
+                "Pistas léxicas (sugerencias, no obligaciones):\n"
+                f"{json.dumps(pistas, ensure_ascii=False)}\n\n"
+                "Consulta:\n"
+                f"{consulta}"
+            ),
+        },
+    ]
+    try:
+        respuesta = ChatOllama(
+            model=modelo or modelo_de("orchestrator"),
+            temperature=0,
+            format="json",
+            reasoning=False,
+            timeout=45,
+        ).invoke(mensajes)
+        contenido = _texto(getattr(respuesta, "content", respuesta))
+        plan = _validar_plan_llm(_leer_json_modelo(contenido))
+        if plan and plan[0] == ["directo"] and _requiere_plan_llm(pistas):
+            return None
+        return plan
+    except Exception:  # noqa: BLE001 - el fallback determinista es deliberado
+        return None
+
+
+def _requiere_plan_llm(pistas: dict[str, Any]) -> bool:
+    """El LLM solo entra cuando hay señales de más de un dominio."""
+    dominios = set(pistas.get("dominios") or [])
+    if len(dominios) < 2:
+        return False
+
+    # Un conteo de filas, registros o tablas puede ser solo Data Steward. No
+    # vale la pena pagar una llamada al planner por un "cuántas" genérico.
+    if (
+        dominios <= {"data_steward", "data_analyst"}
+        and pistas.get("metadata")
+        and pistas.get("analitica")
+        and not pistas.get("analitica_fuerte")
+    ):
+        return bool(_RE_CONECTOR_MULTI.search(str(pistas.get("texto") or "")))
+    return True
+
+
+def planear_rutas_hibrido(
+    consulta: str,
+    *,
+    ultimo_agente: str | None = None,
+    imagen_pendiente: str | None = None,
+    contexto_documentos: str = "",
+    modelo: str | None = None,
+) -> tuple[list[str], list[str], str, str]:
+    """Planifica con reglas y usa el LLM cuando la consulta es multi-intención.
+
+    Las reglas siguen siendo el fallback y el filtro de alcance. El LLM recibe
+    las señales léxicas como guía, nunca como una obligación.
+    """
+    if fuera_de_alcance(
+        consulta,
+        hay_contexto=bool(ultimo_agente or contexto_documentos),
+        imagen_pendiente=imagen_pendiente,
+    ):
+        return ["directo"], [], "reglas", "fuera de alcance"
+
+    texto = _normalizar(consulta or "")
+    if contexto_documentos and not _pide_otra_fuente(texto):
+        return (
+            planear_rutas(
+                consulta,
+                ultimo_agente=ultimo_agente,
+                imagen_pendiente=imagen_pendiente,
+                contexto_documentos=contexto_documentos,
+            ),
+            [],
+            "reglas",
+            "documento activo",
+        )
+
+    pistas = _pistas_plan(
+        consulta,
+        ultimo_agente=ultimo_agente,
+        imagen_pendiente=imagen_pendiente,
+        contexto_documentos=contexto_documentos,
+    )
+    modo = os.getenv("ORCHESTRATION_PLANNER", "hybrid").strip().lower()
+    if modo not in {"rules", "llm", "hybrid"}:
+        modo = "hybrid"
+
+    plan_reglas = planear_rutas(
+        consulta,
+        ultimo_agente=ultimo_agente,
+        imagen_pendiente=imagen_pendiente,
+        contexto_documentos=contexto_documentos,
+    )
+    if modo == "rules" or (modo == "hybrid" and not _requiere_plan_llm(pistas)):
+        return plan_reglas, [], "reglas", "intención única"
+
+    plan_llm = _plan_llm(consulta, pistas, modelo=modelo)
+    if plan_llm:
+        plan, subpreguntas, razon = plan_llm
+        # El LLM puede acertar la intención principal y omitir un dominio que
+        # las reglas ya detectaron. En una consulta multi-dominio no perdemos
+        # esos especialistas: los agregamos al plan del LLM.
+        if len(plan_reglas) > 1:
+            faltantes = [ruta for ruta in plan_reglas if ruta not in plan]
+            if faltantes:
+                plan = [*plan, *faltantes]
+                razon = (
+                    f"{razon} · se conservaron rutas deterministas: "
+                    + ", ".join(faltantes)
+                ).strip(" ·")
+        return plan, subpreguntas, "llm", razon
+
+    return plan_reglas, [], "reglas (fallback)", "planificador LLM sin plan válido"
 
 
 def _traza(nombre: str, args: dict, salida: str, estado: str) -> dict:
@@ -574,6 +1056,64 @@ def _validar_salida_steward(herramienta: str, datos: dict) -> str | None:
     return None
 
 
+def _nodo_interpretar(estado: EstadoGrafo) -> dict:
+    """Lee la consulta y decide si se puede planear o hace falta aclarar."""
+    consulta = estado.get("consulta") or ""
+
+    # Un documento activo manda, salvo que el usuario pida otra fuente.
+    if (
+        estado.get("contexto_documentos")
+        and not _pide_otra_fuente(_normalizar(consulta))
+    ):
+        return {
+            "interpretacion": {
+                "consulta": consulta,
+                "suficiencia": "suficiente",
+                "supuestos": [],
+                "aclaracion": {"necesaria": False, "pregunta": "", "opciones": []},
+            },
+            "aclaracion": {},
+            "supuestos": [],
+        }
+
+    # Fuera de alcance se rechaza en el nodo directo; no se pide aclaración.
+    if fuera_de_alcance(
+        consulta,
+        hay_contexto=bool(
+            estado.get("historial") or estado.get("contexto_documentos")
+        ),
+        imagen_pendiente=estado.get("imagen_pendiente"),
+    ):
+        return {
+            "interpretacion": {
+                "consulta": consulta,
+                "suficiencia": "suficiente",
+                "supuestos": [],
+                "aclaracion": {"necesaria": False, "pregunta": "", "opciones": []},
+            },
+            "aclaracion": {},
+            "supuestos": [],
+        }
+
+    interpretacion = interpretar_consulta(
+        consulta,
+        contexto_analista=estado.get("contexto_analista") or "",
+        contexto_documentos=estado.get("contexto_documentos") or "",
+        ultimo_agente=estado.get("ultimo_agente"),
+        imagen_pendiente=estado.get("imagen_pendiente"),
+    )
+    aclaracion = dict(interpretacion.get("aclaracion") or {})
+    return {
+        "interpretacion": interpretacion,
+        "aclaracion": aclaracion if aclaracion.get("necesaria") else {},
+        "supuestos": list(interpretacion.get("supuestos") or []),
+    }
+
+
+def _decidir_interpretacion(estado: EstadoGrafo) -> str:
+    return "sintetizar" if (estado.get("aclaracion") or {}).get("necesaria") else "planear"
+
+
 def _nodo_planear(estado: EstadoGrafo) -> dict:
     if estado.get("reintento"):
         fallidos = [
@@ -583,15 +1123,19 @@ def _nodo_planear(estado: EstadoGrafo) -> dict:
         ]
         return {"pendientes": fallidos, "reintento": False}
 
-    rutas = planear_rutas(
+    rutas, subpreguntas, origen, razon = planear_rutas_hibrido(
         estado.get("consulta") or "",
         ultimo_agente=estado.get("ultimo_agente"),
         imagen_pendiente=estado.get("imagen_pendiente"),
         contexto_documentos=estado.get("contexto_documentos") or "",
+        modelo=estado.get("modelo"),
     )
     return {
         "rutas": rutas,
         "plan": rutas,
+        "subpreguntas": subpreguntas,
+        "plan_origen": origen,
+        "plan_razon": razon,
         "pendientes": rutas,
         "reintento": False,
     }
@@ -614,6 +1158,37 @@ def _siguiente_despacho(estado: EstadoGrafo) -> str:
 
 def _nodo_data_steward(estado: EstadoGrafo) -> dict:
     consulta = estado.get("consulta") or ""
+    # El orquestador es el dueño del enrutamiento. Este guard cubre la
+    # invocación directa y los desvíos claros del planificador.
+    alcance = evaluar_alcance_data_steward(consulta)
+    if alcance.get("estado") == "fuera_de_dominio":
+        mensaje = str(
+            alcance.get("mensaje")
+            or "Esa consulta no corresponde al Data Steward."
+        )
+        return {
+            "resultados": {
+                "data_steward": {
+                    "agente": "data_steward",
+                    "respuesta": mensaje,
+                    "estado": "fuera_de_alcance",
+                }
+            },
+            "trazas": [
+                _traza(
+                    "alcance_data_steward",
+                    {
+                        "consulta": consulta,
+                        "destino": alcance.get("destino"),
+                        "motivo": alcance.get("motivo"),
+                    },
+                    mensaje,
+                    "ok",
+                )
+            ],
+            "errores": [],
+        }
+
     tabla = _tabla_mencionada(consulta)
     pide_calidad = bool(_RE_CALIDAD.search(_normalizar(consulta)))
 
@@ -719,79 +1294,30 @@ def _contexto_previo(estado: EstadoGrafo) -> str:
     return "\n\n".join(partes)
 
 
-@lru_cache(maxsize=32)
-def _hub_por_sesion(clave: str) -> HubDataAnalyst:
-    return HubDataAnalyst()
-
-
-def _get_hub_data_analyst() -> HubDataAnalyst:
-    from proyecto.security.local_auth import principal, TOKEN
-    principal()
-    token = TOKEN.get() or os.environ.get('PROYECTO_AUTH_TOKEN', '')
-    return _hub_por_sesion(hashlib.sha256(token.encode()).hexdigest())
-
-
-def _nodo_data_analyst_con_hub(estado: EstadoGrafo) -> dict:
-    """Ruta alternativa para comparar el hub con el flujo MCP anterior.
-
-    Se activa con ``DATA_ANALYST_HUB=1``. El hub usa las tools SQL de bajo
-    nivel y contrasta el SQL/datos declarados con la ejecución real.
-    """
-    consulta = estado.get("consulta") or ""
-    tarea = Tarea(
-        id="data_analyst",
-        dominio=DominioTarea.DATA_ANALYST,
-        instruccion=consulta,
-        objetivo="Responder la consulta cuantitativa con evidencia SQL.",
-        resultado_esperado=(
-            "Respuesta con cifras verificables, SQL ejecutado y datos tabulares."
-        ),
-        contexto=estado.get("contexto_analista") or "",
-        restricciones=[
-            "No inventes cifras, tablas ni columnas.",
-            "Aplica el alcance del perfil autenticado.",
-        ],
-        evidencia_requerida=["consulta SQL ejecutada", "resultado de la consulta"],
+def _contexto_interpretacion(estado: EstadoGrafo) -> str:
+    """Pasa al especialista los slots que el orquestador ya interpretó."""
+    interpretacion = estado.get("interpretacion") or {}
+    slots = interpretacion.get("slots") or {}
+    supuestos = [
+        str(supuesto).strip()
+        for supuesto in interpretacion.get("supuestos") or []
+        if str(supuesto).strip()
+    ]
+    if not slots and not supuestos:
+        return ""
+    lineas = ["[INTERPRETACION]"]
+    if slots:
+        lineas.append("Slots: " + json.dumps(slots, ensure_ascii=False))
+    if supuestos:
+        lineas.append("Supuestos: " + " ".join(supuestos))
+    lineas.append(
+        "Respeta estos filtros; si no puedes aplicarlos, pide aclaración o "
+        "declara el supuesto."
     )
-    contexto = ContextoHub(
-        session_id="grafo",
-        perfil=estado.get("perfil") or {},
-        slots={"consulta": consulta},
-        ultima_intencion=estado.get("ultimo_agente"),
-    )
-    resultado: ResultadoTarea = _get_hub_data_analyst().ejecutar(tarea, contexto)
-
-    ok = resultado.estado is EstadoResultado.OK
-    detalle = resultado.respuesta if ok else (
-        resultado.error or resultado.respuesta or "El hub no pudo completar la tarea."
-    )
-    return {
-        "resultados": {
-            "data_analyst": {
-                "agente": "data_analyst",
-                "respuesta": detalle,
-                "estado": "ok" if ok else "error",
-                "sql": resultado.sql,
-                "datos": resultado.datos,
-                "grafica": resultado.grafica,
-                "grafica_especificacion": resultado.grafica_especificacion,
-                "evidencia": resultado.evidencia,
-                "duracion": resultado.duracion,
-            }
-        },
-        "trazas": resultado.trazas,
-        "errores": [] if ok else [f"data_analyst: {detalle}"],
-    }
+    return "\n".join(lineas)
 
 
 def _nodo_data_analyst(estado: EstadoGrafo) -> dict:
-    if os.environ.get("DATA_ANALYST_HUB") == "1":
-        from proyecto.agents.banking_queries import plan_query
-        from proyecto.mcp_servers.data_analyst_backend import nombre_buscado
-        consulta = estado.get("consulta") or ""
-        if not plan_query(consulta) and not nombre_buscado(consulta):
-            return _nodo_data_analyst_con_hub(estado)
-
     if _es_inventario_sql(_normalizar(estado.get("consulta") or "")):
         salida, traza, estado_llamada = _ejecutar_mcp(
             "data_analyst_server", "listar_tablas", {}, "mcp_listar_tablas"
@@ -831,6 +1357,9 @@ def _nodo_data_analyst(estado: EstadoGrafo) -> dict:
             "errores": [respuesta] if estado_llamada == "error" else [],
         }
     contexto = estado.get("contexto_analista") or ""
+    interpretacion = _contexto_interpretacion(estado)
+    if interpretacion:
+        contexto = f"{contexto}\n\n{interpretacion}".strip()
     previo = _contexto_previo(estado)
     if previo:
         contexto = (
@@ -897,8 +1426,26 @@ def _nodo_data_analyst(estado: EstadoGrafo) -> dict:
     }
 
 
+def _subpregunta_normativa(estado: EstadoGrafo) -> str:
+    """Usa la subpregunta normativa, no la consulta mixta completa.
+
+    En una consulta como "¿qué dice la ley X y cuántos clientes hay?", pasar
+    el texto completo al RAG contamina la recuperación con términos
+    analíticos. El planner ya separó las subpreguntas; aquí se reutilizan.
+    """
+    subpreguntas = [
+        str(pregunta).strip()
+        for pregunta in (estado.get("subpreguntas") or [])
+        if str(pregunta).strip()
+    ]
+    for subpregunta in subpreguntas:
+        if _es_consulta_normativa(subpregunta):
+            return subpregunta
+    return str(estado.get("consulta") or "")
+
+
 def _nodo_normatividad(estado: EstadoGrafo) -> dict:
-    argumentos = {"query": estado.get("consulta") or ""}
+    argumentos = {"query": _subpregunta_normativa(estado)}
     salida, traza, estado_llamada = _ejecutar_mcp(
         "normatividad_rag_server",
         "buscar_normatividad",
@@ -929,33 +1476,31 @@ def _nodo_documento(estado: EstadoGrafo) -> dict:
     if not ruta:
         ruta_documento = _ruta_documento(consulta)
         if ruta_documento:
-            salida, traza, estado_llamada = _ejecutar_mcp(
-                "document_intelligence_server",
-                "convertir_documento_markdown",
-                {"file_path": ruta_documento},
-                "mcp_convertir_documento_markdown",
-            )
-            if salida.startswith("No se pudo convertir el documento"):
-                estado_llamada = "error"
-            return {
-                "resultados": {
-                    "document_intelligence": {
-                        "agente": "document_intelligence",
-                        "respuesta": salida,
-                        "estado": estado_llamada,
-                    }
-                },
-                "trazas": [traza],
-                "errores": (
-                    [f"document_intelligence: {salida}"]
-                    if estado_llamada == "error"
-                    else []
-                ),
-            }
+            salida, traza, status = _ejecutar_mcp(
+                'document_intelligence_server', 'preparar_documento_consultable',
+                {'file_path': ruta_documento, 'texto': ''}, 'preparar_documento_consultable')
+            context = _json_dict(salida)
+            traces = [traza]
+            if status == 'error' or not context:
+                response = {'message': 'No se pudo preparar el documento autorizado.', 'code': 'ERROR_TECNICO'}
+            elif context.get('code'):
+                response = context
+            else:
+                salida, traza, status = _ejecutar_mcp(
+                    'document_intelligence_server', 'responder_pregunta_documental',
+                    {'pregunta': consulta, 'documento': context, 'anterior': ''}, 'responder_pregunta_documental')
+                traces.append(traza)
+                response = _json_dict(salida) or {'message': 'Respuesta documental no verificable.', 'code': 'ERROR_TECNICO'}
+            message = response.get('message', 'No se pudo consultar el documento.')
+            failed = response.get('code') in {'ERROR_TECNICO', 'ACCESO_DENEGADO'}
+            return {'resultados': {'document_intelligence': {
+                'agente': 'document_intelligence', 'respuesta': message,
+                'estado': 'error' if failed else 'ok', 'respuesta_verificada': True}},
+                'trazas': traces, 'errores': ['document_intelligence: fallo documental'] if failed else []}
 
         respuesta = (
             "Proporciona la ruta local de una imagen o documento "
-            "(por ejemplo: tests/modelo-factura-ex.png o "
+            "(por ejemplo: ruta/a/tu-imagen.png o "
             "data_governance_files/archivo.pdf)."
         )
         return {
@@ -1009,6 +1554,7 @@ def _nodo_documento(estado: EstadoGrafo) -> dict:
                 "agente": "document_intelligence",
                 "respuesta": salida,
                 "estado": estado_llamada,
+                "respuesta_verificada": True,
             }
         },
         "trazas": [traza],
@@ -1017,25 +1563,6 @@ def _nodo_documento(estado: EstadoGrafo) -> dict:
             if estado_llamada == "error"
             else []
         ),
-    }
-
-
-def _nodo_compliance(estado: EstadoGrafo) -> dict:
-    respuesta = (
-        "El módulo de compliance, KYC y AML está fuera del alcance del MVP "
-        "actual (fase 2). No puedo emitir una evaluación regulatoria ni "
-        "confirmar cumplimiento con esa normativa."
-    )
-    return {
-        "resultados": {
-            "compliance": {
-                "agente": "compliance",
-                "respuesta": respuesta,
-                "estado": "ok",
-            }
-        },
-        "trazas": [],
-        "errores": [],
     }
 
 
@@ -1078,6 +1605,15 @@ def _decidir_verificacion(estado: EstadoGrafo) -> str:
     return "reintentar" if estado.get("reintento") else "sintetizar"
 
 
+def _autorizar_contexto_documental(estado):
+    from proyecto.security.document_access import authorize_file
+    refs = estado.get('document_references') or []
+    if estado.get('contexto_documentos') and not refs:
+        raise PermissionError('Contexto documental sin referencias autorizadas.')
+    for ref in refs:
+        authorize_file(ref)
+
+
 def _respuesta_directa(estado: EstadoGrafo) -> str:
     if fuera_de_alcance(
         estado.get("consulta") or "",
@@ -1085,12 +1621,15 @@ def _respuesta_directa(estado: EstadoGrafo) -> str:
         imagen_pendiente=estado.get("imagen_pendiente"),
     ):
         return RESPUESTA_FUERA_DE_ALCANCE
+    _autorizar_contexto_documental(estado)
     historial = _normalizar_historial(estado.get("historial") or [])
     if not historial:
         historial = [{"role": "user", "content": estado.get("consulta") or ""}]
 
     contexto = str(estado.get("contexto_documentos") or "").strip()
-    system = PROMPT_DIRECTO
+    system = PROMPT_DIRECTO + instrucciones_estilo(
+        perfil_desde_dict(estado.get("perfil_respuesta"))
+    )
     if contexto:
         system += "\n\nContexto documental de la conversación:\n" + contexto
 
@@ -1150,17 +1689,217 @@ def _respuesta_documento(estado: EstadoGrafo, resultado: dict) -> str:
         )
 
 
+_PROMPT_SINTESIS = """
+Eres el orquestador de un sistema multiagente bancario. Varios especialistas
+ya respondieron partes de la consulta. Integra sus resultados en una sola
+respuesta coherente para el usuario.
+
+Reglas:
+- Responde en el idioma de la consulta.
+- No inventes cifras, leyes, tablas, fuentes ni datos que no estén en los
+  resultados.
+- Conserva las cifras, referencias y fuentes que aportaron los especialistas.
+- Si hay evidencia normativa, conserva los fragmentos literales y sus fuentes;
+  no los sustituyas por un resumen sin fuente.
+- Si un especialista falló, dilo de forma breve; no presentes su error como
+  evidencia.
+- No repitas encabezados por especialista ni pegues bloques completos si una
+  explicación integrada es suficiente.
+- Si los resultados no alcanzan para responder una subpregunta, dilo.
+- No incluyas rutas locales ni imágenes Markdown.
+"""
+
+
+def _bloques_para_sintesis(
+    plan: list[str], resultados: dict[str, dict]
+) -> tuple[str, bool]:
+    bloques: list[str] = []
+    hay_ok = False
+    for agente in plan:
+        resultado = resultados.get(agente) or {}
+        etiqueta = _ETIQUETAS.get(agente, agente)
+        estado = str(resultado.get("estado") or "sin resultado")
+        if estado != "error":
+            hay_ok = True
+        respuesta = str(resultado.get("respuesta") or "").strip()
+        if len(respuesta) > 6000:
+            respuesta = respuesta[:6000].rstrip() + "\n[…resultado truncado…]"
+        bloque = [f"Especialista: {etiqueta}", f"Estado: {estado}"]
+        if respuesta:
+            bloque.append(f"Resultado:\n{respuesta}")
+        sql = str(resultado.get("sql") or "").strip()
+        if sql:
+            bloque.append(f"SQL ejecutado:\n{sql[:2000]}")
+        fuentes = resultado.get("fuentes") or []
+        if fuentes:
+            bloque.append("Fuentes: " + ", ".join(str(f) for f in fuentes))
+        bloques.append("\n".join(bloque))
+    return "\n\n---\n\n".join(bloques), hay_ok
+
+
+def _sintetizar_cooperativo(
+    estado: EstadoGrafo,
+    plan: list[str],
+    resultados: dict[str, dict],
+) -> str | None:
+    """Integra varios especialistas con el orquestador; None si no aplica."""
+    if any(r.get('respuesta_verificada') for r in resultados.values()):
+        return None
+    modo = os.getenv("ORCHESTRATION_SYNTHESIS", "auto").strip().lower()
+    if modo in {"rules", "reglas", "off", "none", "0"}:
+        return None
+    bloques, hay_ok = _bloques_para_sintesis(plan, resultados)
+    if not hay_ok or not bloques.strip():
+        return None
+
+    subpreguntas = [
+        str(pregunta).strip()
+        for pregunta in (estado.get("subpreguntas") or [])
+        if str(pregunta).strip()
+    ]
+    contenido_usuario = (
+        f"Consulta original:\n{estado.get('consulta') or ''}\n\n"
+        "Subpreguntas del plan:\n"
+        + ("\n".join(f"- {p}" for p in subpreguntas) or "(no especificadas)")
+        + "\n\nResultados de los especialistas:\n\n"
+        + bloques
+    )
+    try:
+        respuesta = ChatOllama(
+            model=estado.get("modelo") or modelo_de("orchestrator"),
+            temperature=0,
+            reasoning=False,
+            timeout=60,
+        ).invoke(
+            [
+                {
+                    "role": "system",
+                    "content": _PROMPT_SINTESIS
+                    + instrucciones_estilo(
+                        perfil_desde_dict(estado.get("perfil_respuesta"))
+                    ),
+                },
+                {"role": "user", "content": contenido_usuario},
+            ]
+        )
+        texto = _texto(getattr(respuesta, "content", respuesta)).strip()
+        return texto or None
+    except Exception:  # noqa: BLE001 - se conserva la síntesis determinista
+        return None
+
+
+def _bloques_evidencia_normativa(respuesta: str) -> list[str]:
+    """Extrae los bloques ``FUENTE: ...`` de una respuesta del RAG.
+
+    El texto de cada fragmento se conserva; solo se retira el score de la
+    línea de fuente porque ese dato pertenece a la traza, no a la respuesta.
+    """
+    bloques: list[str] = []
+    for parte in re.split(r"\n\s*---\s*\n", respuesta or ""):
+        if "FUENTE:" not in parte:
+            continue
+        bloque = parte[parte.find("FUENTE:") :].strip()
+        bloque = re.sub(
+            r"(?m)^(\s*FUENTE:\s*.+?)\s*\(score[^)]*\)\s*$",
+            r"\1",
+            bloque,
+        )
+        if bloque:
+            bloques.append(bloque)
+    return bloques
+
+
+def _agregar_evidencia_normativa(
+    respuesta: str, resultados: dict[str, dict]
+) -> str:
+    """Garantiza que la respuesta final muestre la evidencia del RAG.
+
+    La síntesis multiagente puede resumir y perder los fragmentos. Esta
+    función los agrega de forma determinista; si la respuesta ya es la salida
+    directa del RAG, no la duplica.
+    """
+    texto = str(respuesta or "").strip()
+    resultado = (resultados or {}).get("normatividad_rag") or {}
+    if not resultado or resultado.get("estado") == "error":
+        return texto
+
+    evidencia = str(resultado.get("respuesta") or "").strip()
+    if not evidencia:
+        return texto
+
+    if "## Evidencia normativa recuperada" in texto:
+        return texto
+    if texto.startswith(
+        (
+            "Evidencia documental recuperada",
+            "Respuesta basada en fragmentos literales del corpus local",
+            "FUENTE:",
+        )
+    ):
+        return texto
+
+    bloques = _bloques_evidencia_normativa(evidencia)
+    if bloques:
+        return (
+            texto.rstrip()
+            + "\n\n## Evidencia normativa recuperada\n\n"
+            + "\n\n".join(bloques)
+        ).strip()
+
+    if evidencia.startswith("Sin evidencia") and "Sin evidencia" not in texto:
+        return (
+            texto.rstrip()
+            + "\n\n## Evidencia normativa recuperada\n\n"
+            "No se recuperó evidencia suficiente en el corpus."
+        ).strip()
+    return texto
+
+
 def _nodo_sintetizar(estado: EstadoGrafo) -> dict:
+    aclaracion = estado.get("aclaracion") or {}
+    if aclaracion.get("necesaria"):
+        return {
+            "respuesta": formatear_aclaracion(aclaracion),
+            "redactada": True,
+        }
+
     plan = list(estado.get("plan") or [])
     resultados = estado.get("resultados") or {}
 
     if not plan or plan == ["directo"]:
-        return {"respuesta": _respuesta_directa(estado)}
+        consulta = _normalizar(estado.get("consulta") or "")
+        if _RE_KYC_AML.search(consulta) and not estado.get("contexto_documentos"):
+            return {"respuesta": RESPUESTA_FUERA_DE_ALCANCE, "redactada": True}
+        # La respuesta directa ya se genera con el estilo del perfil.
+        return {
+            "respuesta": _agregar_evidencia_normativa(
+                _respuesta_directa(estado), resultados
+            ),
+            "redactada": True,
+        }
 
     if plan == ["document_intelligence"]:
         resultado = resultados.get("document_intelligence") or {}
+        if resultado.get('respuesta_verificada'):
+            return {'respuesta': resultado['respuesta'], 'redactada': True}
         if resultado.get("estado") != "error" and resultado.get("respuesta"):
-            return {"respuesta": _respuesta_documento(estado, resultado)}
+            return {
+                "respuesta": _agregar_evidencia_normativa(
+                    _respuesta_documento(estado, resultado), resultados
+                )
+            }
+
+    if len(plan) > 1:
+        respuesta_cooperativa = _sintetizar_cooperativo(estado, plan, resultados)
+        if respuesta_cooperativa:
+            # La síntesis cooperativa ya usa el estilo del perfil; la evidencia
+            # normativa se agrega de forma determinista.
+            return {
+                "respuesta": _agregar_evidencia_normativa(
+                    respuesta_cooperativa, resultados
+                ),
+                "redactada": True,
+            }
 
     partes: list[str] = []
     for agente in plan:
@@ -1190,7 +1929,192 @@ def _nodo_sintetizar(estado: EstadoGrafo) -> dict:
             "El grafo no obtuvo una respuesta de los especialistas. "
             "Revisa la traza para ver el error."
         )
-    return {"respuesta": respuesta}
+    return {
+        "respuesta": _agregar_evidencia_normativa(respuesta, resultados)
+    }
+
+
+def _con_supuestos(respuesta: str, estado: EstadoGrafo) -> str:
+    """Hace visible el supuesto que usó el orquestador, sin repetirlo."""
+    supuestos = [
+        str(supuesto).strip()
+        for supuesto in estado.get("supuestos") or []
+        if str(supuesto).strip()
+    ]
+    if not supuestos:
+        return respuesta
+    nota = "Interpretación: " + " ".join(supuestos)
+    if nota in respuesta:
+        return respuesta
+    return f"{nota}\n\n{respuesta}".strip()
+
+
+_PRODUCTO_POR_ENTIDAD = {
+    "cuenta personal": "C_PERSONAL",
+    "credito personal": "C_PERSONAL",
+    "tarjeta": "TDC",
+    "tarjeta de credito": "TDC",
+    "cheques": "CHEQUES",
+    "ahorro": "AHORRO",
+}
+
+
+def _sql_acota_periodo(sql: str) -> bool:
+    """Busca un filtro de fecha dentro del WHERE, no en SELECT u ORDER BY."""
+    coincidencia = re.search(r"\bWHERE\b(.*)", sql, re.IGNORECASE | re.DOTALL)
+    if not coincidencia:
+        return False
+    filtro = re.split(
+        r"\b(?:GROUP\s+BY|ORDER\s+BY|LIMIT)\b",
+        coincidencia.group(1),
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    return bool(
+        re.search(
+            r"(?:anio_mes|cve_mes|cve_fecha\w*|fec_\w*|fecha\w*|"
+            r"periodo|\bmes\b|\banio\b)",
+            filtro,
+            re.IGNORECASE,
+        )
+    )
+
+
+_MESES = {
+    1: "enero",
+    2: "febrero",
+    3: "marzo",
+    4: "abril",
+    5: "mayo",
+    6: "junio",
+    7: "julio",
+    8: "agosto",
+    9: "septiembre",
+    10: "octubre",
+    11: "noviembre",
+    12: "diciembre",
+}
+
+
+def _periodo_de_sql(sql: str) -> str:
+    """Extrae un periodo YYYYMM de un filtro SQL y lo devuelve en español."""
+    coincidencia = re.search(
+        r"(?:cve_fecha\w*|fecha\w*|periodo|mes)\s*(?:/\s*100)?\s*=\s*"
+        r"(20\d{2})(0[1-9]|1[0-2])\b",
+        sql or "",
+        re.IGNORECASE,
+    )
+    if not coincidencia:
+        return ""
+    anio, mes = coincidencia.group(1), int(coincidencia.group(2))
+    return f"{_MESES[mes]} de {anio}"
+
+
+def _nota_suficiencia_analista(estado: EstadoGrafo) -> str:
+    """Avisa si el SQL no confirma el producto o el periodo pedidos.
+
+    No sustituye al verificador de suficiencia: es una señal conservadora para
+    no presentar como definitivo un resultado que puede incluir varios productos
+    o no estar acotado al periodo solicitado.
+    """
+    slots = (estado.get("interpretacion") or {}).get("slots") or {}
+    entidad = str(slots.get("entidad") or "").strip().lower()
+    codigo = _PRODUCTO_POR_ENTIDAD.get(entidad)
+    periodo = str(slots.get("periodo") or "").strip().lower()
+    if not codigo and periodo != "explicito":
+        return ""
+    resultado = (estado.get("resultados") or {}).get("data_analyst") or {}
+    if resultado.get("estado") != "ok":
+        return ""
+    sql = str(
+        resultado.get("sql")
+        or _sql_de_texto(str(resultado.get("respuesta") or ""))
+        or ""
+    ).upper()
+    if not sql:
+        return ""
+
+    notas: list[str] = []
+    if codigo and not ("CVE_PRODUCTO" in sql and codigo in sql):
+        notas.append(
+            f"No pude confirmar el filtro de {entidad}; el resultado puede "
+            "incluir otros productos."
+        )
+    if periodo == "explicito":
+        etiqueta = _periodo_de_sql(sql)
+        respuesta = str(resultado.get("respuesta") or "").lower()
+        if etiqueta and etiqueta not in respuesta:
+            notas.append(f"Periodo consultado: {etiqueta}.")
+        elif not _sql_acota_periodo(sql):
+            notas.append(
+                "No pude confirmar que el resultado esté acotado al periodo "
+                "solicitado."
+            )
+    return " ".join(notas)
+
+
+def _nodo_redactar(estado: EstadoGrafo) -> dict:
+    """Adapta la respuesta final al tipo de usuario (simple o técnico).
+
+    - Sin perfil: no cambia nada (compatibilidad con llamadas antiguas).
+    - Si la síntesis ya usó el estilo, solo se aplica el filtro determinista
+      de SQL.
+    - Si no, una llamada al modelo reescribe la respuesta. Si la reescritura
+      altera una cifra, se conserva la respuesta verificada.
+    """
+    if (estado.get("aclaracion") or {}).get("necesaria"):
+        return {}
+
+    perfil = perfil_desde_dict(estado.get("perfil_respuesta"))
+    respuesta = str(estado.get("respuesta") or "")
+    if perfil is None or respuesta == RESPUESTA_FUERA_DE_ALCANCE:
+        return {}
+
+    trazas = list(estado.get("trazas") or [])
+    resultados = estado.get("resultados") or {}
+
+    def _con_evidencia(texto: str) -> str:
+        # La redacción puede resumir y perder las fuentes; la evidencia
+        # aceptada se vuelve a anexar de forma determinista.
+        return _agregar_evidencia_normativa(texto, resultados)
+
+    def _con_notas(texto: str) -> str:
+        texto = _con_supuestos(texto, estado)
+        nota = _nota_suficiencia_analista(estado)
+        if nota and nota not in texto:
+            texto = f"{nota}\n\n{texto}"
+        return texto
+
+    consulta = estado.get("consulta") or ""
+    if any(r.get('respuesta_verificada') for r in resultados.values()):
+        return {}
+    if estado.get("redactada") or not debe_redactar(
+        respuesta, trazas, resultados, consulta
+    ):
+        nombres = {str(t.get("name")) for t in trazas}
+        if (
+            perfil.mostrar_sql
+            or nombres & HERRAMIENTAS_LITERALES
+            or nombres & HERRAMIENTAS_EVIDENCIA
+        ):
+            return {}
+        return {
+            "respuesta": _con_notas(
+                _con_evidencia(quitar_sql(respuesta) or respuesta)
+            )
+        }
+
+    nueva = redactar_respuesta(
+        estado.get("consulta") or "",
+        respuesta,
+        perfil,
+        resultados,
+        estado.get("modelo") or modelo_de("orchestrator"),
+    )
+    return {
+        "respuesta": _con_notas(_con_evidencia(nueva or respuesta)),
+        "redactada": True,
+    }
 
 
 _GRAFO = None
@@ -1199,17 +2123,26 @@ _GRAFO = None
 def _construir_grafo():
     grafo = StateGraph(EstadoGrafo)
 
+    grafo.add_node("interpretar", _nodo_interpretar)
     grafo.add_node("planear", _nodo_planear)
     grafo.add_node("despachar", _nodo_despachar)
     grafo.add_node("data_steward", _nodo_data_steward)
     grafo.add_node("data_analyst", _nodo_data_analyst)
     grafo.add_node("normatividad_rag", _nodo_normatividad)
     grafo.add_node("document_intelligence", _nodo_documento)
-    grafo.add_node("compliance", _nodo_compliance)
     grafo.add_node("verificar", _nodo_verificar)
     grafo.add_node("sintetizar", _nodo_sintetizar)
+    grafo.add_node("redactar", _nodo_redactar)
 
-    grafo.add_edge(START, "planear")
+    grafo.add_edge(START, "interpretar")
+    grafo.add_conditional_edges(
+        "interpretar",
+        _decidir_interpretacion,
+        {
+            "planear": "planear",
+            "sintetizar": "sintetizar",
+        },
+    )
     grafo.add_edge("planear", "despachar")
     grafo.add_conditional_edges(
         "despachar",
@@ -1219,7 +2152,6 @@ def _construir_grafo():
             "data_analyst": "data_analyst",
             "normatividad_rag": "normatividad_rag",
             "document_intelligence": "document_intelligence",
-            "compliance": "compliance",
             "verificar": "verificar",
         },
     )
@@ -1229,7 +2161,6 @@ def _construir_grafo():
         "data_analyst",
         "normatividad_rag",
         "document_intelligence",
-        "compliance",
     ):
         grafo.add_edge(especialista, "despachar")
 
@@ -1241,7 +2172,8 @@ def _construir_grafo():
             "sintetizar": "sintetizar",
         },
     )
-    grafo.add_edge("sintetizar", END)
+    grafo.add_edge("sintetizar", "redactar")
+    grafo.add_edge("redactar", END)
     return grafo.compile()
 
 
@@ -1262,23 +2194,37 @@ def ejecutar_grafo(
     imagen_pendiente: str | None = None,
     ultimo_agente: str | None = None,
     perfil: dict | None = None,
+    perfil_respuesta: dict | None = None,
+    document_references: list[str] | None = None,
 ) -> EstadoGrafo:
-    """Ejecuta el grafo para una consulta y devuelve el estado final."""
+    """Ejecuta el grafo para una consulta y devuelve el estado final.
+
+    ``perfil`` controla permisos (qué datos puede ver el usuario) y
+    ``perfil_respuesta`` controla el estilo de redacción (simple o técnico).
+    """
     estado_inicial: EstadoGrafo = {
         "consulta": consulta,
         "historial": list(historial or []),
         "contexto_documentos": contexto_documentos,
+        "document_references": list(document_references or []),
         "contexto_analista": contexto_analista,
         "modelo": modelo or modelo_de("orchestrator"),
         "perfil": dict(perfil or {}),
+        "perfil_respuesta": dict(perfil_respuesta or {}),
         "imagen_pendiente": (
             str(Path(imagen_pendiente).expanduser().resolve())
             if imagen_pendiente
             else None
         ),
         "ultimo_agente": ultimo_agente,
+        "interpretacion": {},
+        "aclaracion": {},
+        "supuestos": [],
         "plan": [],
         "rutas": [],
+        "subpreguntas": [],
+        "plan_origen": "",
+        "plan_razon": "",
         "pendientes": [],
         "siguiente": "",
         "reintento": False,
@@ -1288,6 +2234,7 @@ def ejecutar_grafo(
         "trazas": [],
         "errores": [],
         "respuesta": "",
+        "redactada": False,
     }
     return _get_grafo().invoke(
         estado_inicial,

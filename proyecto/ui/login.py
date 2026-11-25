@@ -1,10 +1,12 @@
 """Presentacion del acceso: usa exclusivamente la autenticacion existente."""
+
 import streamlit as st
 
 from proyecto.security.local_auth import authenticated, login, logout, principal
 
 
 def _clear(message=None):
+    # logout() revoca y limpia solo archivos registrados. No seguir rutas del cliente.
     theme = st.session_state.get('tema', 'oscuro')
     st.session_state.clear()
     st.session_state.tema = theme

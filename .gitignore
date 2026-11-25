@@ -20,20 +20,21 @@ dist/
 proyecto/data/audit_log.json
 proyecto/data/quality_runs.json
 proyecto/data/data_quality_incidents.json
+proyecto/data/data_analyst_metadata_cache.json
+proyecto/data/.data_analyst_metadata_cache.json.*.tmp
 *.db
-tests/datos/
+proyecto/data/document_context.db*
 proyecto/data/memory/
+proyecto/data/uploads/
+
+# Caché de chunking semántico: se regenera al indexar
+data_governance_files/.semantic_chunks_cache.json
 
 AGENTS.md
 
 # Documentación interna: no se publica en el repo
 docs/*
 !docs/reporte_validacion_preguntas.md
-
-# Pruebas manuales: se conservan solo en local
-tests/probar_*.py
-tests/rag_test.py
-tests/modelo-factura-ex.png
 
 # DeepEval: caché y resultados locales
 .deepeval/
@@ -48,6 +49,17 @@ files/Base Cards para TEC - Diccionario de Variables.csv
 proyecto/data/clientes.csv
 proyecto/data/bank_metadata_simple.json
 
+# Benchmark multimodal: documentos, casos y resultados locales
+benchmarks/multimodal/documentos/
+benchmarks/multimodal/casos.locales/
+benchmarks/multimodal/resultados/
+
 # Herramientas
 .ruff_cache/
+.pytest_cache/
 .local_auth/
+
+# Herramientas manuales locales: no forman parte del merge.
+tests/probar_*.py
+tests/rag_test.py
+tests/modelo-factura-ex.png

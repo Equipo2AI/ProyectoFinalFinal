@@ -1,0 +1,54 @@
+# US-06 · Extraer texto o describir una imagen adjunta (P1)
+#
+# Los adjuntos "fixture:" se generan al vuelo (deepeval/fixtures.py) y se
+# copian a la carpeta de cargas de la identidad, igual que en la UI.
+# comprobante.png: Banamex · REF-458812 · 15/06/2026 · $1,234.56 MXN.
+predeterminados:
+  identidad: cliente_1
+  agente_esperado: document_intelligence
+  metricas: [reglas]
+  etiquetas: [documentos, imagen]
+
+casos:
+  - id: us06-ocr-comprobante
+    cubre: [US-06.CA-01, US-10.CA-01]
+    adjunto: fixture:comprobante.png
+    pregunta: Extrae el texto de este comprobante.
+    herramientas_esperadas: [extraer_texto_imagen]
+    debe_contener: ["REF-458812"]
+    debe_contener_alguno: ["1,234.56", "1234.56"]
+    etiquetas: [smoke]
+
+  - id: us06-describir-sin-inferencias
+    cubre: [US-06.CA-02]
+    adjunto: fixture:comprobante.png
+    pregunta: Describe esta imagen.
+    herramientas_esperadas: [describir_imagen]
+    metricas: [reglas, criterio]
+    criterio: >
+      La respuesta describe lo visible (un comprobante de pago de Banamex con
+      referencia, fecha, concepto e importe) y no presenta como hechos datos
+      que no aparecen en la imagen (titular, saldo, número de cuenta).
+
+  - id: us06-formato-no-soportado
+    cubre: [US-06.CA-03]
+    adjunto: fixture:comprobante.tiff
+    pregunta: Extrae el texto de esta imagen.
+    error_esperado: Formato no soportado
+    no_debe_contener: ["Traceback", "ValueError"]
+    max_segundos: 15
+
+  - id: us06-imagen-excede-limite
+    cubre: [US-06.CA-03]
+    adjunto: fixture:imagen_grande.png   # 10.5 MB
+    pregunta: Extrae el texto de esta imagen.
+    error_esperado: 10 MB
+    no_debe_contener: ["Traceback"]
+    max_segundos: 15
+
+  - id: us06-sin-operacion-pide-aclaracion
+    cubre: [US-06.CA-04]
+    adjunto: fixture:comprobante.png
+    pregunta: ""
+    debe_contener: ["¿Quieres que extraiga el texto (OCR) o que describa la imagen?"]
+    max_segundos: 15

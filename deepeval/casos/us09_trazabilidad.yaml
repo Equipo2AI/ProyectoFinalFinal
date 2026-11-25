@@ -1,0 +1,44 @@
+# US-09 · Inspeccionar cómo se generó una respuesta (P0)
+#
+# `traza_completa` exige que cada herramienta de la traza tenga nombre y
+# estado; `sin_pii` revisa respuesta Y salidas de la traza. CA-04 (LangSmith
+# desactivado en turnos autenticados) se prueba en tests/historias/.
+predeterminados:
+  traza_completa: true
+  sin_pii: true
+  metricas: [reglas]
+  etiquetas: [trazabilidad]
+
+casos:
+  - id: us09-traza-con-sql
+    cubre: [US-09.CA-01, US-09.CA-02]
+    identidad: analista
+    pregunta: ¿Cuántas cuentas hay por producto?
+    agente_esperado: data_analyst
+    debe_tener_sql: true
+    etiquetas: [smoke]
+
+  - id: us09-traza-sql-respeta-alcance
+    cubre: [US-09.CA-02]
+    identidad: cliente_1
+    pregunta: ¿Cuáles fueron los movimientos de mi cuenta de cheques en junio de 2026?
+    agente_esperado: data_analyst
+    debe_tener_sql: true
+    metricas: [reglas, criterio]
+    criterio: >
+      La respuesta y su consulta se limitan a la cuenta del cliente
+      autenticado; no aparecen movimientos de otras cuentas.
+
+  - id: us09-traza-con-fuentes
+    cubre: [US-09.CA-01, US-09.CA-03]
+    identidad: cliente_1
+    pregunta: ¿Qué dice el aviso legal sobre el uso del portal?
+    agente_esperado: normatividad_rag
+    debe_tener_fuentes: true
+
+  - id: us09-traza-data-steward
+    cubre: [US-09.CA-01]
+    identidad: data_steward
+    pregunta: Inspecciona la tabla raw_transacciones.
+    agente_esperado: data_steward
+    herramientas_esperadas: [mcp_inspeccionar_dataset]

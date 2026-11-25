@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import shutil
 import sys
-import tempfile
 import uuid
 from pathlib import Path
 
@@ -62,7 +61,7 @@ st.set_page_config(
 
 st.session_state.setdefault('tema', 'oscuro')
 estilos.aplicar(st.session_state.tema)
-from ui.login import render_access
+from ui.login import identidad_actual, render_access
 render_access()
 from proyecto.security.local_auth import authenticated
 from proyecto.security.document_access import invalidate_visible_state
@@ -89,10 +88,7 @@ puede_consultar = True  # render_access ya valido la identidad
 
 
 def _limpiar_archivo() -> None:
-    directorio = st.session_state.get("upload_dir")
-    if directorio:
-        shutil.rmtree(directorio, ignore_errors=True)
-
+    # Los originales registrados se eliminan por clear_session_documents/logout.
     st.session_state.upload_dir = None
 
 
@@ -118,22 +114,13 @@ def _guardar_archivo_chat(archivo) -> tuple[str, str, str] | None:
         st.error(f"El archivo supera el límite de {etiqueta_limite}.")
         return None
 
-    if tipo == "documento":
-        from proyecto.security.document_access import store_upload, binding
-        with authenticated(st.session_state.auth_token):
-            reference = store_upload(archivo.getvalue(), sufijo, archivo.name)
-            st.session_state.document_history_binding = binding()
-        st.session_state.setdefault('history_document_ids', []).append(reference)
-        return reference, archivo.name, tipo
-
-    directorio = st.session_state.get("upload_dir")
-    if not directorio:
-        directorio = tempfile.mkdtemp(prefix="docint_ui_")
-        st.session_state.upload_dir = directorio
-
-    destino = Path(directorio) / f"{tipo}_{uuid.uuid4().hex}{sufijo}"
-    destino.write_bytes(archivo.getvalue())
-    return str(destino), archivo.name, tipo
+    from proyecto.security.document_access import store_upload, binding, authorize_file
+    with authenticated(st.session_state.auth_token):
+        reference = store_upload(archivo.getvalue(), sufijo, archivo.name)
+        _, entry = authorize_file(reference)
+        st.session_state.document_history_binding = binding()
+    st.session_state.setdefault('history_document_ids', []).append(reference)
+    return (reference if tipo == 'documento' else entry['path']), archivo.name, tipo
 
 
 def iniciar(
@@ -224,6 +211,23 @@ def panel_consola(artefacto: dict | None, pensando: bool) -> None:
     if artefacto.get("calculo_documental"):
         with st.expander("Cálculo verificable", expanded=False):
             st.json(artefacto["calculo_documental"])
+
+    aclaracion = artefacto.get("aclaracion") or {}
+    if aclaracion.get("necesaria"):
+        componentes.seccion("Aclaración")
+        st.info(str(aclaracion.get("pregunta") or ""))
+        opciones = [
+            str(opcion)
+            for opcion in aclaracion.get("opciones") or []
+            if str(opcion).strip()
+        ]
+        if opciones:
+            st.caption("Opciones: " + " · ".join(opciones))
+
+    supuestos = artefacto.get("supuestos") or []
+    if supuestos:
+        componentes.seccion("Interpretación")
+        st.caption(" ".join(str(supuesto) for supuesto in supuestos))
 
     error = artefacto.get("error")
     if error:
@@ -352,6 +356,9 @@ with izquierda:
                         else:
                             st.markdown(componentes.texto(mensaje["texto"]))
                         if mensaje["rol"] == "assistant":
+                            grafica = mensaje.get("grafica")
+                            if grafica:
+                                st.image(grafica, width="stretch")
                             st.markdown(
                                 componentes.meta_mensaje(
                                     mensaje.get("pasos"),
@@ -363,7 +370,7 @@ with izquierda:
                     if st.session_state.get("archivo_tipo") == "imagen":
                         estado = "Procesando imagen…"
                     elif st.session_state.get("archivo_tipo") == "documento":
-                        estado = "Convirtiendo documento…"
+                        estado = "Leyendo documento (un PDF escaneado puede tardar)…"
                     else:
                         estado = "Analizando la consulta…"
                     componentes.pensando(estado)
@@ -495,6 +502,7 @@ if st.session_state.pensando:
                 "pasos": pasos,
                 "duracion": artefacto.get("duracion"),
                 "formato": artefacto.get("formato"),
+                "grafica": artefacto.get("grafica"),
             }
         )
     finally:

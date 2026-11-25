@@ -3,7 +3,13 @@
 Expone OCR, descripción de imágenes y conversión de documentos a Markdown
 para que el orquestador principal pueda usar el agente sin cargarlo
 directamente.
+
+La conversion documental exige registro de sesion y precede a la admision por
+embeddings. Preparacion y preguntas repiten las guardas. Imagenes autorizadas
+usan el filtro lexico del equipo, sin otro clasificador generativo.
 """
+
+from pathlib import Path
 
 from fastmcp import FastMCP
 
@@ -12,26 +18,55 @@ from proyecto.agents.document_intelligence_agent import (
     document_to_markdown,
     ocr_image,
 )
+from proyecto.agents.document_relevance import filtrar_documento
 
 mcp = FastMCP("Document Intelligence MCP")
 
 
+def _nombre(ruta: str) -> str:
+    return Path(str(ruta or "")).name
+
+
 @mcp.tool()
 def extraer_texto_imagen(image_path: str) -> str:
-    """Extrae el texto visible de una imagen local (factura, recibo, comprobante)."""
-    return ocr_image.invoke({"image_path": image_path})
+    """Extrae el texto visible de una imagen local (factura, recibo, comprobante).
+
+    Si la imagen no está relacionada con banca o finanzas, devuelve un mensaje
+    que empieza con "Documento fuera de alcance:".
+    """
+    texto = ocr_image.invoke({"image_path": image_path})
+    return filtrar_documento(texto, _nombre(image_path), modo='rules')
 
 
 @mcp.tool()
 def describir_imagen(image_path: str) -> str:
-    """Describe una imagen local y resume sus datos visibles si es un comprobante."""
-    return describe_an_image.invoke({"image_path": image_path})
+    """Describe una imagen local y resume sus datos visibles si es un comprobante.
+
+    Si la imagen no está relacionada con banca o finanzas, devuelve un mensaje
+    que empieza con "Documento fuera de alcance:".
+    """
+    texto = describe_an_image.invoke({"image_path": image_path})
+    return filtrar_documento(texto, _nombre(image_path), modo='rules')
 
 
 @mcp.tool()
-def convertir_documento_markdown(file_path: str) -> str:
-    """Convierte un documento local (PDF, DOCX, XLSX, PPTX) a Markdown."""
-    return document_to_markdown.invoke({"file_path": file_path})
+def convertir_documento_markdown(
+    file_path: str,
+    modo: str = "auto",
+    paginas: str = "",
+) -> str:
+    """Convierte un documento local a Markdown.
+
+    En PDF extrae el texto nativo y aplica OCR local a las páginas escaneadas.
+    Exige registro autorizado. La admision semantica se ejecuta al validar o
+    preparar el contexto, no mediante otro LLM durante la conversion.
+    """
+    argumentos: dict[str, str] = {"file_path": file_path, "modo": modo or "auto"}
+    if (paginas or "").strip():
+        argumentos["paginas"] = paginas
+    texto = document_to_markdown.invoke(argumentos)
+    # La conversion precede a la admision por embeddings; no agregar un LLM.
+    return texto
 
 
 @mcp.tool()

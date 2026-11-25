@@ -2464,3 +2464,214 @@ El nodo opcional se seleccionó con su activación deshabilitada para comprobar
 que queda omitido: **1 omitido**, sin ejecutar su cuerpo ni sus fixtures de
 identidad/SQLite. Esa omisión no valida el recorrido real. `git diff --check`
 pasó; no se modificó lógica de producción ni se ejecutaron modelos.
+
+## Conciliación local de arquitectura y seguridad documental - 2026-11-24
+
+Integración revisable de `05f2fdf` con `c701543`, sin commit de merge ni publicación.
+El respaldo privado verificado queda fuera del repositorio. No se aplicaron ni
+eliminaron los seis stashes; las nueve herramientas manuales siguen excluidas.
+
+Se adopta el grafo nuevo con interpretación/aclaraciones y perfiles de respuesta,
+sin restaurar hubs ni tareas sustituidos. Se mantienen SQL real, delimitación de
+Data Steward, cachés de metadatos y recuperación RAG híbrida con citas verificables.
+Los perfiles no regeneran el inventario de tablas ni los agregados de Data Steward.
+Compliance demostrativo no se restaura por número de agentes: las preguntas
+informativas de KYC/AML conservan ruta normativa con evidencia; no se automatiza
+aprobación KYC/AML, decisión crediticia ni evaluación de expedientes Concierge.
+
+Los seis conflictos se concilian: README conserva la arquitectura nueva y detalla
+la política temporal; el reporte se conserva; el agente incorpora OCR por página
+con autorización; el grafo conserva sus reglas nuevas más alcance y pertinencia;
+servicio e interfaz combinan contratos seguros, nuevas trazas y aclaraciones.
+
+No se activa el contexto SQLite del equipo. Los originales de documentos e
+imágenes se registran por sesión en AppData; el contexto reside solo en RAM,
+ligado al token y permisos. No existe fallback anónimo de acceso a archivos.
+Conversión, lectura PDF directa, rasterización/OCR y visión verifican el registro;
+MCP y respaldo local conservan la identidad. Se revalida antes de publicar y ante
+cambio de sesión/alcance. La limpieza comparte bloqueo reentrante de extracción,
+pero los intentos de eliminación no saltan ese bloqueo aunque sean del mismo
+proceso. Las entradas de imágenes usan el mismo ciclo temporal.
+
+El filtro léxico del equipo se conserva para imágenes sin clasificador LLM
+adicional. En documentos, la conversión precede a la admisión bge-large y no se
+introduce un rechazo híbrido que compita con sus estados/umbrales. El grafo usa
+preparación y preguntas MCP autorizadas para PDFs, sin segunda reformulación de
+la evidencia. Los textos OCR pueden consultarse con advertencia, pero una página
+sin capa de texto sigue impidiendo concluir integridad plena solo por OCR.
+
+### Verificaciones focalizadas de la conciliación
+
+- 6 casos: extracción autorizada, acceso ajeno, servicio MCP/respaldo local,
+  borrado diferido con operación activa y contexto con informe firmado.
+- 10 casos nuevos: denegación anónima aun solicitando bypass, imagen autorizada
+  frente a auditor ajeno, lector PDF y argumentos, autorización antes de rasterizar,
+  orquestador en RAM sin SQLite ni resúmenes persistentes, PDF por el grafo con
+  evidencia literal, cumplimiento informativo y perfiles sin reescritura de datos.
+  Se comprueba además que un seguimiento directo no reutilice mensajes de un
+  PDF eliminado al limpiar la sesión, aunque no hubiera contexto preparado en UI.
+- 6 casos: las cuatro decisiones de admisión en el servicio, rutas documentales
+  frente a fuentes externas y cálculo histórico de débito.
+- 15 casos del equipo: errores de formatos/tamaño/existencia con autorización
+  simulada, recuperación/citas RAG con retriever doble, finalización SQL corregible
+  y contrato MCP de metadatos de Data Steward. Ese bloque tardó 67.09 s; no se
+  reiniciaron servicios ni se repitió por su demora.
+
+Son **37 comprobaciones focalizadas distintas**, no una suite completa ni recertificación
+de las 30 preguntas. No se ejecutaron navegador, Ollama, modelos reales ni
+consultas a SQLite de producción. Las llamadas MCP de estos casos son dobles o
+funciones de herramientas en proceso, no ejecuciones STDIO reales. El parser de
+los archivos de conciliación y `git diff --check` se revisan antes de entregar.
+Dos casos de orquestador temporal y cumplimiento se reejecutaron tras ajustar
+las referencias del historial y el vocabulario normativo: ambos pasaron. Son
+40 ejecuciones en bloques, no 40 casos distintos. Se revalido tambien el caso de
+imagen autorizada/auditor ajeno tras proteger el registro de imagenes del orquestador. La sintaxis de los 85 archivos
+Python versionados presentes se comprobó sin importarlos ni ejecutar su lógica.
+
+Pendientes: ejecución real del flujo integrado con modelos/STDIO, OCR sobre PDF
+escaneados y comprobación visual. El YAML del equipo añade un modelo de OCR que
+no se instaló ni probó. Los arranques repetidos y la reextracción/admisión pueden
+ser costosos con OCR; no se optimizan mediante un caché privado persistente.
+Permanece el límite de reconocimiento de tipos, la ausencia de verificación de
+vigencia jurídica y de un expediente Concierge completo. Las pruebas de historias
+que dependan de SQLite o de persistencia documental requieren revisar su contrato
+con la política temporal aprobada; no se presentan aquí como aprobadas.
+
+### Inventario preparado para revisar el merge (sin commit)
+
+Comparacion del indice contra `05f2fdf`; incluye cambios entrantes y adaptaciones.
+Los nueve archivos manuales estan excluidos y conservados en disco.
+
+**Archivos que se anadirian (52)**
+
+- `data_governance_files/Ahorro e Inversiones Banamex.pdf`
+- `data_governance_files/Banamex procesos.pdf`
+- `data_governance_files/afore.pdf`
+- `data_governance_files/crédito hipotecario.pdf`
+- `deepeval/_subproceso/registro_llm.py`
+- `deepeval/_subproceso/sitecustomize.py`
+- `deepeval/casos/us01_acceso_identidad.yaml`
+- `deepeval/casos/us02_data_steward.yaml`
+- `deepeval/casos/us03_analitica_sql.yaml`
+- `deepeval/casos/us04_graficas.yaml`
+- `deepeval/casos/us05_normatividad.yaml`
+- `deepeval/casos/us06_imagenes.yaml`
+- `deepeval/casos/us07_documentos.yaml`
+- `deepeval/casos/us08_seguimiento.yaml`
+- `deepeval/casos/us09_trazabilidad.yaml`
+- `deepeval/casos/us10_enrutamiento.yaml`
+- `deepeval/casos/us11_alcance_prototipo.yaml`
+- `deepeval/fixtures.py`
+- `deepeval/fixtures_generados/.gitignore`
+- `deepeval/historias.yaml`
+- `deepeval/identidades.py`
+- `deepeval/identidades.yaml`
+- `deepeval/rendimiento.py`
+- `kei_tests_historias_rendimiento.zip`
+- `proyecto/agents/document_relevance.py`
+- `proyecto/agents/pdf_reader.py`
+- `proyecto/mcp_servers/metadata_cache.py`
+- `proyecto/memory/document_context.py`
+- `proyecto/orchestration/comun.py`
+- `proyecto/orchestration/interpretacion.py`
+- `proyecto/orchestration/perfil_respuesta.py`
+- `proyecto/security/file_access.py`
+- `proyecto/ui/tema_claro.py`
+- `tests/historias/conftest.py`
+- `tests/historias/test_us01_identidades.py`
+- `tests/historias/test_us02_data_steward.py`
+- `tests/historias/test_us03_sql_solo_lectura.py`
+- `tests/historias/test_us04_graficas.py`
+- `tests/historias/test_us05_normatividad.py`
+- `tests/historias/test_us06_us07_archivos.py`
+- `tests/historias/test_us08_contexto_documental.py`
+- `tests/historias/test_us09_trazabilidad.py`
+- `tests/historias/test_us10_us11.py`
+- `tests/regresion/test_data_analyst_p1.py`
+- `tests/regresion/test_data_analyst_p2.py`
+- `tests/regresion/test_data_steward_alcance.py`
+- `tests/regresion/test_document_intelligence_errores.py`
+- `tests/regresion/test_evidencia_orquestador.py`
+- `tests/regresion/test_planificador_banamex.py`
+- `tests/regresion/test_rag_hibrido.py`
+- `tests/test_document_relevance.py`
+- `tests/test_perfil_respuesta.py`
+
+**Archivos que se modificarian (43)**
+
+- `.env.example`
+- `.gitignore`
+- `README.md`
+- `data_governance_files/upload_files.py`
+- `deepeval/README.md`
+- `deepeval/agente.py`
+- `deepeval/cargador.py`
+- `deepeval/conftest.py`
+- `deepeval/deepeval_commands.txt`
+- `deepeval/metricas.py`
+- `deepeval/reporte.py`
+- `deepeval/test_agente.py`
+- `docs/reporte_validacion_preguntas.md`
+- `proyecto/agents/__init__.py`
+- `proyecto/agents/banking_queries.py`
+- `proyecto/agents/data_steward_agent.py`
+- `proyecto/agents/database.py`
+- `proyecto/agents/document_intelligence_agent.py`
+- `proyecto/agents/document_questions.py`
+- `proyecto/agents/normatividad_rag_agent.py`
+- `proyecto/config/models.py`
+- `proyecto/config/models.yaml`
+- `proyecto/config/preparar_modelos.py`
+- `proyecto/guardrails.py`
+- `proyecto/mcp_servers/data_analyst_backend.py`
+- `proyecto/mcp_servers/document_intelligence_server.py`
+- `proyecto/mcp_servers/sql_guard.py`
+- `proyecto/memory/__init__.py`
+- `proyecto/memory/long_term.py`
+- `proyecto/metrics.py`
+- `proyecto/orchestration/grafo.py`
+- `proyecto/orchestration/orquestador.py`
+- `proyecto/security/document_access.py`
+- `proyecto/security/local_auth.py`
+- `proyecto/servicio.py`
+- `proyecto/ui/app.py`
+- `proyecto/ui/componentes.py`
+- `proyecto/ui/estilos.py`
+- `proyecto/ui/login.py`
+- `pyproject.toml`
+- `tests/test_document_access.py`
+- `tests/test_document_similarity.py`
+- `uv.lock`
+
+**Archivos que se eliminarian (30)**
+
+- `deepeval/casos/data_analyst.yaml`
+- `deepeval/casos/data_steward.yaml`
+- `deepeval/casos/general.yaml`
+- `deepeval/casos/normatividad.yaml`
+- `deepeval/casos/superusuario.yaml`
+- `deepeval/casos/usuario.yaml`
+- `files/consulta.png`
+- `proyecto/agents/compliance_agent.py`
+- `proyecto/mcp_servers/compliance_server.py`
+- `proyecto/orchestration/hubs.py`
+- `proyecto/orchestration/tareas.py`
+- `proyecto/ui/estilos_claro.py`
+- `tests/test_charts.py`
+- `tests/test_data_analyst_grafica.py`
+- `tests/test_data_analyst_rls.py`
+- `tests/test_data_steward_calidad.py`
+- `tests/test_grafo_grafica.py`
+- `tests/test_grafo_hub_data_analyst.py`
+- `tests/test_guardrails.py`
+- `tests/test_hub_data_analyst.py`
+- `tests/test_hubs.py`
+- `tests/test_local_authorization.py`
+- `tests/test_metricas.py`
+- `tests/test_normatividad_evidencia.py`
+- `tests/test_ollama_runtime.py`
+- `tests/test_periods.py`
+- `tests/test_servicio_grafica.py`
+- `tests/test_sql_guard.py`
+- `tests/test_tareas.py`
+- `tests/test_ui_chat_input.py`

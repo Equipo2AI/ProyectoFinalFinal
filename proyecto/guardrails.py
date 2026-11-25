@@ -44,11 +44,20 @@ def limpiar_base64(texto: str) -> str:
     return _RE_BASE64_LARGO.sub("[imagen omitida]", limpio)
 
 
-def redactar_pii(texto: str) -> tuple[str, list[str]]:
-    """Reemplaza PII evidente y devuelve los tipos encontrados."""
+def redactar_pii(
+    texto: str, permitidos: set[str] | None = None
+) -> tuple[str, list[str]]:
+    """Reemplaza PII evidente y devuelve los tipos encontrados.
+
+    ``permitidos`` solo debe venir de permisos de sesión ya autorizados
+    (por ejemplo ``pii:rfc``); por defecto se redacta todo.
+    """
     resultado = str(texto or "")
     encontrados: list[str] = []
+    autorizados = {str(tipo).lower() for tipo in (permitidos or set())}
     for tipo, patron in PATRONES_PII.items():
+        if tipo in autorizados:
+            continue
         if patron.search(resultado):
             resultado = patron.sub("[DATO PROTEGIDO]", resultado)
             encontrados.append(tipo)

@@ -1,11 +1,21 @@
-# whole suite
+# run some test cases not all, quicker
+uv run deepeval test run deepeval/test_agente.py -m smoke
+
+
+# whole suite (quality + performance summary)
 uv run deepeval test run deepeval/test_agente.py
 
-# only cases tagged "smoke" (or normatividad, data_analyst, seguridad…)
-uv run deepeval test run deepeval/test_agente.py -m usuario
+# one user story (us01 ... us11) or a group (smoke, seguridad, documentos...)
+uv run deepeval test run deepeval/test_agente.py -m us03
 
 # one case by id
-uv run pytest deepeval -k norm-consentimiento
+uv run pytest deepeval -k us05-modo-local-sin-pinecone
 
 # deterministic rules only, no LLM judge (fast)
 DEEPEVAL_SOLO_REGLAS=1 uv run deepeval test run deepeval/test_agente.py
+
+# deterministic story tests, no Ollama needed
+uv run pytest tests/historias
+
+# HTML report (quality + performance + device)
+uv run python deepeval/reporte.py --abrir

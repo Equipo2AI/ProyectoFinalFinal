@@ -1,0 +1,62 @@
+# US-08 · Hacer preguntas de seguimiento sobre el archivo (P1)
+#
+# Los turnos previos adjuntan el estado de cuenta sintético (ver us07) y la
+# pregunta final hace el seguimiento en la misma conversación.
+predeterminados:
+  identidad: cliente_1
+  metricas: [reglas, criterio]
+  etiquetas: [documentos, memoria]
+
+casos:
+  - id: us08-seguimiento-usa-el-archivo
+    cubre: [US-08.CA-01]
+    turnos_previos:
+      - {adjunto: "fixture:estado_cuenta.docx", pregunta: Resume este estado de cuenta.}
+    pregunta: ¿Y cuál fue el total de depósitos del periodo?
+    debe_contener_alguno: ["3,850", "3850"]
+    criterio: >
+      La respuesta toma el total de depósitos ($3,850.00) del estado de cuenta
+      adjuntado antes, sin pedir que se vuelva a subir.
+    etiquetas: [smoke]
+
+  - id: us08-pregunta-ambigua-pide-aclaracion
+    cubre: [US-08.CA-02, US-10.CA-02]
+    turnos_previos:
+      - {adjunto: "fixture:estado_cuenta.docx", pregunta: Resume este estado de cuenta.}
+    pregunta: ¿Y ese monto está bien?
+    criterio: >
+      El documento tiene varios montos y la pregunta no dice cuál. La respuesta
+      pide aclarar a qué monto se refiere en lugar de elegir uno al azar.
+    xfail: >
+      El grafo no tiene nodo de aclaración (README, "Límites conocidos"): una
+      pregunta incompleta no vuelve al usuario.
+
+  - id: us08-limpiar-descarta-contexto
+    cubre: [US-08.CA-03]
+    turnos_previos:
+      - {adjunto: "fixture:estado_cuenta.docx", pregunta: Resume este estado de cuenta.}
+      - {limpiar: true}
+    pregunta: ¿Cuál es el saldo final del estado de cuenta que te envié?
+    no_debe_contener: ["10,329.53", "10329.53"]
+    criterio: >
+      La conversación se limpió. La respuesta indica que no tiene un documento
+      disponible en esta conversación y no da el saldo del archivo anterior.
+    xfail: >
+      Orquestador.reiniciar() vacía _documentos, pero _contexto_documentos()
+      vuelve a leer DocumentContextStore (SQLite por usuario, TTL de 7 días),
+      que sigue devolviendo el último documento. Ver
+      tests/historias/test_us08_contexto_documental.py.
+
+  - id: us08-otra-identidad-no-ve-el-archivo
+    cubre: [US-08.CA-04, US-01.CA-02]
+    turnos_previos:
+      - identidad: cliente_1
+        adjunto: "fixture:estado_cuenta.docx"
+        pregunta: Resume este estado de cuenta.
+    identidad: cliente_2
+    pregunta: ¿Cuál es el saldo final del estado de cuenta que subí?
+    no_debe_contener: ["10,329.53", "10329.53", "3,850", "3,747.73"]
+    criterio: >
+      Quien pregunta es otra identidad. La respuesta no usa el documento de la
+      sesión anterior y dice que no tiene ese archivo disponible.
+    etiquetas: [seguridad]

@@ -60,6 +60,12 @@ def extract_pages(path: Path, text: str):
                 incomplete |= not bool(extracted)
                 if extracted:
                     pages.append({"source": f"Página {number}", "text": extracted})
+                else:
+                    # Reutilizar OCR autorizado del lector por paginas. No afirmar
+                    # integridad completa a partir de una transcripcion generativa.
+                    match = re.search(r'(?ms)^## Página ' + str(number) + r'\n(.*?)(?=^## Página \d+\n|\Z)', text)
+                    if match and 'Fuente: OCR local' in match[1] and '[No se pudo' not in match[1]:
+                        pages.append({'source': f'Página {number} (OCR no verificado)', 'text': match[1].strip()})
     else:
         # MarkItDown conserva encabezados, pero no siempre paginas originales.
         sections = [p for p in re.split(r"(?m)(?=^#{1,6} )", text) if p.strip()]

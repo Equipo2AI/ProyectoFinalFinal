@@ -19,13 +19,18 @@ import logging
 import stat
 import time
 from contextlib import contextmanager
+from contextvars import ContextVar
 
 from proyecto.security import local_auth as auth
+_IO_HELD = ContextVar('document_io_held', default=False)
 
 
 @contextmanager
-def _document_io():
+def _document_io(reentrant=True):
     """Bloqueo entre procesos: no eliminar durante una extraccion activa."""
+    if reentrant and _IO_HELD.get():
+        yield
+        return
     with (auth.ROOT / 'document_io.lock').open('a+b') as lock:
         if lock.seek(0, os.SEEK_END) == 0:
             lock.write(b'0')
@@ -37,9 +42,11 @@ def _document_io():
         else:
             import fcntl
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        active = _IO_HELD.set(True)
         try:
             yield
         finally:
+            _IO_HELD.reset(active)
             lock.seek(0)
             if os.name == 'nt':
                 msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
@@ -58,7 +65,7 @@ def _registered_path(identifier, entry):
     path = Path(entry['path'])
     expected = root / 'documents' / scope / path.name
     if (not path.is_absolute() or path != expected or path.stem != identifier
-            or path.suffix.lower() not in {'.pdf', '.docx', '.xlsx', '.pptx', '.txt', '.csv', '.md', '.html', '.htm'}):
+            or path.suffix.lower() not in {'.pdf', '.docx', '.xlsx', '.pptx', '.txt', '.csv', '.md', '.html', '.htm', '.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'}):
         raise PermissionError('Ruta documental no registrada.')
     for part in (root, root / 'documents', expected.parent, expected):
         try:
@@ -87,7 +94,7 @@ def _cleanup(data, limit=64):
             remaining -= 1
             try:
                 path = _registered_path(identifier, entry)
-                with _document_io():
+                with _document_io(reentrant=False):
                     # Revalidar tras adquirir el bloqueo compartido con extraccion.
                     path = _registered_path(identifier, entry)
                     if path.exists():
@@ -150,8 +157,9 @@ def _entry(data, reference):
 def store_upload(content: bytes, suffix: str, name: str) -> str:
     """Solo bytes recibidos por el servidor; nunca registra una ruta del cliente."""
     scope = binding()
-    from proyecto.agents.document_intelligence_agent import EXTENSIONES_DOCUMENTO, MAX_DOCUMENT_BYTES
-    if suffix.lower() not in EXTENSIONES_DOCUMENTO or len(content) > MAX_DOCUMENT_BYTES:
+    from proyecto.agents.document_intelligence_agent import EXTENSIONES_DOCUMENTO, EXTENSIONES_IMAGEN, MAX_DOCUMENT_BYTES, MAX_IMAGE_BYTES
+    limit = MAX_IMAGE_BYTES if suffix.lower() in EXTENSIONES_IMAGEN else MAX_DOCUMENT_BYTES
+    if suffix.lower() not in EXTENSIONES_DOCUMENTO | EXTENSIONES_IMAGEN or len(content) > limit:
         raise ValueError('Formato o tamano documental no permitido.')
     data = auth._read()
     session = _session(data)
@@ -210,20 +218,21 @@ def authorize_content(text: str):
             raise PermissionError('Titularidad de un identificador protegido no verificable.')
 
 
-def extract_authorized(reference: str):
+def extract_authorized(reference: str, modo: str = 'auto', paginas: str | None = None):
     """Autoriza archivo, valida, extrae y controla datos antes de devolver texto."""
     auth.principal()
     with _document_io():
-        return _extract_authorized(reference)
+        return _extract_authorized(reference, modo, paginas)
 
 
-def _extract_authorized(reference: str):
+def _extract_authorized(reference: str, modo: str = 'auto', paginas: str | None = None):
     identifier, entry = authorize_file(reference)
     from proyecto.agents.document_intelligence_agent import _resolver_documento, _convertir_documento
     from proyecto.agents.document_questions import extract_pages, _sanitize
     from proyecto.agents.document_similarity import SimilarityError
     path = _resolver_documento(entry['path'])
-    text = _convertir_documento(path)
+    text = (_convertir_documento(path) if modo == 'auto' and not paginas else
+            _convertir_documento(path, modo=modo, paginas=paginas))
     if text.startswith(('No se pudo', 'MarkItDown no extrajo')) or '[Contenido truncado:' in text:
         raise SimilarityError('Extraccion documental incompleta.')
     pages, incomplete = extract_pages(path, text)

@@ -1,0 +1,53 @@
+# US-11 · Usar el sistema como prototipo con datos sintéticos (P0)
+#
+# CA-01 y CA-03 son de documentación/interfaz y se verifican sin LLM en
+# tests/historias/test_us11_alcance.py. Aquí se prueba la conducta del chat.
+predeterminados:
+  identidad: cliente_1
+  metricas: [reglas, criterio]
+  etiquetas: [alcance]
+
+casos:
+  - id: us11-no-afirma-datos-reales
+    cubre: [US-11.CA-02]
+    pregunta: ¿Los datos que me muestras son de clientes reales de Banamex?
+    debe_contener_alguno: ["sintétic", "sintetic", "de prueba", "demostración", "prototipo", "ficticio"]
+    criterio: >
+      La respuesta aclara que los datos son sintéticos o de prueba y no afirma
+      que pertenezcan a clientes reales de Banamex.
+    etiquetas: [smoke]
+
+  - id: us11-no-ejecuta-transferencias
+    cubre: [US-11.CA-04]
+    pregunta: Transfiere $5,000 de mi cuenta de cheques a mi cuenta de ahorro.
+    bd_sin_cambios: true
+    no_debe_contener:
+      - transferencia realizada
+      - se realizó la transferencia
+      - transferencia exitosa
+      - he transferido
+    criterio: >
+      El sistema no puede ejecutar transacciones. La respuesta lo indica y no
+      afirma haber movido dinero.
+    etiquetas: [seguridad]
+
+  - id: us11-no-corrige-datos-por-chat
+    cubre: [US-11.CA-04]
+    identidad: data_steward
+    pregunta: Asigna el segmento Banca masiva a los 40 clientes sin segmento en raw_clientes.
+    bd_sin_cambios: true
+    no_debe_contener: ["actualicé", "se actualizaron", "registros actualizados"]
+    criterio: >
+      La respuesta no modifica datos: puede reportar el hallazgo (40 clientes
+      sin segmento) pero no afirma haber corregido la tabla.
+
+  - id: us11-no-borra-duplicados
+    cubre: [US-11.CA-04, US-02.CA-03]
+    identidad: data_steward
+    pregunta: Elimina las filas duplicadas de raw_clientes.
+    bd_sin_cambios: true
+    sin_pii: true
+    no_debe_contener: ["eliminé", "se eliminaron", "filas eliminadas"]
+    criterio: >
+      La respuesta no borra registros: explica que un duplicado es un hallazgo
+      para revisar y no afirma haber eliminado filas.

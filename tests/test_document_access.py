@@ -71,6 +71,144 @@ def registered():
     return access.store_upload(TEXT.encode(), '.pdf', 'estado.pdf')
 
 
+def test_merge_archivo_sin_identidad_no_admite_bypass(secured, tmp_path):
+    from proyecto.security.file_access import authorize_file_access
+    outsider = tmp_path / 'externo.pdf'
+    outsider.write_bytes(b'datos sinteticos')
+    with pytest.raises(PermissionError):
+        authorize_file_access(outsider, allow_unauthenticated=True)
+
+
+def test_merge_imagen_registrada_y_auditor_ajeno(secured, monkeypatch):
+    _, as_user, *_ = secured
+    vision = Mock(return_value='Comprobante bancario sintetico\nTotal: 20.00')
+    monkeypatch.setattr(agent, '_vision', vision)
+    with as_user():
+        reference = access.store_upload(b'imagen simulada', '.png', 'comprobante.png')
+        assert '20.00' in server.extraer_texto_imagen(reference)
+        import importlib
+        orchestration = importlib.import_module('proyecto.orchestration.orquestador')
+        memory = Mock()
+        orq = orchestration.Orquestador(memory=memory)
+        orq.registrar_imagen(reference, 'Extraer texto')
+        assert reference in orq._document_references
+        memory.update.assert_not_called()
+    data = auth._read()
+    data['users']['usuario_b'].update(role='auditor', permissions=['audit'])
+    auth._write(data)
+    with as_user('usuario_b'), pytest.raises(PermissionError):
+        server.extraer_texto_imagen(reference)
+    with as_user('usuario_b'), pytest.raises(PermissionError):
+        orq.marcar_imagen_pendiente(reference)
+    assert vision.call_count == 1
+
+
+def test_merge_pdf_directo_exige_registro_y_conserva_modo_paginas(secured, monkeypatch):
+    from proyecto.agents import pdf_reader
+    _, as_user, *_ = secured
+    convert = Mock(return_value='Contenido PDF sintetico autorizado')
+    monkeypatch.setattr(pdf_reader, '_pdf_to_markdown', convert)
+    with pytest.raises(PermissionError):
+        pdf_reader.pdf_to_markdown('ruta-no-registrada.pdf')
+    convert.assert_not_called()
+    with as_user():
+        reference = registered()
+        assert 'autorizado' in pdf_reader.pdf_to_markdown(reference, modo='texto', paginas='1-2')
+        assert convert.call_args.args[1:3] == ('texto', '1-2')
+
+
+def test_merge_ocr_no_rasteriza_sin_fuente_autorizada(secured, tmp_path):
+    from proyecto.agents import pdf_reader
+    page = Mock()
+    with pytest.raises(PermissionError):
+        pdf_reader._ocr_pagina(page, 1, 'modelo-simulado', 'texto', tmp_path)
+    page.render.assert_not_called()
+
+
+def test_merge_orquestador_temporal_sin_sqlite_ni_memoria_persistente(secured, monkeypatch):
+    _, as_user, *_ = secured
+    import importlib
+    orchestration = importlib.import_module('proyecto.orchestration.orquestador')
+    from proyecto.orchestration import grafo
+    persistent = Mock(side_effect=AssertionError('No abrir historial SQLite'))
+    monkeypatch.setattr(orchestration, 'DocumentContextStore', persistent)
+    memory = Mock()
+    orq = orchestration.Orquestador(memory=memory)
+    execute = Mock(return_value={'respuesta': 'Evidencia simulada autorizada', 'plan': ['directo'], 'trazas': []})
+    monkeypatch.setattr(grafo, 'ejecutar_grafo', execute)
+    with as_user():
+        reference = registered()
+        _, entry = access.authorize_file(reference)
+        orq.registrar_documento(entry['path'], 'markdown', TEXT, 'estado.pdf')
+        assert '9100.00' in orq._contexto_documentos('saldo')
+        assert 'autorizada' in orq.procesar('¿Qué dice el documento sobre el saldo?')
+        assert execute.call_args.kwargs['document_references'] == [reference]
+    persistent.assert_not_called()
+    memory.prepare.assert_not_called()
+    memory.update.assert_not_called()
+    with as_user('usuario_b'), pytest.raises(PermissionError):
+        orq.procesar('¿Qué dice el documento sobre el saldo?')
+    assert not orq._documentos and not orq._mensajes
+
+
+def test_merge_grafo_pdf_con_admision_y_sin_segunda_generacion(secured, monkeypatch):
+    _, as_user, *_ = secured
+    from proyecto.orchestration import grafo
+    calls = []
+    def mcp(module, name, args):
+        calls.append(name)
+        return json.dumps(getattr(server, name)(**args))
+    monkeypatch.setattr(grafo, '_llamar_mcp', mcp)
+    synthesis = Mock(side_effect=AssertionError('No regenerar evidencia documental'))
+    monkeypatch.setattr(grafo, '_respuesta_documento', synthesis)
+    with as_user():
+        reference = registered()
+        _, entry = access.authorize_file(reference)
+        state = {'consulta': f"¿Cuál es el saldo final del documento '{entry['path']}'?"}
+        result = grafo._nodo_documento(state)
+        final = grafo._nodo_sintetizar({**state, **result, 'plan': ['document_intelligence']})
+        assert '9100.00' in final['respuesta'] and final['redactada']
+    assert calls == ['preparar_documento_consultable', 'responder_pregunta_documental']
+    synthesis.assert_not_called()
+
+
+def test_merge_cumplimiento_informativo_usa_rag_y_no_aprueba_personas():
+    from proyecto.orchestration import grafo
+    assert grafo.planear_rutas('¿Qué establece la normativa KYC?') == ['normatividad_rag']
+    assert grafo._es_consulta_normativa('¿Qué es KYC?')
+    assert grafo.fuera_de_alcance('Aprueba el cumplimiento AML del cliente 1')
+
+
+def test_merge_seguimiento_directo_no_reutiliza_pdf_eliminado(secured, monkeypatch):
+    _, as_user, *_ = secured
+    import importlib
+    orchestration = importlib.import_module('proyecto.orchestration.orquestador')
+    from proyecto.orchestration import grafo
+    execute = Mock(return_value={'respuesta': 'Dato autorizado: 9100.00', 'plan': ['directo'], 'trazas': []})
+    monkeypatch.setattr(grafo, 'ejecutar_grafo', execute)
+    orq = orchestration.Orquestador(memory=Mock())
+    with as_user():
+        reference = registered()
+        _, entry = access.authorize_file(reference)
+        orq.procesar(f"¿Cuál es el saldo del documento '{entry['path']}'?")
+        assert reference in orq._document_references
+        access.clear_session_documents()
+        with pytest.raises(PermissionError):
+            orq.procesar('¿Y el saldo?')
+        assert not orq._mensajes and not orq._document_references
+    assert execute.call_count == 1
+
+
+@pytest.mark.parametrize('agent_name,question', [('data_steward', 'Calidad de datos'), ('data_analyst', 'Lista de tablas disponibles')])
+def test_merge_perfil_no_reescribe_resultados_verificados(agent_name, question):
+    from proyecto.orchestration.perfil_respuesta import detectar_perfil, redactar_respuesta
+    llm = Mock(side_effect=AssertionError('No reformular datos verificados'))
+    answer = 'Resultado verificado con 18 tablas; dim_txn.'
+    assert redactar_respuesta(question, answer, detectar_perfil('normal', question),
+                             {agent_name: {'respuesta': answer}}, 'modelo-simulado', llamar_modelo=llm) == answer
+    llm.assert_not_called()
+
+
 def test_integridad_mcp_autoriza_admite_y_firma_informe(secured, monkeypatch):
     _, as_user, _, embeddings, evaluation, _ = secured
     original = dq.validate_integrity

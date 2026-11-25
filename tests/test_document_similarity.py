@@ -84,6 +84,7 @@ def test_puerta_antes_del_orquestador(tmp_path, monkeypatch, decision):
         assert value == context and value['owner'] == 'owner-controlado'
     context_guard = Mock(side_effect=authorize_context)
     monkeypatch.setattr(access, 'authorize_context', context_guard)
+    monkeypatch.setattr(servicio, 'authorize_file_access', lambda *args, **kwargs: file)
     monkeypatch.setattr(servicio, "_identidad_documental", lambda *a: ("owner-controlado", "token-de-prueba"))
     monkeypatch.setattr(servicio, "_llamar_mcp_document_intelligence", lambda *a, **kw: text)
     def call(module, name, args):

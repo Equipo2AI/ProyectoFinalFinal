@@ -10,8 +10,11 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 import yaml
+from dotenv import load_dotenv
 
-from proyecto.config.models import RUTA_MODELOS
+from proyecto.config.models import RUTA_MODELOS, modelo_pdf
+
+load_dotenv()
 
 
 def modelos_requeridos() -> list[str]:
@@ -28,6 +31,8 @@ def modelos_requeridos() -> list[str]:
         if not isinstance(modelo, str) or not modelo.strip():
             raise ValueError(f"Falta el modelo de {agente} en models.yaml.")
         modelos.add(modelo.strip())
+    # El OCR de PDF usa un modelo independiente del agente de imágenes.
+    modelos.add(modelo_pdf())
     if not modelos:
         raise ValueError("No hay modelos Ollama configurados en models.yaml.")
     return sorted(modelos)

@@ -1,6 +1,6 @@
 """Validación determinista de SQL para el Data Analyst.
 
-La generación de SQL sigue siendo responsabilidad del hub/LLM. Este módulo no
+La generación de SQL sigue siendo responsabilidad del orquestador/LLM. Este módulo no
 genera consultas: revisa una consulta candidata contra el catálogo real, las
 reglas de solo lectura y el alcance del perfil autenticado.
 
@@ -24,7 +24,7 @@ except ImportError:  # pragma: no cover - sqlglot es dependencia obligatoria
 
 
 class ResultadoValidacionSQL(BaseModel):
-    """Resultado estable para que el hub y la tool puedan iterar."""
+    """Resultado estable para que el orquestador y la tool puedan iterar."""
 
     ok: bool
     sql: str
@@ -418,7 +418,7 @@ def validar_sql(
     dialecto = _dialecto(engine)
     try:
         expresiones = sqlglot.parse(consulta, read=dialecto)
-    except Exception as error:  # noqa: BLE001 - se devuelve al hub para corregir
+    except Exception as error:  # noqa: BLE001 - se devuelve al orquestador para corregir
         resultado.errores.append(f"No se pudo interpretar el SQL: {error}")
         return resultado
 
@@ -518,7 +518,23 @@ def validar_sql(
     if rol == "usuario" and cliente_id is not None:
         errores_rls = _validar_rls(expr, engine, catalogo, cliente_id)
         if errores_rls:
-            resultado.tipo_error = "autorizacion_denegada"
+            # Un filtro faltante es corregible: el modelo puede agregar
+            # num_cte y reintentar. Solo una cuenta/cliente ajeno es una
+            # denegación real que debe terminar el turno.
+            denegacion_real = any(
+                error.startswith(
+                    (
+                        "El filtro num_cte no corresponde",
+                        "La cuenta consultada no pertenece",
+                    )
+                )
+                for error in errores_rls
+            )
+            resultado.tipo_error = (
+                "autorizacion_denegada"
+                if denegacion_real
+                else "alcance_corregible"
+            )
         resultado.errores.extend(errores_rls)
 
     resultado.requiere_limite = any(
