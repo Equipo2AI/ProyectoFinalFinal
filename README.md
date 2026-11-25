@@ -849,3 +849,155 @@ Pruebas exclusivamente nuevas, sintéticas y con funciones simuladas:
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/test_document_questions.py -k pertinencia -q
 ```
+
+#### Concierge: evaluación de requisitos MiCuenta desde el chat
+
+El chat normal de Streamlit acepta hasta ocho PDF por conversación. El usuario
+adjunta los documentos y pregunta «¿Estos documentos cumplen los requisitos
+para abrir MiCuenta Banamex?», sin seleccionar agente, modo ni pantalla especial.
+El orquestador distingue requisitos generales (ruta normativa), evaluación del
+expediente (`evaluar_expediente_micuenta`) y consulta individual de un PDF.
+Los seguimientos reutilizan referencias autorizadas; con varios archivos no se
+elige uno arbitrariamente para una consulta individual. Sin contexto suficiente
+se solicita aclaración o se consultan requisitos.
+
+`proyecto/config/micuenta_requirements.json` es una matriz fija del servidor,
+versionada `2026-11-24.1`, para MiCuenta Banamex en sucursal: persona física
+mexicana **sin actividad empresarial**. Registra producto, canal, perfil,
+condiciones y fuente oficial consultada el 24 de noviembre de 2026:
+https://www.banamex.com/personas/cuentas/micuenta-debito.
+
+La herramienta MCP `evaluar_expediente_micuenta(documentos: list[str])` del
+servidor Document Intelligence recibe hasta ocho referencias ya registradas de
+la misma sesión (límite técnico, no requisito bancario). Autoriza todo el lote
+antes de extraer cualquier archivo y revalida antes de devolver el resultado.
+No acepta rutas libres, metadatos, políticas, perfiles ni fecha de evaluación
+aportados por el cliente. No guarda un expediente ni un historial persistente.
+
+Las reglas comprueban INE y fecha completa de vencimiento declarada; recibo de
+luz, telefonía fija, predial o televisión de paga con campo domiciliario presente
+y emisión no futura de hasta tres meses calendario; constancia CURP solo si se
+puede determinar que la INE no contiene ese dato. Si no se puede determinar esa
+condición, se devuelve `NO_VERIFICABLE`. El RFC conserva su condición oficial de
+actividad empresarial, pero no aplica al perfil habilitado y no se implementa
+su validación fiscal en esta etapa.
+
+La extracción reutiliza autorización y control de datos de Document Intelligence,
+en modo `texto`, sin inferencias OCR. El reconocimiento requiere encabezados y
+campos etiquetados con `:`; fechas `AAAA-MM-DD` o `DD/MM/AAAA`. No se inventa una
+fecha a partir de la vigencia anual de una INE. Ausencia de un campo en extracción
+no demuestra ausencia en el original: la condición CURP solo se determina con
+campo legible presente o ausencia expresamente indicada. Estas son reglas sobre
+texto declarado, no validación ante INE/RENAPO ni cotejo de titularidad.
+
+Solo salen tipos, presencia de campos, fechas mínimas y ubicaciones numéricas.
+No se devuelven valores de CURP, nombres, domicilios ni nombres de archivo.
+Los estados son `PRESENTE`, `VALIDO_SEGUN_REGLAS`, `FALTANTE` y `NO_VERIFICABLE`.
+Presencia y cumplimiento se separan: INE vencida = `PRESENTE`, `cumple=false`,
+incidencia `VENCIDO`; un recibo antiguo conserva `ANTIGUEDAD_EXCEDIDA`. Un requisito
+no aplicable lleva `aplica=false`, sin estado de evaluación; no se cuenta como
+faltante. Se devuelven `completo_segun_reglas`, `aprobacion_bancaria=null` y
+`titularidad_verificada=false`. Completo no equivale a aprobación bancaria.
+
+El expediente utiliza perfiles acotados de INE, constancia CURP y comprobante:
+reconocer el tipo no implica cumplir sus requisitos. Un documento reconocido pero
+incompleto permanece `PRESENTE`, con incidencias y campos no verificables; un tipo
+incierto o una extracción insuficiente permanece `NO_VERIFICABLE`. No se afirma
+que falta un requisito cuando un archivo desconocido podría corresponder a él.
+Esta ruta no exige el coseno global ni ejecuta embeddings. La traza informa
+`metodo=perfil_documental_acotado`, `decision=reconocido/indeterminado` y
+`admision_semantica=NO_EVALUADA`; no habilita análisis LLM por reconocer el tipo.
+Los documentos individuales de estados de cuenta y normativa mantienen su filtro
+original; las cuatro referencias activas, vectores, caché y umbrales no cambian.
+
+Verificaciones completadas el 25 de noviembre de 2026:
+
+- Streamlit AppTest con login aislado, carga múltiple real, orquestador y MCP
+  STDIO reales: expediente sintético completo; domicilio `FALTANTE` al omitirlo;
+  INE `PRESENTE`, `cumple=false`, incidencia literal `VENCIDO` en el chat.
+- Seguimiento «¿Qué documentos me faltan?» por MCP real, sin volver a adjuntar
+  ni cambiar las referencias autorizadas. Las cinco variantes de intención y
+  la consulta individual se comprobaron además con pruebas focalizadas;
+  el procesamiento del PDF individual fue simulado en esa regresión.
+- Dieciséis casos focalizados de reconocimiento y requisitos aprobados. Incluyen
+  extracción real de PDF y casos incompletos con textos sintéticos; no todos
+  son pruebas del chat ni ejecuciones STDIO.
+
+No se ejecutó revisión visual en navegador. Las pruebas no certifican autenticidad,
+titularidad ni aprobación bancaria, ni soporte universal de variantes u OCR.
+
+#### Seguridad y ADMIN / Data Steward: evidencia final
+
+USER no puede ejecutar `inspeccionar_dataset`, `validar_calidad_datos` ni
+`evaluar_calidad`: se comprobó denegación en backend y MCP STDIO reales, sin
+catálogos, estadísticas ni registros en la respuesta. Dos USER autenticados con
+sesiones distintas no pudieron preparar ni reutilizar los documentos privados
+del otro; `preparar_documento_consultable` y `evaluar_expediente_micuenta`
+devolvieron `ACCESO_DENEGADO` por STDIO real, sin contenido protegido.
+
+ADMIN se comprobó con una **contraparte temporal autorizada**, de rol auditor y
+con exactamente el alcance y permisos del auditor existente. No se usó el login
+habitual del auditor, no se ampliaron permisos ni se crearon usuarios permanentes.
+Las contrapartes USER también fueron temporales con los alcances ya configurados.
+Todas las sesiones de prueba fueron revocadas y las identidades habituales
+permanecieron intactas.
+
+El orquestador ejecutó las tres herramientas anteriores de Data Steward por MCP
+STDIO real. Sobre `raw_clientes` se verificaron contra SQL independiente de lectura:
+5.015 filas, 240 con algún nulo, 200 CURP nulas, 40 códigos de segmento nulos,
+40 segmentos nulos y 15 duplicados exactos. Los cinco hallazgos esperados
+coincidieron, sin diferencias. Son cifras de esa ejecución, no valores fijos de
+la aplicación. La respuesta mostró agregados y metadatos sin valores personales;
+SQLite conservó su SHA-256. No se verificó aquí la presentación visual de ADMIN.
+
+Detalle y límites: `docs/reporte_validacion_preguntas.md`.
+Pasos manuales: `docs/guion_demostracion_rubrica.md`.
+
+#### Referencias semánticas Concierge: preparación experimental no activada
+
+Se prepararon tres PDF exclusivamente textuales en
+`tests/fixtures/document_similarity_concierge_references/`: identificación,
+constancia CURP y comprobante domiciliario, con marca visible de simulación,
+etiquetas ficticias y sin imágenes, sellos, firmas o claves personales reales.
+Son entradas del experimento semántico anterior, no el kit final verificado de
+MiCuenta. Este utiliza `ine_completa.pdf`, `curp_completa.pdf` y
+`domicilio_completo.pdf` de `tests/fixtures/concierge_final_pdf_holdout/`, y
+`tests/fixtures/concierge_demo/identificacion_vencida_simulada.pdf`.
+
+Los datos de referencia, calibración y evaluación están separados en
+`document_similarity_concierge.json`; se conserva el conjunto inicial y su
+reporte para no ocultar intentos fallidos. Los reportes `*_results*.json`
+contienen puntuaciones reales frente a las siete referencias candidatas,
+decisiones, tiempos y el digest de `bge-large:latest`; nunca vectores privados.
+Las cuatro referencias originales no se volvieron a vectorizar.
+
+El preparador administrativo reutiliza chunking, coseno, embeddings, calibración
+y caché existentes. Trabaja con un candidato privado en AppData y respaldo del
+activo; solo `--aplicar` permite reemplazarlo si pasan los controles. No acepta
+documentos de usuarios como referencias. El calibrador mantiene el comportamiento
+estricto por defecto; el modo administrativo optativo deja el solapamiento y
+los ejemplos de calibración indeterminados dentro de una banda conservadora,
+sin forzar aceptación ni ajustar con las puntuaciones del lote final.
+
+**La ampliación candidata global sigue desactivada.** El candidato semántico inicial propuso aceptación
+desde 0.8379651425075912 y rechazo hasta 0.7676865214691387. Una guía ajena para
+armar una cometa obtuvo 0.859898 y fue aceptada; los controles bloquearon la
+promoción. Identificación quedó indeterminada (0.801636), CURP aceptada
+(0.935236) y domicilio aceptado (0.942365), con ejemplos sintéticos distintos
+de las referencias. Esos resultados describen un candidato fallido, no la
+capacidad certificada del filtro activo. El caché activo sigue con cuatro
+referencias y sus umbrales anteriores; se comprobó identidad byte a byte con
+su respaldo. No se bajaron umbrales para hacer pasar controles.
+
+Antes de activar se requiere mejorar y contrastar la separación del dominio
+frente a negativos difíciles, reservando otro lote final independiente. La
+similitud no acredita autenticidad, vigencia o cumplimiento de requisitos;
+las notas incompletas y listas de documentos requieren además la interpretación
+contextual y las reglas de expediente existentes.
+
+El módulo `proyecto.config.preparar_referencias_concierge` es experimental y
+administrativo; no debe ejecutarse con `--aplicar` para demostrar Concierge.
+El reconocimiento acotado del expediente no supone que ese candidato haya sido
+aprobado. Los reportes conservan los falsos positivos de las etapas posteriores;
+no se sobrescribieron para presentarlos como éxitos. Los tests unitarios del
+calibrador usan puntuaciones simuladas, separadas de las mediciones reales.

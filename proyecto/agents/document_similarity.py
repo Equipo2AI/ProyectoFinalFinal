@@ -150,12 +150,17 @@ def _load():
         raise SimilarityError("Referencias locales ausentes o invalidas. Ejecuta la preparacion y calibracion documental.") from exc
 
 
-def calibrate(examples: list[dict]):
-    """Ejemplos etiquetados independientes de la prueba final; banda conservadora."""
+def calibrate(examples: list[dict], *, allow_overlap: bool = False):
+    """Ejemplos independientes del lote final; modo estricto por defecto.
+
+    Opt-in administrativo: admite límites indeterminados y contiene todo el
+    solapamiento en la banda sin decisión automática. No certifica generalización.
+    """
     data = _load()
     results = []
     for example in examples:
-        if example["expected"] not in {"aceptado", "rechazado"}:
+        labels = {"aceptado", "rechazado", "indeterminado"} if allow_overlap else {"aceptado", "rechazado"}
+        if example["expected"] not in labels:
             raise SimilarityError("Etiqueta de calibracion invalida.")
         parts = chunks(example["text"])
         if not parts:
@@ -165,9 +170,25 @@ def calibrate(examples: list[dict]):
                         "sha256": hashlib.sha256(example["text"].encode()).hexdigest()})
     positives = [max(r["similarities"].values()) for r in results if r["expected"] == "aceptado"]
     negatives = [max(r["similarities"].values()) for r in results if r["expected"] == "rechazado"]
-    if len(positives) < 2 or len(negatives) < 2 or min(positives) <= max(negatives):
+    if len(positives) < 2 or len(negatives) < 2:
         raise SimilarityError("La calibracion no separa los tipos admitidos de los ajenos. No se habilita el filtro.")
-    data["calibration"] = {"accept": min(positives), "reject": max(negatives), "examples": results}
+    low, high = min(positives), max(negatives)
+    overlap = low <= high
+    if overlap and not allow_overlap:
+        raise SimilarityError("La calibracion no separa los tipos admitidos de los ajenos. No se habilita el filtro.")
+    # Opt-in administrativo: el solapamiento no fuerza ninguna etiqueta.
+    # nextafter evita aceptar un negativo o rechazar un positivo en el borde.
+    accept = math.nextafter(high, math.inf) if overlap else low
+    reject = math.nextafter(low, -math.inf) if overlap else high
+    boundaries = [max(r['similarities'].values()) for r in results if r['expected'] == 'indeterminado']
+    if boundaries:
+        accept = max(accept, math.nextafter(max(boundaries), math.inf))
+        reject = min(reject, math.nextafter(min(boundaries), -math.inf))
+    if not -1 <= reject < accept <= 1:
+        raise SimilarityError('La calibracion no permite una banda segura.')
+    data["calibration"] = {"accept": accept, "reject": reject, "examples": results,
+                           "method": "conservative-boundaries" if boundaries else "conservative-overlap" if overlap else "separated-envelope",
+                           "overlap": overlap}
     _save(data)
     return data["calibration"]
 
@@ -191,7 +212,7 @@ def evaluate(text: str) -> dict:
         decision = "aceptado" if best >= calibration["accept"] else "rechazado" if best <= calibration["reject"] else "indeterminado"
         messages = {
             "aceptado": "Documento compatible con las referencias internas de tipos admitidos.",
-            "rechazado": "El documento no corresponde a los tipos admitidos: estados de cuenta y politicas de gobierno de datos.",
+            "rechazado": "El documento no alcanza la similitud necesaria con las referencias internas de tipos admitidos.",
             "indeterminado": "La similitud no permite confirmar el tipo documental. No se ha rechazado por irrelevancia; aporta mas evidencia o solicita revision.",
         }
         return {"decision": decision, "model": MODEL, "similarities": similarities,

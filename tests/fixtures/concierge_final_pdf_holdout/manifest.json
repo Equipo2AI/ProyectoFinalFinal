@@ -1,0 +1,116 @@
+{
+  "date": "2026-11-25",
+  "purpose": "Single independent PDF holdout; hypothetical structural approval only; no active cache changes; new texts created after rule freeze",
+  "frozen_code": {
+    "proyecto/agents/document_requirements.py": "49a459740700e5ed7f779fbd20d794f8af7b7e18d487e169764d31d18ffdb520",
+    "proyecto/config/preparar_referencias_concierge.py": "465d0ac10e99ba54822ac2d088264852d8d3813a7d493e828d226b0104646130",
+    "proyecto/agents/document_similarity.py": "8ffda7300aa428938e45c041581a1dc02830aa3a6698775b958c6e57a30329bc"
+  },
+  "cases": [
+    {
+      "id": "ine_completa",
+      "file": "tests/fixtures/concierge_final_pdf_holdout/ine_completa.pdf",
+      "expected": "aceptado",
+      "sha256": "5bda5c95232670b3228c6408a0c782b43a3d73e27d5a3fea6b7d0fec7a38be02",
+      "pages": 1
+    },
+    {
+      "id": "curp_completa",
+      "file": "tests/fixtures/concierge_final_pdf_holdout/curp_completa.pdf",
+      "expected": "aceptado",
+      "sha256": "c1b7a3d8a78e3c5f7d62fc214fe44655bd5bd68d544d4235e759c57f46b96ed0",
+      "pages": 1
+    },
+    {
+      "id": "domicilio_completo",
+      "file": "tests/fixtures/concierge_final_pdf_holdout/domicilio_completo.pdf",
+      "expected": "aceptado",
+      "sha256": "0b017408e8203d013cec3e9e791433a302b89a51bff4f2389d5f9fd2eb811bae",
+      "pages": 1
+    },
+    {
+      "id": "ine_breve",
+      "file": "tests/fixtures/concierge_final_pdf_holdout/ine_breve.pdf",
+      "expected": "aceptado",
+      "sha256": "f3d0013ca311655aefce41d0d6398c85feccf161ddaa9879f02f7deeeb642075",
+      "pages": 1
+    },
+    {
+      "id": "curp_breve",
+      "file": "tests/fixtures/concierge_final_pdf_holdout/curp_breve.pdf",
+      "expected": "aceptado",
+      "sha256": "dc1d43eadb62665663d4c5e675d3ca8b5792b397392f33c53707cdeb4aa6cf2b",
+      "pages": 1
+    },
+    {
+      "id": "domicilio_breve",
+      "file": "tests/fixtures/concierge_final_pdf_holdout/domicilio_breve.pdf",
+      "expected": "aceptado",
+      "sha256": "30333606ebb524f64d3d9d12892fbec12d7a4145210d07fe68b5c7340b65e193",
+      "pages": 1
+    },
+    {
+      "id": "educativo_calificado",
+      "file": "tests/fixtures/concierge_final_pdf_holdout/educativo_calificado.pdf",
+      "expected": "indeterminado",
+      "sha256": "22b8b2f8aeff96de7c16c6029a29e2f282969130502f4e6d7738e06522dc6eb1",
+      "pages": 1
+    },
+    {
+      "id": "educativo_precedente",
+      "file": "tests/fixtures/concierge_final_pdf_holdout/educativo_precedente.pdf",
+      "expected": "indeterminado",
+      "sha256": "cc82c98f6964a79ec62e0e2fd8ce35e9ba82b190e4baf23c959d53ae785633f4",
+      "pages": 2
+    },
+    {
+      "id": "educativo_registro_limpio",
+      "file": "tests/fixtures/concierge_final_pdf_holdout/educativo_registro_limpio.pdf",
+      "expected": "indeterminado",
+      "sha256": "cb77308862c191fdac31631111a62454b27d6d3e384ef363c0d22f3ea2cba493",
+      "pages": 1
+    },
+    {
+      "id": "aviso_con_registro",
+      "file": "tests/fixtures/concierge_final_pdf_holdout/aviso_con_registro.pdf",
+      "expected": "indeterminado",
+      "sha256": "fb7487fc3443a27cf669367247600a9a5ae29aef084781c9888a917db5a89a38",
+      "pages": 1
+    },
+    {
+      "id": "tipos_contradictorios",
+      "file": "tests/fixtures/concierge_final_pdf_holdout/tipos_contradictorios.pdf",
+      "expected": "indeterminado",
+      "sha256": "f04c730c2bb6a32227548a2e91b0df83efac4904d19b5517ca82e2fb5e3ab185",
+      "pages": 1
+    },
+    {
+      "id": "campos_otro_bloque",
+      "file": "tests/fixtures/concierge_final_pdf_holdout/campos_otro_bloque.pdf",
+      "expected": "indeterminado",
+      "sha256": "43fd7000df505366dccd9f94bf5b19209937082e9f95956863b6c15ed540a0f8",
+      "pages": 2
+    },
+    {
+      "id": "fechas_opuestas",
+      "file": "tests/fixtures/concierge_final_pdf_holdout/fechas_opuestas.pdf",
+      "expected": "indeterminado",
+      "sha256": "5226f6660695b49bab1956b00e76aec61b4065290cabcd3f84eddf1b8e8ce75f",
+      "pages": 1
+    },
+    {
+      "id": "plantilla_sin_valores",
+      "file": "tests/fixtures/concierge_final_pdf_holdout/plantilla_sin_valores.pdf",
+      "expected": "indeterminado",
+      "sha256": "a7b400992aa09c973ecdf9055252377141cfd781b1601b54a239f6ea5be8b7f6",
+      "pages": 1
+    },
+    {
+      "id": "ajeno",
+      "file": "tests/fixtures/concierge_final_pdf_holdout/ajeno.pdf",
+      "expected": "no_aceptado",
+      "sha256": "88eaac86c29c607560c2ecebd1e58e882e6547a2c293445996c0288491b20160",
+      "pages": 1
+    }
+  ]
+}

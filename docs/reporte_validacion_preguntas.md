@@ -1,3 +1,141 @@
+# Estado verificado de Concierge, seguridad y ADMIN — 2026-11-25
+
+Este resumen refleja las verificaciones finales ya ejecutadas. Se incorpora
+documentalmente sin repetir pruebas, modelos ni consultas. Los bloques que
+siguen más abajo son registros históricos: sus pendientes y resultados se
+refieren a la versión evaluada en cada etapa, no al estado actual. No se borran
+los fallos ni se convierte evidencia parcial en una ejecución completa.
+
+## Concierge: chat y MCP reales
+
+Se utilizó `Streamlit AppTest` sobre `proyecto/ui/app.py`, con el formulario de
+login real y contrapartes USER temporales aisladas. Los archivos se entregaron
+con la carga múltiple del `chat_input` normal; no se inyectó un resultado de
+herramienta ni se seleccionó un agente manualmente. AppTest ejecuta el flujo
+de la aplicación, pero no constituye inspección visual en un navegador.
+
+Herramienta real: `document_intelligence_server.evaluar_expediente_micuenta`,
+invocada mediante MCP STDIO. La ruta final usa extracción autorizada y perfiles
+documentales acotados, no el coseno global. Reconocimiento no equivale a
+cumplimiento. Las primeras pruebas con los PDF de referencias candidatas y
+embeddings reales dieron `NO_VERIFICABLE`; no son las pruebas finales exitosas.
+
+| Escenario final | PDF utilizados | Resultado comprobado |
+|---|---|---|
+| Completo | `ine_completa.pdf`, `curp_completa.pdf`, `domicilio_completo.pdf`, de `tests/fixtures/concierge_final_pdf_holdout/` | Los tres requisitos `VALIDO_SEGUN_REGLAS`; `completo_segun_reglas=true`; RFC no aplica al perfil. |
+| Faltante | INE y CURP del conjunto anterior, tras limpiar el chat | Domicilio `FALTANTE`, `cumple=false`; expediente no completo. |
+| Vencido | `tests/fixtures/concierge_demo/identificacion_vencida_simulada.pdf` y CURP/domicilio del conjunto anterior | INE `PRESENTE`, `cumple=false`, incidencia `VENCIDO`; expediente no completo. |
+| Seguimiento | «¿Qué documentos me faltan?», sin otra carga, después de corregir su intención | MCP real recibió las mismas referencias autorizadas del expediente; el chat mantuvo el resultado del backend. |
+
+La primera secuencia final completó tres llamadas STDIO (completo, vencido y
+faltante). Detectó que «me faltan» pedía aclaración y que el chat no imprimía la
+etiqueta literal de vencimiento. Tras los dos ajustes autorizados se comprobó
+solo vencido y seguimiento, con dos llamadas STDIO reales: el chat mostró
+`Incidencia: VENCIDO`, conservando el backend, y el seguimiento reutilizó los
+mismos archivos. No se repitieron completo y faltante para esa corrección.
+
+Las respuestas visibles coincidieron con los estados estructurados y con el
+último mensaje del historial. Los seguimientos sin contexto se comprobaron
+con funciones de intención; la regresión de PDF individual utilizó procesamiento
+documental simulado. Esas comprobaciones no se presentan como otras ejecuciones
+reales del PDF individual, ni como soporte universal de lenguaje natural.
+
+Los 16 casos focalizados anteriores siguen siendo evidencia de backend: incluyen
+INE vigente/vencida, CURP y recibo completos/incompletos, faltante, extracción
+parcial y finalidad explicativa. Los casos incompletos usaron textos sintéticos;
+no se declara una demostración de chat con PDF incompletos. Los originales de
+los PDF, SQLite y el caché activo permanecieron intactos en las ejecuciones que
+comprobaron sus hashes. Las sesiones aisladas fueron revocadas.
+
+## Seguridad: backend y MCP, no solo interfaz
+
+Se reutilizaron las configuraciones de dos USER existentes para crear
+contrapartes temporales con el mismo rol y alcance. Se autenticaron mediante
+`provision()`/`login()` en un almacén privado aislado; no se modificaron las
+cuentas habituales ni se compartieron credenciales o tokens.
+
+| Comprobación | Evidencia real | Resultado |
+|---|---|---|
+| USER → `inspeccionar_dataset`, `validar_calidad_datos`, `evaluar_calidad` sobre `raw_clientes` | Invocación directa de backend y tres llamadas MCP STDIO | `PermissionError: Acceso denegado: permiso insuficiente.` Las salidas solo contenían `error`, sin catálogo, conteos ni registros. |
+| Sesión A → su archivo | Registro y `authorize_file()` reales | Autorizado. |
+| Sesión B autenticada → archivo privado de A | `authorize_file()` y MCP `preparar_documento_consultable` reales | Denegado; código MCP `ACCESO_DENEGADO`, sin evidencia documental. |
+| Sesión B autenticada → reutilizar archivo de A en expediente | MCP STDIO `evaluar_expediente_micuenta` real | `ACCESO_DENEGADO`, sin requisitos ni contenido protegido en la respuesta. |
+
+No se probó de nuevo la seguridad durante la verificación posterior de ADMIN.
+La primera preparación del guion de seguridad se detuvo por confundir la
+instancia exportada con el módulo de Data Steward; se corrigió solo el guion
+en memoria. Los controles reales descritos arriba sí finalizaron. Las cuentas
+y sesiones habituales conservaron sus bytes y se revocaron las sesiones temporales.
+
+## ADMIN / Data Steward
+
+No había sesión activa del auditor habitual. El usuario autorizó expresamente
+una **contraparte temporal aislada**, con exactamente el rol auditor, alcance
+y permisos del auditor configurado con `governance`. Se comprobó igualdad de
+permisos y alcance tras el login real. No se usó la contraseña ni el login
+habitual de ese auditor, no se amplió su acceso y no se creó una cuenta permanente.
+
+Consulta ejecutada: «Revisa la calidad de datos de raw_clientes: cantidad de
+registros, valores nulos y duplicados. Devuelve solo agregados.»
+
+El orquestador produjo el plan `['data_steward']`, sin errores. Su cliente real
+de `orchestration/comun.py` ejecutó por STDIO, sin respuestas simuladas:
+
+1. `data_steward_server.inspeccionar_dataset`.
+2. `data_steward_server.validar_calidad_datos`.
+3. `data_steward_server.evaluar_calidad`.
+
+La primera instrumentación escuchaba el logger del cliente compartido y no
+registró estas llamadas, aunque el grafo terminó sin errores; no se contó ese
+logger vacío como fallo de la aplicación ni como validación final. Se completó
+la comprobación observando el cliente real del grafo: el observador llamó siempre
+a la implementación STDIO original y devolvió su salida sin sustituirla.
+
+| Estadística de `raw_clientes` | Resultado de la ejecución |
+|---|---:|
+| Filas | 5.015 |
+| Filas con algún nulo | 240 |
+| Nulos en `curp` | 200 |
+| Nulos en `cve_segmento` | 40 |
+| Nulos en `segmento` | 40 |
+| Filas duplicadas exactas | 15 |
+
+Filas, nulos y duplicados coincidieron con consultas SQLite independientes de
+solo lectura. La evaluación contra hallazgos declarados produjo 5 coincidencias
+y 0 diferencias: 40 nulos de segmento, 8 fechas futuras según la regla existente,
+12 formatos de correo inválidos, 5 formatos CURP inválidos y 15 duplicados.
+No se infirió una clave de negocio donde no estaba declarada. Estas cifras
+describen esa base y esa ejecución; no son respuestas fijas del sistema.
+
+La respuesta final contenía las cifras verificadas, conteos y clasificación del
+esquema, no filas personales. Se contrastaron en memoria los valores textuales
+personales de las columnas presentes para detectar divulgación, sin imprimirlos
+ni persistirlos; no se encontraron en la respuesta. Las salidas estructuradas
+no incluían filas, muestras o ejemplos de clientes. SQLite conservó su SHA-256.
+Las identidades habituales permanecieron intactas y la sesión temporal se revocó.
+
+## Alcance y límites de esta evidencia
+
+- La evaluación de requisitos está respaldada por la matriz fija
+  `proyecto/config/micuenta_requirements.json`, versión `2026-11-24.1`, para
+  persona física mexicana sin actividad empresarial, MiCuenta en sucursal.
+  La fuente y fecha de consulta registradas no se volvieron a verificar aquí.
+- La admisión candidata **global** de siete referencias sigue desactivada;
+  sus falsos positivos históricos y reportes se conservan. La evaluación acotada
+  de expedientes no constituye aprobación de ese candidato.
+- No se certifican autenticidad, titularidad, validez oficial ni aprobación
+  de apertura. Un documento reconocido no es automáticamente un requisito válido.
+- No se ejecutó navegador automatizado, inspección visual final, OCR escaneado
+  ni el login habitual del auditor. Tampoco se repitieron las 30 preguntas.
+- Se verificó el enrutamiento de requisitos a Normatividad RAG; permanece
+  pendiente evidenciar la recuperación y citas para MiCuenta específicamente.
+  Una matriz de requisitos no se presenta como una consulta RAG realizada.
+- Las ejecuciones finales se registraron en salidas de las herramientas de esta
+  sesión de trabajo; este resumen las transcribe sin inventar capturas, archivos
+  de log permanentes o hashes de respuesta que no se hayan guardado.
+
+## Registro histórico de etapas anteriores
+
 <!-- RESULTADOS_ACTUALES_2026_11_10 -->
 # Validacion final por roles - 30 casos
 
@@ -2675,3 +2813,279 @@ Los nueve archivos manuales estan excluidos y conservados en disco.
 - `tests/test_sql_guard.py`
 - `tests/test_tareas.py`
 - `tests/test_ui_chat_input.py`
+
+
+## Admision semantica Concierge - 2026-11-24 - candidato NO activado
+
+Se generaron tres referencias PDF textuales de identificacion personal,
+constancia CURP y comprobante domiciliario. Todos contienen una marca visible
+de simulacion, sin imagenes, firmas, sellos ni identificadores personales reales.
+Son referencias independientes de los cuatro PDF finales del expediente.
+No se incorporaron a Pinecone ni al corpus normativo.
+
+Se uso bge-large:latest, digest
+`b3d71c92805938e2c9d78e6f35e82d7cc1bd77e05b47dd2ab3016240f4021c15`,
+con chunks, vectores normalizados y media de cosenos maximos existentes.
+Las cuatro referencias originales se copiaron sin modificar sus vectores.
+El primer calibrador estricto detecto solapamiento y no publico el candidato.
+El modo administrativo conservador deja ese solapamiento en la banda
+indeterminada; tambien admite ejemplos limite exclusivamente de calibracion.
+El modo estricto previo sigue siendo el predeterminado.
+
+Se conservan datasets y resultados iniciales: el primer lote independiente
+incluyo diez ejemplos y detecto dos aceptaciones en casos esperados inciertos.
+No se cambiaron esas expectativas ni se usaron sus puntuaciones para elegir
+umbrales. Se agregaron un negativo dificil y dos limites diferentes a la
+calibracion, reservando un segundo lote de siete textos nuevos.
+Los vectores de las tres referencias se reutilizaron entre esos intentos.
+
+El segundo candidato quedo con aceptacion desde 0.8379651425075912 y rechazo
+hasta 0.7676865214691387. Los controles finales dieron:
+
+| Ejemplo nuevo | Maximo coseno | Decision del candidato |
+|---|---:|---|
+| Identificacion | 0.801636 | Indeterminado |
+| Constancia CURP | 0.935236 | Aceptado |
+| Comprobante de domicilio | 0.942365 | Aceptado |
+| Ciclo del agua, ajeno | 0.809518 | Indeterminado |
+| Guia para armar cometa, ajena | 0.859898 | Aceptado: falso positivo |
+| Anexo sin tipo confirmado | 0.900975 | Aceptado; no cumple expectativa de incertidumbre |
+| Lista sin documentos anexos | 0.882053 | Aceptado; no demuestra documentos presentes |
+
+El segundo bloque midio 4.275 s desde la preparacion del candidato hasta su
+calibracion y evaluacion (excluye importaciones y generacion de PDF). Las
+puntuaciones frente a cada una de las siete referencias, tiempos por ejemplo,
+umbrales y decisiones estan en
+`tests/fixtures/document_similarity_concierge_results.json`. El primer intento
+esta conservado en `document_similarity_concierge_results_initial.json` y
+`document_similarity_concierge_initial.json`. Son resultados reales de Ollama;
+los tests unitarios del calibrador usan puntuaciones simuladas y son otra evidencia.
+
+La admision de una lista de requisitos financieros puede ser compatible con el
+dominio, pero no acredita que sea identificacion, CURP o comprobante. El falso
+positivo de la guia de cometas es inequivoco: impide certificar y activar esta
+ampliacion. No se ajusto el umbral mirando esos casos para hacerlos pasar.
+
+**Estado final: no aplicado.** El cache activo conserva cuatro referencias y
+los bytes exactos del respaldo anterior, SHA-256
+`226e2963f3d3bba0535144100fb15c0554147c8a66f11a53eed3e39ae5c2c4b8`.
+Sus umbrales siguen siendo aceptacion 0.7874881012226205 y rechazo
+0.6864000014989039. Los candidatos de siete referencias y su respaldo viven
+solo en AppData privado; no se publican vectores en Git. Ningun documento de
+usuario se uso como referencia. No se cambiaron permisos, limpieza, cuentas,
+SQLite, interfaz, modelos generativos ni autenticacion.
+
+Tres casos unitarios focalizados del calibrador pasaron, con dobles y sin
+inferencias. No se repitieron suites de agentes, navegador, MiMo o las 30
+preguntas. Queda pendiente una separacion validada frente a negativos dificiles
+antes de habilitar los tipos nuevos. Estos resultados no certifican que un
+coseno alto pruebe autenticidad, vigencia o elegibilidad de un expediente.
+# Concierge: reconocimiento separado del cumplimiento — 2026-11-25
+
+Cambio posterior autorizado: `requirement_metadata()` distingue
+`recognition.type_recognizable` de `recognition.sufficient` (campos completos
+del candidato semántico anterior). La INE requiere persona y registro coherentes,
+no una vigencia cumplida; la constancia poblacional requiere persona y entidad
+de registro o emisión, no necesariamente un valor CURP legible; el recibo requiere
+titular, servicio y dirección o emisión. Se conservan encabezado completo,
+bloque individual y guardas de finalidad explicativa. Los hechos de requisitos
+proceden del mismo bloque, no de campos dispersos de otras páginas. Una
+transcripción de registro asociada a contexto docente conserva incertidumbre.
+Esto es reconocimiento acotado para diagnosticar, no autenticación documental.
+
+`evaluate_case()` autoriza todas las referencias antes de leerlas y utiliza
+`extract_requirement_metadata()` (extracción y controles reales existentes).
+Solo los tres perfiles reconocibles alcanzan evaluación de requisitos; los
+inciertos conservan tipo desconocido y `NO_VERIFICABLE`. En este expediente no
+se exige el coseno global ni se ejecutan embeddings. Se informa por archivo
+`metodo=perfil_documental_acotado`, `decision=reconocido/indeterminado` y
+`admision_semantica=NO_EVALUADA`. Este reconocimiento NO significa `VALIDO`.
+La admisión candidata global no se habilitó. Los documentos individuales de
+estados de cuenta y normativa siguen por su filtro anterior sin modificaciones.
+
+`evaluate_requirement_metadata()` diferencia requisito no presentado (`FALTANTE`)
+de documento reconocido con campos no verificables (`PRESENTE`, incidencias y
+`campos_no_verificables`). El vencimiento explícito produce `PRESENTE`,
+`cumple=false`, incidencia `VENCIDO`. Solo reglas comprobadas completas producen
+`VALIDO_SEGUN_REGLAS`. Cuando hay documentos de tipo incierto no se atribuyen
+faltantes por inferencia. La exigencia condicional de CURP sigue dependiendo
+de evidencia sobre su inclusión en la INE. Autenticidad, titularidad y aprobación
+bancaria no se acreditan.
+
+Validación focalizada: lote final de **16 casos aprobados**, sin modelos ni
+embeddings. Incluye INE vigente/vencida, constancia completa/incompleta, recibo
+completo/incompleto, faltante, finalidad educativa, extracción parcial, condiciones
+CURP y reglas previamente afectadas. Dos casos del chat con doble de transporte
+también pasaron durante la comprobación del cambio; no son ejecución STDIO.
+Se corrigió un doble de extracción antiguo que no aceptaba el argumento `modo`.
+
+Evidencia real nueva dentro de las pruebas: conversión nativa y extracción de
+los tres PDF existentes `ine_completa.pdf`, `curp_completa.pdf`,
+`domicilio_completo.pdf`, registro temporal y autorización reales con identidades
+aisladas de prueba. `evaluate_case()` devolvió `completo_segun_reglas=true`.
+Sustituir la INE por `identificacion_vencida_simulada.pdf` produjo `VENCIDO` y
+expediente no completo. La transcripción educativa conocida permaneció
+`NO_VERIFICABLE`. Una sesión ajena fue denegada antes de extraer. Los PDF
+originales conservaron sus hashes. CURP/recibo incompletos se comprobaron con
+textos sintéticos, no nuevos PDF. No hubo nueva prueba de navegador, AppTest,
+STDIO, Ollama, MiMo o SQLite habitual en esta etapa.
+
+Al terminar esa etapa, completo/incompleto/vencido funcionaban en backend y
+faltaba acreditar esos resultados desde el chat. La verificación posterior de
+completo, faltante, vencido y seguimiento figura en el resumen final al inicio
+de este documento; los casos incompletos conservan evidencia de backend.
+El reconocimiento no cubre variantes arbitrarias,
+documentos escaneados ilegibles o material educativo indistinguible de un
+registro; se mantiene revisión/NO_VERIFICABLE cuando existen señales ambiguas.
+
+# Cierre de la última corrección acotada — 2026-11-25
+
+`requirement_metadata()` vincula el encabezado completo, incluidos calificadores,
+a campos de un único bloque de una página. No agrega datos de otras páginas o
+secciones. Un título con calificadores desconocidos, varios registros o tipos
+contradictorios no acredita un registro individual. Los hechos antiguos de la
+matriz no se alteraron. `contrast_candidate()` exige también esas señales antes
+de una aceptación estructural. No se cambió `evaluate_case()` en esta ronda.
+
+Se congelaron código, expectativas y PDF en
+`tests/fixtures/concierge_final_pdf_holdout/manifest.json`. Una única evaluación
+independiente de 15 PDF nuevos usó extracción nativa real (`pypdf` y
+`extract_pages`) y embeddings reales `bge-large:latest`. Resultados completos,
+cosenos y señales por archivo en `tests/fixtures/concierge_final_pdf_holdout/results.json`.
+No hubo evaluación de archivos privados de usuarios ni OCR real.
+
+Resultado de la hipótesis de aceptación estructural: seis positivos aceptados
+(INE, CURP y domicilio, cada uno completo y breve), siete indeterminados, un
+documento ajeno rechazado y **un falso positivo adicional aceptado**. En total:
+7 aceptados, 7 indeterminados, 1 rechazado. No hubo positivos rechazados o
+indeterminados. Tiempo de evaluación: 7.653 segundos.
+
+Fallo: `educativo_registro_limpio.pdf`, coseno máximo 0.7443444216509433.
+El documento se presenta con título limpio de constancia y contiene un registro
+completo; el texto posterior explica que es una transcripción para un curso.
+El perfil sigue acreditando el registro sin comprender esa finalidad global.
+La estructura textual y los cosenos no bastan para resolver este caso con los
+criterios implementados. No se añadieron excepciones ni se reajustaron reglas
+después de observarlo.
+
+El resultado **no aprueba la ampliación**. Se verificaron cachés activo y candidato
+sin cambios, código congelado durante la evaluación y aprobación estructural
+vacía. No se conectó la decisión a `evaluate_case()` ni se repitió la prueba de
+chat. En esa iteración el expediente completo MiCuenta aún no estaba demostrado;
+la ruta acotada y su verificación posterior se describen en el resumen final.
+Este es el cierre de la iteración autorizada, no el inicio de otra calibración.
+
+# Regresión de finalidad documental y tipos contradictorios (2026-11-24)
+
+Corrección focalizada posterior al holdout fallido: `requirement_metadata()`
+exige que el documento se presente con el tipo reconocido en su encabezado,
+además de sus grupos de campos específicos. La marca de simulación no acredita
+el tipo; avisos, artículos explicativos y declaraciones de que el texto no
+constituye una constancia invalidan la suficiencia estructural. Se mantiene
+separada esta evidencia de los hechos de vigencia y de la matriz de requisitos.
+`contrast_candidate()` prioriza tipos múltiples como indeterminados, incluso
+si la señal semántica propone rechazo.
+
+Doce regresiones focalizadas aprobadas con semántica simulada favorable y
+adversa: los dos falsos positivos conocidos, la mezcla de tipos, siete positivos
+estructurados (incluido uno breve), lista y plantilla. Los positivos conservan
+la rama de aceptación solo con aprobación simulada explícita dentro del test;
+la aprobación administrativa real continúa vacía. No se ejecutaron embeddings.
+No se modificó el dataset ni el reporte real anterior: siguen documentando el
+fallo de aquella versión. Estas regresiones **no son evaluación independiente**.
+
+Limitación: encabezados truncados, variantes no reconocidas, textos explicativos
+sin señales claras y documentos con varias piezas requieren revisión; los
+campos aún no prueban autenticidad o titularidad. El cambio invalida por hash
+cualquier aprobación del perfil anterior. La ampliación sigue desactivada hasta
+una evaluación posterior con ejemplos nuevos; no se ajustaron reglas tras
+observar resultados de esta ronda.
+
+# Hipótesis de aceptación estructural: evaluación independiente (2026-11-24)
+
+Se añadió al candidato una aceptación por estructura condicionada a aprobación
+administrativa del perfil. La aprobación se lee de un reporte fijo del servidor
+y se invalida si cambia el código del perfil, el candidato o el dataset. No es
+un parámetro MCP ni una acreditación proporcionada por documentos o usuarios.
+`validated_structural_types()` devuelve vacío mientras no exista aprobación.
+
+Lote nuevo `document_similarity_concierge_structural_validation.json`: 17 textos
+sintéticos, sin reutilizar textos de calibración. Se congelaron criterios antes
+de observar puntuaciones. Una sola evaluación real con `bge-large:latest`,
+sin calibrar ni modificar los cachés, tardó 5.198 segundos. El reporte completo,
+con cosenos contra las siete referencias y señales de cada caso, está en
+`document_similarity_concierge_structural_results.json`.
+
+Resultado de la **hipótesis prospectiva**, no de una activación: 9 aceptados,
+3 rechazados y 5 indeterminados. Los siete positivos (dos INE, dos CURP,
+dos comprobantes y una CURP breve) se aceptarían. Pero también se aceptarían
+incorrectamente un aviso de privacidad (coseno máximo 0.763744) y un artículo
+educativo (0.719059). Ambos contienen persona, campo CURP y registro o fecha,
+y el perfil no distingue suficientemente mención explicativa de constancia.
+Además, tipos mezclados quedan rechazados en vez de indeterminados.
+
+Por tanto: **2 falsos positivos, 0 positivos rechazados, 0 positivos inciertos
+en la hipótesis, y 1 discrepancia adicional**. `passed=false`, ningún tipo
+estructural aprobado y ampliación desactivada. No se ajustaron reglas después
+del lote. Una prueba nueva y focalizada confirmó que este reporte fallido no
+habilita la aceptación estructural. No hubo PDF/OCR, navegador, MiMo ni suite.
+Este resultado no demuestra todavía Concierge integrado para la rúbrica.
+
+# Ajuste posterior por tipo (2026-11-24)
+
+`requirement_metadata()` conserva los hechos usados por la matriz de requisitos
+y añade indicadores separados de reconocimiento. Reutiliza `_presence()` y
+`_date_fact()` sobre frases y líneas: persona/registro/vigencia para INE;
+persona/clave poblacional/emisión o entidad para CURP; titular/domicilio/servicio
+y emisión para comprobantes. Las listas, plantillas, descripciones hipotéticas
+y mezclas de tipos conservan incertidumbre. No se publican valores personales
+en estos indicadores ni se certifican autenticidad o titularidad.
+
+El candidato usa esos indicadores. Un rechazo por umbral global pasa a
+indeterminado cuando se reconoce un tipo; no se promociona automáticamente a
+aceptado. `evaluate_candidate()` permite vectorizar el texto breve original
+con estructura suficiente sin modificar `chunks()`. Sin calibración específica
+para ese caso conserva indeterminado. No se han activado referencias nuevas.
+
+Verificación nueva, sin modelos reales: ocho casos del perfil por tipo y una
+prueba de contrato del texto breve con embeddings simulados. Inicialmente falló
+el caso narrativo de domicilio por puntuación final en la fecha; se corrigió
+la segmentación y los ocho casos del perfil pasaron. La prueba breve había
+pasado y no se repitió. No se ejecutaron las diez pruebas anteriores. Los
+fixtures estructurados anteriores incorporan persona/registro explícitos para
+reflejar el contrato ampliado; sus expectativas no se relajaron. No constituyen
+un lote final independiente. Los resultados reales documentados anteriormente
+corresponden al candidato anterior, no certifican este ajuste.
+
+# Contraste estructural candidato de Concierge (2026-11-24)
+
+Se conectó `preparar_referencias_concierge.contrast_candidate()` con
+`document_requirements.requirement_metadata()`. Solo afecta al preparador
+candidato: `document_similarity.evaluate()` y la admisión activa no cambian.
+La aceptación exige coincidencia del tipo de la referencia ganadora, extracción
+completa e indicadores independientes: INE con fecha de vigencia y presencia o
+ausencia explícita de CURP; constancia CURP con indicador de dato y fecha de
+emisión; domicilio con dirección, fecha de emisión y tipo de recibo reconocido.
+Estas señales no certifican identidad, autenticidad, integridad ni vigencia.
+
+Verificación focalizada: **10 pruebas aprobadas**, sin modelos ni embeddings
+nuevos. Siete reutilizan las puntuaciones reales registradas del lote candidato;
+tres comprueban contratos con puntuaciones simuladas explícitas y documentos
+sintéticos estructurados (incluyen extracción incompleta, encabezado solo y
+referencia contradictoria). No equivalen a una nueva evaluación independiente.
+
+- Guía de cometas: similitud máxima registrada 0.8598978266776504 frente al
+  umbral candidato 0.8379651425075912; de aceptado a indeterminado por ausencia
+  de tipo y campos coherentes.
+- Los dos casos límite antes aceptados pasan a indeterminados.
+- Identificación y documento ajeno del lote siguen indeterminados.
+- CURP y domicilio narrativos pasan a indeterminados: el extractor existente
+  no reconoce suficientes campos etiquetados en esos textos. No se relajaron
+  sus reglas ni los umbrales para hacerlos pasar.
+- Los ejemplos estructurados pueden conservar aceptación en las pruebas de
+  contrato; falta evidencia independiente con similitudes reales para ellos.
+
+La ampliación permanece **desactivada**; no se ejecutó el preparador, no se
+generaron referencias ni se escribió el caché activo. Se conservan los reportes
+previos como evidencia de los falsos positivos originales. Advertencia del
+entorno pytest: opción desconocida `asyncio_default_fixture_loop_scope`.

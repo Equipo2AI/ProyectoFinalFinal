@@ -148,5 +148,21 @@ def responder_pregunta_documental(pregunta: str, documento: dict, anterior: str 
         return {"status": "error_tecnico", "code": "ERROR_TECNICO", "evidence": [], "message": "No se pudo completar la consulta documental por un fallo técnico."}
 
 
+@mcp.tool()
+def evaluar_expediente_micuenta(documentos: list[str]) -> dict:
+    """Evalúa metadatos mínimos de referencias registradas en la sesión actual.
+
+    Perfil fijo: persona física mexicana sin actividad empresarial, en sucursal.
+    No habilita generación, no acepta políticas del cliente ni aprueba aperturas.
+    """
+    from proyecto.agents.document_requirements import evaluate_case
+    try:
+        return evaluate_case(documentos)
+    except PermissionError:
+        return {'code': 'ACCESO_DENEGADO', 'requisitos': [], 'message': 'Expediente o archivos fuera de la sesión autorizada.'}
+    except Exception:
+        return {'code': 'ERROR_TECNICO', 'requisitos': [], 'message': 'No se pudo evaluar el expediente; no se clasificó como faltante ni inválido.'}
+
+
 if __name__ == "__main__":
     mcp.run()

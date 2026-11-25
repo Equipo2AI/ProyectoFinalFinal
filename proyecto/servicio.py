@@ -38,6 +38,7 @@ from proyecto.security.file_access import authorize_file_access
 
 # Nombres de las tools MCP que expone el orquestador.
 _TOOL_A_AGENTE = {
+    'evaluar_expediente_micuenta': 'document_intelligence',
     "mcp_inspeccionar_dataset": "data_steward",
     "mcp_validar_calidad_datos": "data_steward",
     "mcp_evaluar_calidad": "data_steward",
@@ -903,6 +904,25 @@ def _responder_con_archivo(
     return resultado
 
 
+def procesar_adjuntos_chat(archivos: list[tuple[str, str, str]], consulta: str) -> Respuesta:
+    """Mismo chat: registra referencias temporales y deja decidir al orquestador."""
+    from proyecto.security.local_auth import authenticated
+    from proyecto.orchestration.grafo import intencion_micuenta
+    try:
+        _, token = _identidad_documental(consulta)
+        with authenticated(token):
+            orquestador = _get_orquestador()
+            orquestador.registrar_adjuntos_chat([ref for ref, _, _ in archivos])
+        if len(archivos) == 1 and not intencion_micuenta(consulta):
+            ref, nombre, _ = archivos[0]
+            return procesar_documento(ref, consulta, nombre)
+        return preguntar_orquestador(consulta)
+    except PermissionError:
+        return {'respuesta': 'Acceso denegado a los documentos de esta sesión.', 'code': 'ACCESO_DENEGADO', 'herramientas': []}
+    except ValueError:
+        return {'respuesta': 'Adjunta como máximo ocho PDF autorizados en esta conversación.', 'code': 'ERROR_TECNICO', 'herramientas': []}
+
+
 def preguntar_orquestador(
     consulta: str, perfil: dict | None = None
 ) -> Respuesta:
@@ -915,7 +935,26 @@ def preguntar_orquestador(
     try:
         import streamlit as st
         from proyecto.agents.document_questions import external_request
+        from proyecto.orchestration.grafo import intencion_micuenta
+        current = st.session_state.get('orquestador_sesion')
+        intent = intencion_micuenta(consulta, seguimiento=getattr(current, '_expediente_en_curso', False))
+        attached = getattr(current, '_adjuntos_chat', {})
+        if attached and not intent and not external_request(consulta) and re.search(
+                r'document|archivo|adjunt|\bpdf\b|saldo|cargos|movimientos|vigencia|curp', consulta, re.I):
+            from proyecto.security.local_auth import authenticated
+            from proyecto.security.document_access import authorize_file
+            _, token = _identidad_documental(consulta)
+            with authenticated(token):
+                for ref in attached:
+                    authorize_file(ref)
+            selected = [ref for ref, name in attached.items() if name.casefold() in consulta.casefold()]
+            if len(selected) == 1:
+                return procesar_documento(selected[0], consulta, attached[selected[0]])
+            if len(attached) > 1:
+                return {'respuesta': 'Hay varios PDF en esta conversación. Indica el nombre del documento que deseas consultar, o pide evaluar el expediente MiCuenta completo.',
+                        'code': 'ACLARACION_NECESARIA', 'herramientas': []}
         if (st.session_state.get("documento_consultable")
+                and not intent
                 and st.session_state.get("usar_documento", True)
                 and not external_request(consulta)):
             return _preguntar_documento(consulta)

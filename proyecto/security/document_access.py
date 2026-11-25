@@ -226,24 +226,54 @@ def extract_authorized(reference: str, modo: str = 'auto', paginas: str | None =
 
 
 def _extract_authorized(reference: str, modo: str = 'auto', paginas: str | None = None):
-    identifier, entry = authorize_file(reference)
-    from proyecto.agents.document_intelligence_agent import _resolver_documento, _convertir_documento
-    from proyecto.agents.document_questions import extract_pages, _sanitize
-    from proyecto.agents.document_similarity import SimilarityError
-    path = _resolver_documento(entry['path'])
-    text = (_convertir_documento(path) if modo == 'auto' and not paginas else
-            _convertir_documento(path, modo=modo, paginas=paginas))
-    if text.startswith(('No se pudo', 'MarkItDown no extrajo')) or '[Contenido truncado:' in text:
-        raise SimilarityError('Extraccion documental incompleta.')
-    pages, incomplete = extract_pages(path, text)
-    for representation in [text, *(page['text'] for page in pages)]:
-        authorize_content(representation)
+    identifier, entry, text, pages, incomplete = _read_authorized(reference, modo, paginas)
+    from proyecto.agents.document_questions import _sanitize
     permissions = auth.principal()['permissions']
     safe_text = _sanitize(text, permissions)
     for page in pages:
         page['text'] = _sanitize(page['text'], permissions)
-    authorize_file(identifier)  # detectar sustitucion durante la extraccion
+    authorize_file(identifier)
     return identifier, entry, safe_text, pages, incomplete
+
+
+def extract_requirement_metadata(reference: str):
+    """Solo metadatos mínimos de un archivo propio; sin OCR generativo ni PII de salida.
+
+    Diagnóstico acotado de reglas; no concede admisión semántica o acceso al LLM.
+    """
+    auth.principal()
+    with _document_io():
+        identifier, _, _, pages, incomplete = _read_authorized(reference, 'texto', allow_unreadable=True)
+        from proyecto.agents.document_requirements import requirement_metadata
+        result = requirement_metadata(pages, incomplete)
+        authorize_file(identifier)
+        return identifier, result
+
+
+def _read_authorized(reference, modo='auto', paginas=None, *, allow_unreadable=False):
+    identifier, entry = authorize_file(reference)
+    from proyecto.agents.document_intelligence_agent import _resolver_documento, _convertir_documento
+    from proyecto.agents.document_questions import extract_pages
+    from proyecto.agents.document_similarity import SimilarityError
+    path = _resolver_documento(entry['path'])
+    text = (_convertir_documento(path) if modo == 'auto' and not paginas else
+            _convertir_documento(path, modo=modo, paginas=paginas))
+    if allow_unreadable and (not text.strip() or text.startswith('MarkItDown no extrajo')):
+        authorize_file(identifier)
+        return identifier, entry, '', [], True
+    if text.startswith(('No se pudo', 'MarkItDown no extrajo')) or '[Contenido truncado:' in text:
+        raise SimilarityError('Extraccion documental incompleta.')
+    try:
+        pages, incomplete = extract_pages(path, text)
+    except SimilarityError as error:
+        if allow_unreadable and str(error).startswith('No se extrajo texto localizable'):
+            pages, incomplete = [], True
+        else:
+            raise
+    for representation in [text, *(page['text'] for page in pages)]:
+        authorize_content(representation)
+    authorize_file(identifier)  # detectar sustitucion durante la extraccion
+    return identifier, entry, text, pages, incomplete
 
 
 def _digest(context):

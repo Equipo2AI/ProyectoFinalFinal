@@ -17,6 +17,40 @@ def test_coseno_y_fragmentos_representativos():
     assert len(parts) == 24 and parts[0].startswith("inicio") and parts[-1].endswith("final")
 
 
+@pytest.mark.parametrize('allow_overlap', [False, True])
+def test_concierge_calibracion_solapada_no_fuerza_etiquetas(monkeypatch, allow_overlap):
+    """Aritmetica simulada del calibrador; no son puntuaciones reales de Ollama."""
+    monkeypatch.setattr(ds, '_load', lambda: {'references': []})
+    monkeypatch.setattr(ds, 'embed', lambda parts: [[1., 0.]])
+    scores = iter([.8, .9, .7, .85])
+    monkeypatch.setattr(ds, 'scores', lambda vectors, refs: {'simulada': next(scores)})
+    saved = Mock()
+    monkeypatch.setattr(ds, '_save', saved)
+    examples = [{'id': str(i), 'text': 'Texto sintetico para calibracion ' * 4,
+                 'expected': 'aceptado' if i < 2 else 'rechazado'} for i in range(4)]
+    if not allow_overlap:
+        with pytest.raises(ds.SimilarityError):
+            ds.calibrate(examples)
+        saved.assert_not_called()
+    else:
+        result = ds.calibrate(examples, allow_overlap=True)
+        assert result['reject'] < .8 < .82 < .85 < result['accept']
+        assert result['overlap'] and result['method'] == 'conservative-overlap'
+
+
+def test_concierge_limite_calibrado_amplia_zona_indeterminada(monkeypatch):
+    monkeypatch.setattr(ds, '_load', lambda: {'references': []})
+    monkeypatch.setattr(ds, 'embed', lambda parts: [[1., 0.]])
+    simulated = iter([.8, .9, .7, .85, .88])
+    monkeypatch.setattr(ds, 'scores', lambda vectors, refs: {'simulada': next(simulated)})
+    monkeypatch.setattr(ds, '_save', Mock())
+    labels = ['aceptado', 'aceptado', 'rechazado', 'rechazado', 'indeterminado']
+    examples = [{'id': str(i), 'text': 'Texto sintetico de prueba ' * 5, 'expected': label} for i, label in enumerate(labels)]
+    result = ds.calibrate(examples, allow_overlap=True)
+    assert result['reject'] < .8 < .88 < result['accept'] < .9
+    assert result['method'] == 'conservative-boundaries'
+
+
 def test_indeterminado_y_fallo_tecnico_no_son_rechazo(monkeypatch):
     monkeypatch.setattr(ds, "_load", lambda: {"calibration": {"accept": .8, "reject": .4}, "references": []})
     monkeypatch.setattr(ds, "embed", Mock(side_effect=AssertionError("No debe inferir")))
@@ -104,6 +138,126 @@ def test_puerta_antes_del_orquestador(tmp_path, monkeypatch, decision):
     assert context_guard.call_count == (1 if decision == 'aceptado' else 0)
     if decision == 'aceptado':
         assert result['integridad_documental']['state'] == 'VALIDO'
+
+
+@pytest.mark.parametrize('case_index', range(7))
+def test_concierge_contraste_puntuaciones_registradas(case_index):
+    from proyecto.config.preparar_referencias_concierge import contrast_candidate
+    fixtures = Path(__file__).parent / 'fixtures'
+    dataset = json.loads((fixtures / 'document_similarity_concierge.json').read_text(encoding='utf-8'))
+    report = json.loads((fixtures / 'document_similarity_concierge_results.json').read_text(encoding='utf-8'))
+    row = report['validation'][case_index]
+    example = next(e for e in dataset['validation'] if e['id'] == row['id'])
+    text = dataset['notice'] + '\n' + example['text']
+    result = contrast_candidate(row, [{'text': text, 'source': 'Pagina 1'}], report['reference_metadata'])
+    assert result['decision'] in example['expected']
+    if row['id'] == 'val2_ajeno_b' or row['id'].startswith('val_limite'):
+        assert row['decision'] == 'aceptado'
+        assert result['decision'] == 'indeterminado'
+    assert result['similarities'] == row['similarities']
+    print(row['id'], row['decision'], '->', result['decision'], result['structure'])
+
+
+@pytest.mark.parametrize('kind,text', [
+    ('curp', 'CONSTANCIA CURP\nPersona: SUJETO FICTICIO\nCURP: ETIQUETA FICTICIA DE PRUEBA\nFecha de emision: 2026-01-01'),
+    ('domicilio', 'COMPROBANTE DE DOMICILIO\nTitular: SUJETO FICTICIO\nRecibo de luz\nDomicilio: UBICACION FICTICIA\nEmision: 2020-01-01'),
+    ('identificacion', 'IDENTIFICACION INE\nPersona: SUJETO FICTICIO\nNumero de registro: ETIQUETA DE ENSAYO\nCURP: no incluida\nVigencia: 2020-01-01'),
+])
+def test_concierge_contraste_estructura_sin_certificar_vigencia(kind, text):
+    from proyecto.config.preparar_referencias_concierge import contrast_candidate
+    # Puntuación simulada: prueba del contrato, no evidencia de embeddings reales.
+    semantic = {'decision': 'aceptado', 'similarities': {'referencia': 0.9}}
+    refs = [{'name': 'referencia', 'document_type': kind}]
+    pages = [{'text': text, 'source': 'Pagina 1'}]
+    assert contrast_candidate(semantic, pages, refs)['decision'] == 'aceptado'
+    assert contrast_candidate(semantic, pages, refs, incomplete=True)['decision'] == 'indeterminado'
+    assert contrast_candidate(semantic, [{'text': text.splitlines()[0], 'source': 'Pagina 1'}], refs)['decision'] == 'indeterminado'
+    wrong = [{'name': 'referencia', 'document_type': 'curp' if kind != 'curp' else 'domicilio'}]
+    assert contrast_candidate(semantic, pages, wrong)['decision'] == 'indeterminado'
+
+
+@pytest.mark.parametrize('text,sufficient', [
+    ('IDENTIFICACION INE\nPersona: SUJETO FICTICIO\nNumero de registro: ENSAYO\nVigencia: 2020-01-01', True),
+    ('CONSTANCIA CURP. Persona: SUJETO FICTICIO. CURP: ETIQUETA DE ENSAYO. Entidad de registro: ENSAYO.', True),
+    ('COMPROBANTE DE DOMICILIO. Recibo de luz. Titular: SUJETO FICTICIO. Domicilio: LUGAR FICTICIO. Emision: 2026-02-03.', True),
+    ('INSTRUCCIONES PARA ARMAR UNA COMETA. Persona: ENSAYO. Domicilio: LUGAR FICTICIO.', False),
+    ('LISTA DE REQUISITOS. CONSTANCIA CURP. Persona: ENSAYO. CURP: ETIQUETA. Emision: 2026-02-03.', False),
+    ('FORMULARIO SIN COMPLETAR. CONSTANCIA CURP\nPersona:\nCURP:\nEmision:', False),
+    ('El archivo representa una constancia CURP. Persona: ENSAYO. CURP: ETIQUETA. Emision: 2026-02-03.', False),
+    ('CONSTANCIA CURP. COMPROBANTE DE DOMICILIO. Persona: ENSAYO. CURP: ETIQUETA. Emision: 2026-02-03.', False),
+])
+def test_concierge_perfil_por_tipo_nuevo(text, sufficient):
+    from proyecto.agents.document_requirements import requirement_metadata
+    from proyecto.config.preparar_referencias_concierge import contrast_candidate
+    pages = [{'text': text, 'source': 'Pagina 1'}]
+    meta = requirement_metadata(pages, False)
+    assert meta['recognition']['sufficient'] is sufficient
+    kind = meta['recognition']['type']
+    refs = [{'name': 'ensayo', 'document_type': 'identificacion' if kind == 'ine' else kind}]
+    high = {'decision': 'aceptado', 'similarities': {'ensayo': .9}}
+    assert contrast_candidate(high, pages, refs)['decision'] == ('aceptado' if sufficient else 'indeterminado')
+    low = {'decision': 'rechazado', 'similarities': {'ensayo': .7}}
+    if kind is not None:
+        assert contrast_candidate(low, pages, refs)['decision'] == 'indeterminado'
+
+
+def test_concierge_breve_solo_candidato(monkeypatch):
+    from proyecto.config.preparar_referencias_concierge import evaluate_candidate
+    text = 'CONSTANCIA CURP\nPersona: X\nCURP: Y\nEmision: 2026-01-01'
+    assert ds.chunks(text) == []
+    monkeypatch.setattr(ds, 'evaluate', lambda _: {'decision': 'indeterminado', 'similarities': {}})
+    embedding = Mock(return_value=[[1., 0.]])
+    monkeypatch.setattr(ds, 'embed', embedding)
+    refs = [{'name': 'ensayo', 'document_type': 'curp', 'vectors': [[1., 0.]]}]
+    result = evaluate_candidate(text, [{'text': text, 'source': 'Pagina 1'}], refs)
+    embedding.assert_called_once_with([text])
+    assert result['decision'] == 'indeterminado'  # no calibración propia: no aceptar
+    assert result['similarities']['ensayo'] == 1.
+
+
+def test_concierge_aceptacion_estructural_bloqueada_por_holdout():
+    from proyecto.config.preparar_referencias_concierge import validated_structural_types, STRUCTURAL_REPORT
+    report = json.loads(STRUCTURAL_REPORT.read_text(encoding='utf-8'))
+    assert report['passed'] is False
+    assert report['false_positives'] == 2
+    assert report['validated_types'] == []
+    assert validated_structural_types() == frozenset()
+    assert report['extension_activated'] is False
+
+
+@pytest.mark.parametrize('case_id', [
+    'mencion_curp', 'articulo_con_campos', 'tipos_mezclados',
+    'ine_lineas', 'ine_parrafo', 'curp_registro', 'curp_emision',
+    'domicilio_luz', 'domicilio_telefono', 'curp_breve',
+    'lista_requisitos', 'plantilla_vacia',
+])
+def test_concierge_regresion_finalidad_y_tipos(case_id):
+    """Regresiones conocidas; no sustituyen un nuevo holdout independiente."""
+    from proyecto.config.preparar_referencias_concierge import (
+        STRUCTURAL_DATASET, contrast_candidate, validated_structural_types,
+    )
+    from proyecto.agents.document_requirements import requirement_metadata
+    dataset = json.loads(STRUCTURAL_DATASET.read_text(encoding='utf-8'))
+    case = next(c for c in dataset['cases'] if c['id'] == case_id)
+    pages = [{'text': case['text'], 'source': 'Pagina 1'}]
+    meta = requirement_metadata(pages, False)
+    kind = meta['recognition']['type']
+    refs = [{'name': 'simulada', 'document_type': 'identificacion' if kind == 'ine' else kind}]
+    # Semántica deliberadamente favorable/adversa para probar la guardia.
+    # Se simula aprobación solo para probar la rama; la aprobación real sigue vacía.
+    for semantic_decision in ('aceptado', 'rechazado'):
+        result = contrast_candidate(
+            {'decision': semantic_decision, 'similarities': {'simulada': .8}},
+            pages, refs, validated_types={'ine', 'curp', 'domicilio'},
+        )
+        assert result['decision'] == case['expected']
+        assert result['similarities'] == {'simulada': .8}
+    if case_id in {'mencion_curp', 'articulo_con_campos'}:
+        assert meta['recognition']['individual_document'] is False
+        assert meta['recognition']['sufficient'] is False
+    if case_id == 'tipos_mezclados':
+        assert result['admission_basis'] == 'tipos_contradictorios'
+    assert validated_structural_types() == frozenset()
 
 
 def _pdf(path, text):

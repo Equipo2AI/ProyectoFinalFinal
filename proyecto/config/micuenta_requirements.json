@@ -1,0 +1,18 @@
+{
+  "id": "micuenta_sucursal_pf_mexicana",
+  "version": "2026-11-24.1",
+  "producto": "MiCuenta Banamex",
+  "canal": "sucursal",
+  "fecha_consulta": "2026-11-24",
+  "perfil_habilitado": {"persona": "fisica", "nacionalidad": "mexicana", "actividad_empresarial": false},
+  "fuentes": [
+    {"id": "producto", "url": "https://www.banamex.com/personas/cuentas/micuenta-debito", "seccion": "Abre tu cuenta en la sucursal mas cercana", "fecha_consulta": "2026-11-24"}
+  ],
+  "requisitos": [
+    {"id": "ine", "document_type": "ine", "condicion": "siempre", "reglas": ["tipo_ine", "extraccion_legible", "vencimiento_declarado_no_superado"], "fuente": "producto"},
+    {"id": "domicilio", "document_type": "domicilio", "condicion": "siempre", "tipos_recibo": ["luz", "telefonia_fija", "predial", "television_paga"], "antiguedad_maxima_meses": 3, "reglas": ["tipo_recibo_admitido", "extraccion_legible", "campo_domicilio_presente", "emision_no_futura", "antiguedad"], "fuente": "producto"},
+    {"id": "curp", "document_type": "curp", "condicion": "ine_no_incluye_curp", "reglas": ["extraccion_legible", "campo_curp_presente"], "fuente": "producto"},
+    {"id": "rfc", "document_type": "rfc", "condicion": "actividad_empresarial", "reglas": ["requisito_condicional_no_habilitado_en_este_perfil"], "fuente": "producto"}
+  ],
+  "limites": ["No verifica autenticidad, titularidad ni datos ante INE o RENAPO.", "Las fechas deben ser explicitas; no se infiere vencimiento de un anio aislado.", "La legibilidad se refiere a los campos extraidos, no certifica la integridad visual.", "No evalua el deposito inicial ni decide la apertura bancaria."]
+}

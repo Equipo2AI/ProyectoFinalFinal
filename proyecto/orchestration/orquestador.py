@@ -325,6 +325,62 @@ class Orquestador:
         if len(self._mensajes) > maximo:
             self._mensajes = self._mensajes[-maximo:]
 
+    def registrar_adjuntos_chat(self, documentos):
+        """Conserva solo referencias del registro privado; nunca texto sin admisión."""
+        from proyecto.security.document_access import authorize_file, binding
+        scope = binding()
+        if self._document_scope not in (None, scope):
+            raise PermissionError('Los adjuntos pertenecen a otra sesión.')
+        checked = [authorize_file(ref)[0] for ref in documentos]
+        current = dict(getattr(self, '_adjuntos_chat', {}))
+        for ref in checked:
+            _, entry = authorize_file(ref)
+            if Path(entry['path']).suffix.lower() != '.pdf':
+                raise ValueError('El expediente admite PDF.')
+            current[ref] = entry.get('name', Path(entry['path']).name)
+        if len(current) > 8:
+            raise ValueError('Utiliza como máximo ocho PDF en la conversación.')
+        self._adjuntos_chat = current
+        self._document_scope = scope
+        self._document_references.update(checked)
+
+    def _evaluar_expediente_chat(self, consulta):
+        import json
+        from proyecto.mcp_servers.mcp_client import llamar_herramienta
+        from proyecto.security.document_access import authorize_file
+        attached = getattr(self, '_adjuntos_chat', {})
+        named = [ref for ref, name in attached.items() if name.casefold() in consulta.casefold()]
+        refs = named or list(attached)
+        for ref in refs:
+            authorize_file(ref)
+        raw = llamar_herramienta('proyecto.mcp_servers.document_intelligence_server',
+                                 'evaluar_expediente_micuenta', {'documentos': refs})
+        result = json.loads(raw)
+        for ref in refs:
+            authorize_file(ref)
+        if result.get('code') == 'ACCESO_DENEGADO':
+            raise PermissionError('Expediente fuera de alcance.')
+        if result.get('code') != 'OK' or not isinstance(result.get('requisitos'), list):
+            text = 'No se pudo verificar el expediente por un error técnico; no se clasificó como incompleto.'
+        else:
+            lines = ['Evaluación documental de MiCuenta Banamex:']
+            for row in result['requisitos']:
+                status = row.get('estado') or ('NO_APLICA' if row.get('aplica') is False else 'NO_VERIFICABLE')
+                lines.append(f"- {row['requisito']}: {status}. {row.get('explicacion', '')}")
+                if any(i.get('estado') == 'VENCIDO' for i in row.get('incidencias', [])):
+                    lines.append('  Incidencia: VENCIDO.')
+            lines.append('Esta revisión no certifica autenticidad ni titularidad y no equivale a aprobación bancaria.')
+            text = '\n'.join(lines)
+        self._expediente_en_curso = True
+        self._ultimo_agente = 'document_intelligence'
+        self.ultimas_herramientas = [{'name': 'evaluar_expediente_micuenta', 'args': {'documentos': refs},
+                                     'salida': raw, 'estado': 'ok' if result.get('code') == 'OK' else 'error'}]
+        self.agentes_invocados = ['document_intelligence']
+        self.ultimo_estado_grafo = {'respuesta': text, 'expediente': result}
+        self._mensajes.extend([HumanMessage(content=consulta), AIMessage(content=text)])
+        self._limitar_historial()
+        return text
+
     def procesar(self, consulta: str, perfil: dict | None = None) -> str:
         """Atiende una consulta con el grafo explícito de LangGraph.
 
@@ -350,9 +406,26 @@ class Orquestador:
         from proyecto.security.document_access import authorize_file, binding
         for reference in (self._imagen_pendiente, _ruta_documento_de_consulta(consulta), _ruta_imagen_de_consulta(consulta)):
             if reference:
+                named = [ref for ref, name in getattr(self, '_adjuntos_chat', {}).items()
+                         if name.casefold() == str(reference).casefold()]
+                if len(named) > 1:
+                    raise ValueError('Hay varios adjuntos con ese nombre; precisa el documento.')
+                if named:
+                    reference = named[0]
                 identifier, _ = authorize_file(reference)
                 self._document_references.add(identifier)
                 self._document_scope = binding()
+        from proyecto.orchestration.grafo import intencion_micuenta
+        intent = intencion_micuenta(consulta, seguimiento=getattr(self, '_expediente_en_curso', False))
+        if intent == 'aclaracion_expediente':
+            text = '¿Para qué trámite necesitas revisar los documentos? Indica si es apertura de MiCuenta y utiliza los PDF de esta conversación.'
+            self.ultimas_herramientas = []
+            self.agentes_invocados = []
+            self.ultimo_estado_grafo = {'respuesta': text}
+            self._mensajes.extend([HumanMessage(content=consulta), AIMessage(content=text)])
+            return text
+        if intent == 'expediente':
+            return self._evaluar_expediente_chat(consulta)
         if fuera_de_alcance(
             consulta,
             hay_contexto=bool(self._mensajes or self._documentos),
@@ -503,6 +576,8 @@ class Orquestador:
         return respuesta
 
     def reiniciar(self) -> None:
+        self._adjuntos_chat = {}
+        self._expediente_en_curso = False
         self._mensajes = []
         self.agentes_invocados = []
         self.ultimas_herramientas = []

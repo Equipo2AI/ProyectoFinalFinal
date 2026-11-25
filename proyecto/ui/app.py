@@ -17,6 +17,7 @@ import streamlit as st
 from servicio import (
     preguntar_orquestador,
     procesar_documento,
+    procesar_adjuntos_chat,
     procesar_imagen_auto,
     reiniciar_orquestador,
 )
@@ -125,7 +126,7 @@ def _guardar_archivo_chat(archivo) -> tuple[str, str, str] | None:
 
 def iniciar(
     texto: str,
-    archivo_path: str | None = None,
+    archivo_path: str | list[tuple[str, str, str]] | None = None,
     archivo_nombre: str | None = None,
     archivo_tipo: str | None = None,
 ) -> None:
@@ -382,7 +383,7 @@ with izquierda:
                       help="Desactívalo para volver al asistente general. Las consultas explícitas a SQLite o normativa conservan su ruta.")
         entrada = st.chat_input(
             "Hazme una consulta o adjunta un archivo",
-            accept_file=True,
+            accept_file="multiple",
             file_type=TIPOS_ARCHIVO,
             max_upload_size=MAX_ARCHIVO_BYTES // (1024 * 1024),
             disabled=not puede_consultar or st.session_state.pensando,
@@ -396,7 +397,15 @@ with izquierda:
                 archivos = list(entrada.files or [])
 
             if archivos:
-                guardado = _guardar_archivo_chat(archivos[0])
+                guardado = None
+                if len(archivos) > 8 or (len(archivos) > 1 and any(Path(a.name).suffix.lower() != '.pdf' for a in archivos)):
+                    st.error('Puedes adjuntar hasta ocho PDF juntos; otros formatos se procesan individualmente.')
+                else:
+                    guardados = [_guardar_archivo_chat(a) for a in archivos]
+                    guardado = guardados[0] if len(guardados) == 1 else None
+                    if all(guardados) and (len(guardados) > 1 or guardados[0][2] == 'documento' and Path(archivos[0].name).suffix.lower() == '.pdf'):
+                        iniciar(texto or 'Analiza los documentos adjuntos.', archivo_path=guardados,
+                                archivo_tipo='documentos')
                 if guardado:
                     ruta, nombre, tipo = guardado
                     predeterminado = (
@@ -455,7 +464,10 @@ if st.session_state.mensajes:
 if st.session_state.pensando:
     try:
         tipo_archivo = st.session_state.get("archivo_tipo")
-        if tipo_archivo == "imagen":
+        if tipo_archivo == "documentos":
+            artefacto = procesar_adjuntos_chat(st.session_state.archivo_actual,
+                                             st.session_state.consulta_actual or '')
+        elif tipo_archivo == "imagen":
             artefacto = procesar_imagen_auto(
                 st.session_state.archivo_actual,
                 st.session_state.consulta_actual or "",

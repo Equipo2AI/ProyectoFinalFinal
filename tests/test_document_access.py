@@ -17,6 +17,7 @@ import importlib
 agent = importlib.import_module('proyecto.agents.document_intelligence_agent')
 from proyecto.mcp_servers import document_intelligence_server as server
 REAL_EXTRACT_PAGES = dq.extract_pages
+REAL_CONVERT_DOCUMENT = agent._convertir_documento
 
 
 @pytest.fixture
@@ -43,7 +44,7 @@ def secured(tmp_path, monkeypatch):
                 raise PermissionError()
         return user
     monkeypatch.setattr(auth, 'authorize_request', authorize)  # lookup de cuentas simulado
-    extract = Mock(side_effect=lambda p: p.read_text(encoding='utf-8'))
+    extract = Mock(side_effect=lambda p, **kwargs: p.read_text(encoding='utf-8'))
     monkeypatch.setattr(agent, '_convertir_documento', extract)
     monkeypatch.setattr(dq, 'extract_pages', lambda p, t: ([{'source': 'Página 1', 'text': t}], False))
     embeddings = Mock(side_effect=lambda parts: [[1., 0.] for _ in parts])
@@ -64,11 +65,329 @@ def secured(tmp_path, monkeypatch):
     return tokens, as_user, extract, embeddings, evaluation, factory
 
 
+@pytest.mark.parametrize('indeterminate', [False, True])
+def test_chat_concierge_expediente_y_seguimiento(secured, monkeypatch, indeterminate):
+    from proyecto.orchestration.orquestador import Orquestador
+    from proyecto.mcp_servers import mcp_client
+    from proyecto.agents.document_requirements import evaluate_case
+    _, as_user, extract, _, admission, _ = secured
+    extract.side_effect = lambda p, **kwargs: p.read_text(encoding='utf-8')
+    orchestrator = Orquestador(modelo='modelo-no-ejecutado', memory=Mock())
+    calls = []
+    def mcp(module, name, args):
+        assert module == 'proyecto.mcp_servers.document_intelligence_server'
+        assert name == 'evaluar_expediente_micuenta'
+        calls.append(args['documentos'])
+        return json.dumps(evaluate_case(args['documentos']))
+    monkeypatch.setattr(mcp_client, 'llamar_herramienta', mcp)  # doble de transporte, backend real
+    admission.side_effect = AssertionError('El expediente usa perfiles, no admisión semántica global')
+    with as_user():
+        refs = [access.store_upload((('AVISO DE PRIVACIDAD\n' if indeterminate else '') + t).encode(), '.pdf', n) for t,n in [
+            (CONCIERGE_ID, 'credencial.pdf'), (CONCIERGE_CURP, 'registro.pdf'),
+            (CONCIERGE_ADDRESS, 'recibo.pdf')]]
+        orchestrator.registrar_adjuntos_chat(refs)
+        text = orchestrator.procesar('¿Mis archivos cumplen los requisitos para abrir MiCuenta Banamex?')
+        assert ('NO_VERIFICABLE' if indeterminate else 'VALIDO_SEGUN_REGLAS') in text
+        assert orchestrator._mensajes[-1].content == text
+        follow = orchestrator.procesar('¿Qué documentos faltan?')
+        assert calls == [refs, refs]
+        assert orchestrator._mensajes[-1].content == follow
+        assert orchestrator.agentes_invocados == ['document_intelligence']
+    with as_user('usuario_b'):
+        with pytest.raises(PermissionError):
+            orchestrator.procesar('¿Mi expediente MiCuenta está completo?')
+    assert len(calls) == 2
+
+
+def test_chat_concierge_normal_y_requisitos_sin_modelo(secured, monkeypatch):
+    from proyecto.orchestration.orquestador import Orquestador
+    from proyecto.orchestration.grafo import planear_rutas_hibrido
+    _, as_user, *_ = secured
+    orchestrator = Orquestador(modelo='no-ejecutado', memory=Mock())
+    graph = Mock(return_value='ruta previa')
+    monkeypatch.setattr(orchestrator, '_procesar_grafo', graph)
+    with as_user():
+        assert orchestrator.procesar('Hola') == 'ruta previa'
+        graph.assert_called_once()
+        plan = planear_rutas_hibrido('¿Qué requisitos necesito para abrir MiCuenta Banamex?')
+        assert plan[0] == ['normatividad_rag']
+
+
+def test_chat_concierge_pdf_individual_y_ambiguedad(secured, monkeypatch):
+    import streamlit as st
+    from proyecto import servicio
+    from proyecto.orchestration.orquestador import Orquestador
+    tokens, as_user, *_ = secured
+    orchestrator = Orquestador(modelo='no-ejecutado', memory=Mock())
+    state = {'auth_token': tokens['usuario_a'], 'orquestador_sesion': orchestrator}
+    monkeypatch.setattr(st, 'session_state', state)
+    monkeypatch.setattr(servicio, '_get_orquestador', lambda: orchestrator)
+    single = Mock(return_value={'respuesta': 'ruta individual existente'})
+    monkeypatch.setattr(servicio, 'procesar_documento', single)
+    with as_user():
+        first = access.store_upload(TEXT.encode(), '.pdf', 'enero.pdf')
+        result = servicio.procesar_adjuntos_chat([(first, 'enero.pdf', 'documento')], '¿Qué saldo muestra este PDF?')
+        assert result['respuesta'] == 'ruta individual existente'
+        single.assert_called_once_with(first, '¿Qué saldo muestra este PDF?', 'enero.pdf')
+        second = access.store_upload(TEXT.encode(), '.pdf', 'febrero.pdf')
+        orchestrator.registrar_adjuntos_chat([second])
+        result = servicio.preguntar_orquestador('¿Qué saldo muestra el PDF?')
+        assert result['code'] == 'ACLARACION_NECESARIA'
+        assert single.call_count == 1
+        servicio.preguntar_orquestador('¿Qué saldo muestra enero.pdf?')
+        assert single.call_count == 2
+        assert single.call_args.args[0] == first
+
+
+def test_chat_concierge_tipo_ambiguo_no_es_requisito_valido(secured, monkeypatch):
+    from proyecto.agents.document_requirements import evaluate_case
+    _, as_user, _, _, admission, _ = secured
+    admission.side_effect = AssertionError('No ejecutar embeddings para el expediente')
+    with as_user():
+        ref = access.store_upload(('AVISO DE PRIVACIDAD\n' + CONCIERGE_ID).encode(), '.pdf', 'ambiguo.pdf')
+        result = evaluate_case([ref])
+    assert not result['completo_segun_reglas']
+    assert all(r['estado'] == 'NO_VERIFICABLE' for r in result['requisitos'] if r['aplica'] is not False)
+    admission.assert_not_called()
+
+
+def test_chat_concierge_lote_desde_servicio_y_sin_archivos(secured, monkeypatch):
+    import streamlit as st
+    from proyecto import servicio
+    from proyecto.orchestration.orquestador import Orquestador
+    from proyecto.agents.document_requirements import evaluate_case
+    from proyecto.mcp_servers import mcp_client
+    tokens, as_user, extract, *_ = secured
+    extract.side_effect = lambda p, **kwargs: p.read_text(encoding='utf-8')
+    orchestrator = Orquestador(modelo='no-ejecutado', memory=Mock())
+    monkeypatch.setattr(st, 'session_state', {'auth_token': tokens['usuario_a'], 'orquestador_sesion': orchestrator})
+    monkeypatch.setattr(servicio, '_get_orquestador', lambda: orchestrator)
+    calls = []
+    def mcp(module, name, args):
+        assert name == 'evaluar_expediente_micuenta'
+        calls.append(args['documentos'])
+        return json.dumps(evaluate_case(args['documentos']))
+    monkeypatch.setattr(mcp_client, 'llamar_herramienta', mcp)
+    with as_user():
+        empty = servicio.preguntar_orquestador('¿Mi expediente MiCuenta Banamex está completo?')
+        assert 'FALTANTE' in empty['respuesta']
+        assert calls == [[]]
+        refs = [access.store_upload(TEXT.encode(), '.pdf', name) for name in ['uno.pdf', 'dos.pdf']]
+        result = servicio.procesar_adjuntos_chat([(r, n, 'documento') for r,n in zip(refs, ['uno.pdf','dos.pdf'])],
+                                              '¿Mis documentos cumplen los requisitos de apertura MiCuenta Banamex?')
+        assert calls[-1] == refs
+        assert 'NO_VERIFICABLE' in result['respuesta']
+        assert result['herramientas'] == ['evaluar_expediente_micuenta']
+        assert 'document_intelligence' in result['agentes']
+        servicio.preguntar_orquestador('¿Mi expediente MiCuenta está completo usando solo uno.pdf?')
+        assert calls[-1] == refs[:1]
+        own_calls = len(calls)
+    with as_user('usuario_b'):
+        with pytest.raises(PermissionError):
+            evaluate_case(refs)
+    assert len(calls) == own_calls
+
+
 TEXT = 'Estado de cuenta\nCuenta: 100\nNombre del titular: Persona reservada\nSaldo final: 9100.00\nDatos de prueba, sin informacion real.'
 
 
 def registered():
     return access.store_upload(TEXT.encode(), '.pdf', 'estado.pdf')
+
+
+CONCIERGE_ID = 'Identificacion oficial INE\nPersona: SUJETO FICTICIO\nRegistro: ETIQUETA FICTICIA\nVigente hasta: 2027-11-24\nCURP: no incluida'
+CONCIERGE_CURP = 'Constancia CURP\nPersona: SUJETO FICTICIO\nEntidad de registro: OFICINA FICTICIA\nCURP: IDENTIFICADOR_FICTICIO_PRIVADO'
+CONCIERGE_ADDRESS = 'Comprobante de domicilio\nTitular: SUJETO FICTICIO\nTipo de recibo: luz\nFecha de emision: 2026-11-01\nDomicilio: DIRECCION_FICTICIA_PRIVADA'
+
+
+def _case_metadata(texts):
+    from proyecto.agents.document_requirements import requirement_metadata
+    return [{'documento_id': f'doc-fixture-{i}',
+             'metadata': requirement_metadata([{'source': 'Página 1', 'text': text}], False)}
+            for i, text in enumerate(texts)]
+
+
+@pytest.mark.parametrize('case,requirement,status,complete', [
+    ('vigente', 'ine', 'VALIDO_SEGUN_REGLAS', True),
+    ('vencida', 'ine', 'PRESENTE', False),
+    ('curp_completa', 'curp', 'VALIDO_SEGUN_REGLAS', True),
+    ('curp_incompleta', 'curp', 'PRESENTE', False),
+    ('recibo_completo', 'domicilio', 'VALIDO_SEGUN_REGLAS', True),
+    ('recibo_incompleto', 'domicilio', 'PRESENTE', False),
+    ('faltante', 'domicilio', 'FALTANTE', False),
+    ('educativo', 'curp', 'NO_VERIFICABLE', False),
+    ('extraccion_parcial', 'ine', 'NO_VERIFICABLE', False),
+])
+def test_concierge_tipo_separado_de_cumplimiento(case, requirement, status, complete):
+    from datetime import date
+    from proyecto.agents.document_requirements import requirement_metadata, evaluate_requirement_metadata
+    texts = [CONCIERGE_ID, CONCIERGE_CURP, CONCIERGE_ADDRESS]
+    if case == 'vencida':
+        texts[0] = texts[0].replace('2027-11-24', '2020-01-01')
+    elif case == 'curp_incompleta':
+        texts[1] = texts[1].replace('IDENTIFICADOR_FICTICIO_PRIVADO', '')
+    elif case == 'recibo_incompleto':
+        texts[2] = texts[2].replace('DIRECCION_FICTICIA_PRIVADA', '')
+    elif case == 'faltante':
+        texts.pop(2)
+    elif case == 'educativo':
+        texts[1] = 'CONSTANCIA CURP: LECTURA COMENTADA\n' + texts[1]
+    docs = _case_metadata(texts)
+    if case == 'extraccion_parcial':
+        docs[0]['metadata'] = requirement_metadata([{'text': texts[0], 'source': 'Página 1'}], True)
+    result = evaluate_requirement_metadata(docs, today=date(2026, 11, 25))
+    row = next(r for r in result['requisitos'] if r['requisito'] == requirement)
+    assert row['estado'] == status
+    assert result['completo_segun_reglas'] is complete
+    if case == 'vencida':
+        assert row['cumple'] is False
+        assert {'estado': 'VENCIDO', 'campo': 'vigencia'} in row['incidencias']
+    if case in {'curp_incompleta', 'recibo_incompleto'}:
+        assert row['incidencias'] and row['campos_no_verificables']
+        assert row['cumple'] is not True
+    assert result['aprobacion_bancaria'] is None and not result['titularidad_verificada']
+
+
+def test_concierge_expediente_pdf_real_sin_embeddings_y_sesion_ajena(secured, monkeypatch):
+    """Registro y permisos reales de prueba; conversión/PDF reales, sin STDIO ni LLM."""
+    from proyecto.agents.document_requirements import evaluate_case
+    _, as_user, _, _, admission, factory = secured
+    monkeypatch.setattr(agent, '_convertir_documento', REAL_CONVERT_DOCUMENT)
+    monkeypatch.setattr(dq, 'extract_pages', REAL_EXTRACT_PAGES)
+    admission.side_effect = AssertionError('No usar embeddings para perfiles Concierge')
+    factory.side_effect = AssertionError('No ejecutar un modelo generativo')
+    root = Path(__file__).parent / 'fixtures/concierge_final_pdf_holdout'
+    paths = [root / (name + '.pdf') for name in ['ine_completa', 'curp_completa', 'domicilio_completo']]
+    hashes = [hashlib.sha256(p.read_bytes()).hexdigest() for p in paths]
+    with as_user():
+        refs = [access.store_upload(p.read_bytes(), '.pdf', p.name) for p in paths]
+        result = evaluate_case(refs)
+        assert result['completo_segun_reglas'] is True
+        assert all(a['decision'] == 'reconocido' and a['admision_semantica'] == 'NO_EVALUADA'
+                   for a in result['admision_semantica'])
+        assert not result['titularidad_verificada']
+        expired = Path(__file__).parent / 'fixtures/concierge_demo/identificacion_vencida_simulada.pdf'
+        expired_ref = access.store_upload(expired.read_bytes(), '.pdf', expired.name)
+        expired_result = evaluate_case([expired_ref, *refs[1:]])
+        row = next(r for r in expired_result['requisitos'] if r['requisito'] == 'ine')
+        assert row['estado'] == 'PRESENTE' and row['cumple'] is False
+        assert {'estado': 'VENCIDO', 'campo': 'vigencia'} in row['incidencias']
+        educational = root / 'educativo_registro_limpio.pdf'
+        educational_ref = access.store_upload(educational.read_bytes(), '.pdf', educational.name)
+        uncertain_result = evaluate_case([refs[0], educational_ref, refs[2]])
+        curp = next(r for r in uncertain_result['requisitos'] if r['requisito'] == 'curp')
+        assert curp['estado'] == 'NO_VERIFICABLE'
+        assert not uncertain_result['completo_segun_reglas']
+    extractor = Mock(side_effect=AssertionError('No leer documentos ajenos'))
+    monkeypatch.setattr(access, 'extract_requirement_metadata', extractor)
+    with as_user('usuario_b'):
+        with pytest.raises(PermissionError):
+            evaluate_case(refs)
+    extractor.assert_not_called()
+    admission.assert_not_called()
+    assert hashes == [hashlib.sha256(p.read_bytes()).hexdigest() for p in paths]
+
+
+@pytest.mark.parametrize('embedded', [False, True])
+def test_concierge_matriz_condicion_curp_y_sin_pii(embedded):
+    from datetime import date
+    from proyecto.agents.document_requirements import evaluate_requirement_metadata
+    ine = CONCIERGE_ID.replace('no incluida', 'IDENTIFICADOR_FICTICIO_PRIVADO') if embedded else CONCIERGE_ID
+    docs = [ine, CONCIERGE_ADDRESS] + ([] if embedded else [CONCIERGE_CURP])
+    result = evaluate_requirement_metadata(_case_metadata(docs), today=date(2026, 11, 24))
+    rows = {r['requisito']: r for r in result['requisitos']}
+    assert result['completo_segun_reglas'] and result['aprobacion_bancaria'] is None
+    assert rows['ine']['estado'] == rows['domicilio']['estado'] == 'VALIDO_SEGUN_REGLAS'
+    assert rows['curp']['aplica'] == (not embedded)
+    assert rows['rfc']['aplica'] is False and rows['rfc']['estado'] is None
+    assert result['matriz']['version'] == '2026-11-24.1'
+    assert result['matriz']['canal'] == 'sucursal'
+    assert result['matriz']['fecha_consulta'] == '2026-11-24'
+    assert 'IDENTIFICADOR_FICTICIO_PRIVADO' not in json.dumps(result)
+    assert 'DIRECCION_FICTICIA_PRIVADA' not in json.dumps(result)
+
+
+@pytest.mark.parametrize('change,requirement,status', [
+    ('missing_address', 'domicilio', 'FALTANTE'),
+    ('missing_curp', 'curp', 'FALTANTE'),
+    ('expired', 'ine', 'PRESENTE'),
+])
+def test_concierge_faltante_no_es_identificacion_vencida(change, requirement, status):
+    from datetime import date
+    from proyecto.agents.document_requirements import evaluate_requirement_metadata
+    texts = [CONCIERGE_ID, CONCIERGE_CURP, CONCIERGE_ADDRESS]
+    if change == 'missing_address':
+        texts.pop(2)
+    elif change == 'missing_curp':
+        texts.pop(1)
+    else:
+        texts[0] = texts[0].replace('2027-11-24', '2025-11-24')
+    result = evaluate_requirement_metadata(_case_metadata(texts), today=date(2026, 11, 24))
+    row = next(r for r in result['requisitos'] if r['requisito'] == requirement)
+    assert row['estado'] == status and row['cumple'] is False
+    assert not result['completo_segun_reglas']
+    if change == 'expired':
+        assert row['incidencias'] == [{'estado': 'VENCIDO', 'campo': 'vigencia'}]
+
+
+@pytest.mark.parametrize('issued,complies', [('2026-08-24', True), ('2026-08-23', False), ('2026-11-25', False)])
+def test_concierge_recibo_tres_meses_calendario(issued, complies):
+    from datetime import date
+    from proyecto.agents.document_requirements import evaluate_requirement_metadata
+    docs = _case_metadata([CONCIERGE_ID, CONCIERGE_CURP, CONCIERGE_ADDRESS.replace('2026-11-01', issued)])
+    result = evaluate_requirement_metadata(docs, today=date(2026, 11, 24))
+    row = next(r for r in result['requisitos'] if r['requisito'] == 'domicilio')
+    assert row['cumple'] == complies
+
+
+def test_concierge_ausencia_no_se_infiere_de_extraccion_insuficiente():
+    from proyecto.agents.document_requirements import evaluate_requirement_metadata
+    docs = _case_metadata([CONCIERGE_ID.replace('CURP: no incluida', ''), CONCIERGE_ADDRESS])
+    result = evaluate_requirement_metadata(docs)
+    assert next(r for r in result['requisitos'] if r['requisito'] == 'curp')['estado'] == 'NO_VERIFICABLE'
+    assert not result['completo_segun_reglas']
+    result = evaluate_requirement_metadata(_case_metadata(['Texto de tipo desconocido']))
+    assert next(r for r in result['requisitos'] if r['requisito'] == 'ine')['estado'] == 'NO_VERIFICABLE'
+    result = evaluate_requirement_metadata(_case_metadata([CONCIERGE_ID.replace('no incluida', 'si'), CONCIERGE_ADDRESS]))
+    assert next(r for r in result['requisitos'] if r['requisito'] == 'curp')['estado'] == 'NO_VERIFICABLE'
+
+
+def test_concierge_mcp_autoriza_todo_antes_de_extraer_sin_modelos(secured, monkeypatch):
+    _, as_user, extract, embeddings, evaluation, factory = secured
+    def convert(path, **kwargs):
+        assert kwargs == {'modo': 'texto', 'paginas': None}
+        return path.read_text(encoding='utf-8')
+    extract.side_effect = convert
+    with as_user():
+        refs = [access.store_upload(text.encode(), '.txt', 'fixture.txt')
+                for text in [CONCIERGE_ID, CONCIERGE_CURP, CONCIERGE_ADDRESS]]
+        result = server.evaluar_expediente_micuenta(refs)
+        assert result['code'] == 'OK' and result['analisis_llm_habilitado'] is False
+        assert 'DIRECCION_FICTICIA_PRIVADA' not in json.dumps(result)
+        assert 'IDENTIFICADOR_FICTICIO_PRIVADO' not in json.dumps(result)
+    extract.reset_mock()
+    with as_user('usuario_b'):
+        foreign = server.evaluar_expediente_micuenta(refs)
+    assert foreign['code'] == 'ACCESO_DENEGADO' and foreign['requisitos'] == []
+    extract.assert_not_called()
+    embeddings.assert_not_called()
+    evaluation.assert_not_called()
+    factory.assert_not_called()
+
+
+def test_concierge_texto_ilegible_y_error_tecnico_no_son_faltantes(secured):
+    _, as_user, extract, *_ = secured
+    with as_user():
+        ref = access.store_upload(b'Contenido sintetico sin conversion real', '.txt', 'fixture.txt')
+        extract.side_effect = None
+        extract.return_value = ''
+        result = server.evaluar_expediente_micuenta([ref])
+        assert result['code'] == 'OK'
+        assert next(r for r in result['requisitos'] if r['requisito'] == 'ine')['estado'] == 'NO_VERIFICABLE'
+        extract.side_effect = RuntimeError('DETALLE_PRIVADO_NO_PUBLICAR')
+        error = server.evaluar_expediente_micuenta([ref])
+        assert error['code'] == 'ERROR_TECNICO' and error['requisitos'] == []
+        assert 'DETALLE_PRIVADO_NO_PUBLICAR' not in json.dumps(error)
 
 
 def test_merge_archivo_sin_identidad_no_admite_bypass(secured, tmp_path):

@@ -1,0 +1,23 @@
+{
+  "version": "concierge-holdout-v2",
+  "notice": "Textos sintéticos independientes para evaluar reconocimiento, sin validez oficial. Las etiquetas de una letra son sustitutos deliberados, no identificadores personales. No se evalúa autenticidad ni cumplimiento.",
+  "cases": [
+    {"id":"ine_nueva","expected":"aceptado","type":"ine","text":"CREDENCIAL PARA VOTAR - SIMULACION\nNombre: PERSONA FICTICIA BRISA\nNumero de credencial: ETIQUETA INTERNA SIN USO OFICIAL\nVigencia: 2033-11-30\nCURP: no incluida"},
+    {"id":"curp_nueva","expected":"aceptado","type":"curp","text":"CONSTANCIA DE CURP - SIMULACION\nPersona registrada: SUJETO FICTICIO ARENA\nCURP: VALOR SIMULADO SIN CLAVE PERSONAL\nEntidad registradora: ENTIDAD FICTICIA DEL ENSAYO"},
+    {"id":"domicilio_nuevo","expected":"aceptado","type":"domicilio","text":"RECIBO DE TELEFONIA FIJA - SIMULACION\nTitular: PERSONA FICTICIA CORAL\nDireccion: UBICACION IMAGINARIA PARA EL ENSAYO\nFecha de emision: 2026-08-19\nServicio: conexion residencial"},
+    {"id":"ine_breve_nueva","expected":"aceptado","type":"ine","text":"IDENTIFICACION INE\nNombre: A\nRegistro: B\nVigencia: 2031-09-09"},
+    {"id":"curp_breve_nueva","expected":"aceptado","type":"curp","text":"CONSTANCIA CURP\nPersona: C\nCURP: D\nEmision: 2026-07-21"},
+    {"id":"domicilio_breve_nuevo","expected":"aceptado","type":"domicilio","text":"RECIBO DE LUZ\nTitular: E\nDomicilio: F\nEmision: 2026-07-22"},
+    {"id":"domicilio_parrafo_nuevo","expected":"aceptado","type":"domicilio","text":"COMPROBANTE RESIDENCIAL - SIMULACION. Recibo de energia electrica. Titular: PERSONA FICTICIA DELTA. Domicilio del servicio: LUGAR INVENTADO DEL ENSAYO. Emision: 2026-09-02."},
+    {"id":"aviso_nuevo","expected":["rechazado","indeterminado"],"text":"AVISO SOBRE TRATAMIENTO DE DATOS. La constancia CURP puede entregarse en ventanilla. Persona: SUJETO FICTICIO ECO. CURP: ETIQUETA DEL EJEMPLO. Entidad de registro: DEPENDENCIA IMAGINARIA. El aviso comunica el uso de los campos recogidos."},
+    {"id":"lectura_comentada","expected":["rechazado","indeterminado"],"text":"CONSTANCIA CURP: LECTURA COMENTADA PARA ESTUDIANTES\nPersona: SUJETO FICTICIO FLORA\nCURP: ETIQUETA DEL EJERCICIO\nEntidad de registro: OFICINA IMAGINARIA\nEl texto analiza la funcion de cada apartado del registro poblacional como material de estudio."},
+    {"id":"explicacion_nueva","expected":["rechazado","indeterminado"],"text":"FOLLETO DE ORIENTACION AL PUBLICO. Una identificacion INE contiene diferentes apartados. Nombre: SUJETO FICTICIO GEMA. Numero de registro: ETIQUETA INVENTADA. Vigencia: 2032-01-19. Esta pagina explica la organizacion de los datos."},
+    {"id":"lista_nueva","expected":"indeterminado","text":"LISTA DE REQUISITOS DE RECEPCION. CONSTANCIA CURP. Persona: SUJETO FICTICIO HOJA. CURP: DATO DE ENSAYO. Emision: 2026-06-17. Se enumera lo que debe entregar la persona solicitante."},
+    {"id":"plantilla_nueva","expected":"indeterminado","text":"PLANTILLA DE COMPROBANTE DE DOMICILIO\nRecibo de luz\nTitular: [PENDIENTE]\nDomicilio: [PENDIENTE]\nEmision: [PENDIENTE]"},
+    {"id":"mezcla_nueva","expected":"indeterminado","text":"IDENTIFICACION INE\nNombre: SUJETO FICTICIO ISLA\nNumero de registro: ETIQUETA INVENTADA\nVigencia: 2030-08-08\nCONSTANCIA CURP\nPersona: SUJETO FICTICIO ISLA\nCURP: ETIQUETA FICTICIA\nEntidad de registro: OFICINA INVENTADA"},
+    {"id":"astronomia_nueva","expected":["rechazado","indeterminado"],"text":"OBSERVACION DE PLANETAS. La inclinacion del eje de un planeta modifica la iluminacion de su superficie. Un telescopio permite distinguir bandas atmosfericas y satelites. La observacion debe anotarse junto con la hora y las condiciones del cielo."},
+    {"id":"mencion_suelta_nueva","expected":["rechazado","indeterminado"],"text":"BITACORA DE MANTENIMIENTO. El equipo imprime etiquetas con las palabras CURP, domicilio e identificacion. Nombre: OPERADOR FICTICIO JADE. Registro: ETIQUETA INVENTADA. Emision: 2026-03-06. La hoja documenta solamente la reparacion de una impresora."},
+    {"id":"parcial_nueva","expected":"indeterminado","incomplete":true,"text":"CONSTANCIA CURP\nPersona: SUJETO FICTICIO KILO\nCURP: ETIQUETA SIMULADA\nEmision: 2026-04-04\nLa segunda pagina no pudo extraerse."},
+    {"id":"fechas_nuevas","expected":"indeterminado","text":"IDENTIFICACION INE\nPersona: SUJETO FICTICIO LIMA\nRegistro: ETIQUETA SIMULADA\nVigencia: 2029-11-11\nVigencia: 2035-11-11"}
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "proyecto/agents/document_requirements.py": "ff9779397b4fe80a62805f5b8f448278151ff6e4e6574799c3d6ada8c6f0f271",
+  "proyecto/agents/document_similarity.py": "8ffda7300aa428938e45c041581a1dc02830aa3a6698775b958c6e57a30329bc",
+  "proyecto/config/preparar_referencias_concierge.py": "8562322dc3c264c04747439a24e3be26ebe1f2904aab950532232bc3101a51c0",
+  "tests/fixtures/document_similarity_concierge_holdout_v2.json": "c3e523cb69c16ec8353ed66b4fbdd95de2b0b0a310cf88c8429d7f8b54a75916"
+}

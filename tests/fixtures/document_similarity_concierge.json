@@ -1,0 +1,134 @@
+{
+  "version": "concierge-synthetic-2026-11-24.2",
+  "notice": "SIMULACION - SOLO PRUEBAS - SIN VALIDEZ OFICIAL. Datos inventados; sin documentos reales, escudos, sellos, firmas ni codigos oficiales.",
+  "references": [
+    {
+      "name": "referencia_identificacion_simulada.pdf",
+      "document_type": "identificacion",
+      "text": "EJEMPLO DIDACTICO DE IDENTIFICACION PERSONAL\nTipo representado: identificacion INE, sin reproducir una credencial oficial.\nPersona: SUJETO FICTICIO ALFA. Registro de prueba: ID-DEMO-ALFA.\nFecha de emision: 2024-05-08. Vigencia declarada: 2029-05-08.\nCURP: no incluida. Fotografia: OMITIDA. Firma: OMITIDA.\nEl documento presenta campos de identidad y vigencia para comparar su tipo con otros archivos de un expediente bancario. No verifica identidad ni sustituye una identificacion emitida por una autoridad."
+    },
+    {
+      "name": "referencia_constancia_curp_simulada.pdf",
+      "document_type": "curp",
+      "text": "EJEMPLO DIDACTICO DE CONSTANCIA CURP\nRepresentacion textual de una constancia de Clave Unica de Registro de Poblacion.\nPersona: SUJETO FICTICIO BETA. CURP: VALOR OMITIDO, NO SE GENERA CLAVE PERSONAL.\nFecha ilustrativa de expedicion: 2026-04-06.\nEntidad registradora: NO APLICA A ESTA SIMULACION.\nLa constancia tiene campos de registro poblacional e identificacion, no movimientos financieros. Permite reconocer el tipo de documento solicitado cuando otra identificacion no incluye el dato. No contiene codigo QR, sello ni validacion RENAPO."
+    },
+    {
+      "name": "referencia_domicilio_simulada.pdf",
+      "document_type": "domicilio",
+      "text": "EJEMPLO DIDACTICO DE COMPROBANTE DE DOMICILIO\nTipo de recibo: suministro de energia electrica, proveedor inventado SERVICIO DEMO.\nPersona usuaria: SUJETO FICTICIO GAMMA. Domicilio: UBICACION DE PRUEBA, NO EXISTE DIRECCION REAL.\nFecha de emision: 2026-10-12. Periodo de consumo: septiembre de 2026.\nConsumo ilustrativo: 45 unidades. Importe ficticio: 120 unidades monetarias.\nEl recibo permite localizar campos de domicilio y fecha de emision para un expediente. No acredita residencia ni pago real. Referencia de servicio: OMITIDA."
+    }
+  ],
+  "calibration": [
+    {
+      "id": "cal_identificacion_c",
+      "expected": "aceptado",
+      "text": "FICHA DE IDENTIFICACION PARA EXPEDIENTE. Documento ilustrativo de identidad: credencial para votar. Titular ficticio SUJETO DE ENSAYO DELTA. Identificador de ensayo OMITIDO. Vigencia de la identificacion hasta mayo de 2030. Fecha de expedicion mayo de 2025. El apartado de datos poblacionales no incluye CURP. No hay fotografia o firma. Se entrega para revisar presencia y vigencia documental, sin acreditar identidad real."
+    },
+    {
+      "id": "cal_identificacion_d",
+      "expected": "aceptado",
+      "text": "CREDENCIAL PERSONAL DE EJEMPLO. Tipo de archivo representado: identificacion oficial INE, solamente como texto de ensayo. Campos: persona de prueba EPSILON, emision en 2022, vigencia declarada hasta 2032. El numero de credencial y los datos biometricos se omiten. La lectura permite distinguir un documento de identidad de una norma o un estado de cuenta. La autenticidad y la titularidad no pueden certificarse con esta muestra."
+    },
+    {
+      "id": "cal_curp_c",
+      "expected": "aceptado",
+      "text": "CONSTANCIA DE REGISTRO POBLACIONAL DE ENSAYO. El archivo representa una constancia CURP para un expediente documental. Incluye un espacio para la Clave Unica de Registro de Poblacion y otro para la persona registrada, ambos sustituidos por etiquetas sin valor personal. Fecha de expedicion ilustrativa febrero de 2026. Sirve para reconocer una constancia de identificacion poblacional. Ningun codigo puede consultarse en RENAPO ni emplearse en un tramite real."
+    },
+    {
+      "id": "cal_curp_d",
+      "expected": "aceptado",
+      "text": "DATOS DE UNA CONSTANCIA CURP FICTICIA. Clave de registro: OMITIDA. Persona registrada: SUJETO ZETA, etiqueta de prueba. Seccion de entidad de registro y fecha de expedicion: valores inventados. Esta hoja muestra la organizacion textual de una constancia de Clave Unica de Registro de Poblacion solicitada como complemento de identificacion. No contiene informacion bancaria ni saldos, tampoco certificacion de una autoridad."
+    },
+    {
+      "id": "cal_domicilio_c",
+      "expected": "aceptado",
+      "text": "RECIBO RESIDENCIAL DE TELEFONIA FIJA. Empresa ficticia TELEFONO DEMO. Titular: PERSONA DE PRUEBA ETA. Domicilio de instalacion: UBICACION FICTICIA. Emision: 15 de octubre de 2026. Periodo facturado: septiembre de 2026. Cargo del servicio: importe ilustrativo. El comprobante de domicilio presenta direccion de instalacion, tipo de servicio y fecha para revisar antiguedad documental. No contiene telefono, cuenta ni codigo de pago reales."
+    },
+    {
+      "id": "cal_domicilio_d",
+      "expected": "aceptado",
+      "text": "COMPROBANTE RESIDENCIAL DE PAGO DE PREDIAL. Oficina emisora inventada. Inmueble: UBICACION DE ENSAYO. Contribuyente ficticio THETA. Fecha de emision del recibo: agosto de 2026. Concepto: contribucion predial del inmueble, importe inventado y clave catastral omitida. Esta muestra permite reconocer un recibo asociado a un domicilio y distinguir la fecha de emision del periodo al que corresponde el servicio. No acredita pago o residencia reales."
+    },
+    {
+      "id": "cal_ajeno_d",
+      "expected": "rechazado",
+      "text": "MANUAL DE ENSAYO SOBRE METEORITOS. Las muestras rocosas se clasifican por su composicion mineral. Un meteorito puede contener hierro, niquel y silicatos. La observacion microscopica permite estudiar texturas, fusion superficial y origen de la roca. La identificacion de minerales y los registros de laboratorio permiten comparar ejemplares de distintas regiones. No es una ficha de identidad personal ni documentacion residencial."
+    },
+    {
+      "id": "cal_ajeno_e",
+      "expected": "rechazado",
+      "text": "FICHA DE ENSAYO PARA RECETA DE SOPA. Se requieren vegetales, agua, especias y una olla. Lavar los ingredientes, cortarlos, cocinar lentamente y ajustar la sal. La hoja registra tiempos de coccion y cantidades culinarias. La preparacion puede servirse caliente y conservarse refrigerada. La receta no representa una factura de servicios, identificacion poblacional ni tramite financiero."
+    },
+    {
+      "id": "cal_biblioteca_e",
+      "expected": "rechazado",
+      "text": "CREDENCIAL DE PRESTAMO DE LIBROS. Biblioteca comunitaria inventada, persona lectora SUJETO OMICRON. Registro de lector: etiqueta omitida. La ficha incluye domicilio declarado y fecha de inscripcion. Permite solicitar libros y revistas dentro del catalogo de la biblioteca; la vigencia termina con el curso escolar. Este documento no es emitido por una autoridad de identidad ni certifica un registro poblacional o un servicio residencial."
+    },
+    {
+      "id": "cal_fragmento_domicilio_e",
+      "expected": "indeterminado",
+      "text": "FRAGMENTO DE DOCUMENTO SIN TIPO CONFIRMADO. Persona: SUJETO DE PRUEBA PI. Domicilio: UBICACION FICTICIA OMITIDA. Fecha de emision: octubre de 2026. Referencia del documento: OMITIDA. Seccion de datos del domicilio y de identificacion. No se ha recuperado el encabezado del emisor ni el concepto. Puede ser un formulario sin completar o parte de un recibo. No es posible distinguir con certeza comprobante de domicilio de otra hoja con datos de una persona."
+    },
+    {
+      "id": "cal_formulario_incompleto_f",
+      "expected": "indeterminado",
+      "text": "FORMULARIO DE EXPEDIENTE SIN COMPLETAR. Se piden identificacion vigente, comprobante de domicilio y constancia CURP. Persona: ETIQUETA RHO. Tipo y numero de identificacion: no aportados. Vigencia: pendiente. Domicilio: sin documento probatorio. Registro poblacional: sin constancia anexa. La hoja enumera requisitos pero no constituye los documentos que solicita. Se debe conservar la incertidumbre sobre su tipo documental y no tratar la lista como una credencial o un recibo."
+    }
+  ],
+  "validation": [
+    {
+      "id": "val2_identificacion",
+      "expected": [
+        "aceptado",
+        "indeterminado"
+      ],
+      "text": "IDENTIFICACION PERSONAL ILUSTRATIVA. Tipo de identificacion: credencial para votar INE. Persona ficticia SIGMA. Fecha de expedicion: 2025-02-14. Fecha final de vigencia declarada: 2030-02-14. Numero de registro: ID-DEMO-SIGMA, etiqueta sin valor oficial. Fotografia y firma omitidas. CURP no incluida. Datos de identidad presentados como campos de una hoja de prueba, sin elementos graficos de una autoridad."
+    },
+    {
+      "id": "val2_curp",
+      "expected": [
+        "aceptado",
+        "indeterminado"
+      ],
+      "text": "CONSTANCIA DE CLAVE UNICA DE REGISTRO DE POBLACION. Persona registrada: SUJETO TAU. Valor de la CURP: OMITIDO PARA ENSAYO, NO ES CLAVE PERSONAL. Entidad de registro: DEMOSTRACION. Fecha de emision ilustrativa: 2026-09-10. Registro poblacional e identificacion de la persona representados por etiquetas ficticias. La constancia no contiene certificaciones, sellos ni consulta de autenticidad."
+    },
+    {
+      "id": "val2_domicilio",
+      "expected": [
+        "aceptado",
+        "indeterminado"
+      ],
+      "text": "COMPROBANTE RESIDENCIAL ILUSTRATIVO. Recibo de energia electrica de PROVEEDOR FICTICIO UPSILON. Domicilio del servicio: UBICACION NO REAL. Titular: SUJETO DE ENSAYO. Emision: 2026-11-05. Periodo de consumo: octubre de 2026. Concepto de cobro: suministro de electricidad. Se anotan lectura anterior y actual, consumo e importe ilustrativos, sin cuentas o referencias de pago utilizables."
+    },
+    {
+      "id": "val2_ajeno_a",
+      "expected": [
+        "rechazado",
+        "indeterminado"
+      ],
+      "text": "NOTAS ESCOLARES SOBRE EL CICLO DEL AGUA. La evaporacion transporta humedad a la atmosfera y el enfriamiento forma nubes. Las precipitaciones alimentan rios y lagos. Un experimento compara condensacion en recipientes a distintas temperaturas. Las observaciones explican cambios de estado y fenomenos del clima."
+    },
+    {
+      "id": "val2_ajeno_b",
+      "expected": [
+        "rechazado",
+        "indeterminado"
+      ],
+      "text": "INSTRUCCIONES PARA ARMAR UNA COMETA. Cortar papel ligero, preparar dos varillas, sujetar el hilo y reforzar los bordes. La cola equilibra la estructura durante el vuelo. Probar en un espacio abierto sin postes o cables. El taller estudia viento y estabilidad de juguetes de papel."
+    },
+    {
+      "id": "val_limite_c",
+      "expected": [
+        "indeterminado"
+      ],
+      "text": "ANEXO PARCIAL SIN CLASIFICAR. Hay campos de emision, domicilio e identificacion de una persona ficticia. Falta la primera pagina y no se conoce el nombre del documento. No se observa proveedor, institucion emisora o concepto de servicio. La hoja contiene etiquetas y un espacio de referencia vacio, pero no permite afirmar que sea constancia, comprobante o identificacion."
+    },
+    {
+      "id": "val_limite_d",
+      "expected": [
+        "indeterminado"
+      ],
+      "text": "LISTA PARA REUNIR ARCHIVOS. Revisar que se aporten identificacion y fecha de vigencia, datos de domicilio y su comprobante, asi como constancia de registro poblacional cuando corresponda. Esta lista esta en blanco, sin documentos anexos ni informacion del solicitante. Enumera nombres de documentos, pero no demuestra la existencia de ninguno."
+    }
+  ]
+}

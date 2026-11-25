@@ -469,6 +469,29 @@ def _pide_otra_fuente(texto: str) -> bool:
     return bool(_RE_OTRA_FUENTE.search(texto or ""))
 
 
+def intencion_micuenta(consulta: str, *, seguimiento: bool = False) -> str | None:
+    """Señal acotada de trámite; no cambia el alcance de otras consultas."""
+    text = _normalizar(consulta)
+    product = bool(re.search(r'\bmi\s*cuenta\b', text) and re.search(r'\b(?:banamex|apertura|abrir|requisitos|expediente|documentos|archivos)\b', text))
+    evaluation = bool(re.search(r'\b(?:cumpl\w*|evalu\w*|revis\w*|falt\w*|complet\w*|verific\w*)\b', text))
+    files = bool(re.search(r'\b(?:mis |estos |los )?(?:archivos|documentos|expediente|adjuntos)\b', text))
+    missing_followup = bool(re.search(
+        r'\b(?:que|cuales)\s+(?:(?:documentos|requisitos)\s+)?(?:me\s+)?falt(?:a|an)\b|'
+        r'\bme\s+falt(?:a|an)\s+(?:algun(?:os)?\s+)?(?:documentos?|requisitos?)\b', text))
+    individual_pdf = bool(re.search(r'\bpdf\b|\.pdf\b|\b(?:este|ese) documento\b', text))
+    if missing_followup and not individual_pdf:
+        if seguimiento:
+            return 'expediente'
+        return 'requisitos' if product else 'aclaracion_expediente'
+    if product and evaluation and files:
+        return 'expediente'
+    if seguimiento and re.search(r'\b(?:mi|el) expediente\b', text):
+        return 'expediente'
+    if product and re.search(r'\b(?:requisitos|necesito|necesita|requiere|abrir|apertura)\b', text):
+        return 'requisitos'
+    return None
+
+
 def planear_rutas(
     consulta: str,
     ultimo_agente: str | None = None,
@@ -855,6 +878,8 @@ def planear_rutas_hibrido(
     Las reglas siguen siendo el fallback y el filtro de alcance. El LLM recibe
     las señales léxicas como guía, nunca como una obligación.
     """
+    if intencion_micuenta(consulta) == 'requisitos':
+        return ['normatividad_rag'], [consulta], 'reglas', 'Requisitos documentales MiCuenta; consultar evidencia normativa'
     if fuera_de_alcance(
         consulta,
         hay_contexto=bool(ultimo_agente or contexto_documentos),
