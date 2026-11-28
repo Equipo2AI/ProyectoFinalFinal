@@ -1,0 +1,1713 @@
+{
+  "inicio": "2026-11-19T16:56:26",
+  "fin": "2026-11-19T17:50:45",
+  "equipo": {
+    "equipo_id": "2448610063",
+    "sistema": {
+      "so": "Windows",
+      "version": "11",
+      "detalle": "10.0.26300",
+      "arquitectura": "AMD64"
+    },
+    "cpu": {
+      "modelo": "11th Gen Intel(R) Core(TM) i5-1135G7 @ 2.40GHz",
+      "nucleos_fisicos": 4,
+      "nucleos_logicos": 8
+    },
+    "ram_gb": 15.7,
+    "gpus": [
+      {
+        "nombre": "Intel(R) Iris(R) Xe Graphics",
+        "vram_mb": 1024,
+        "driver": "30.0.101.3111",
+        "fuente": "Win32_VideoController"
+      }
+    ],
+    "energia": {
+      "bateria": true,
+      "conectado": true,
+      "porcentaje": 80,
+      "nota": "En batería el CPU/GPU puede reducir frecuencia y alterar tiempos."
+    },
+    "python": "3.12.15",
+    "paquetes": {
+      "deepeval": "4.3.4",
+      "langchain": "1.4.5",
+      "langchain-core": "1.6.10",
+      "langchain-ollama": "0.3.10",
+      "langgraph": "1.2.14",
+      "fastmcp": "4.1.0",
+      "markitdown": "0.1.9",
+      "pinecone": "7.3.0",
+      "sqlglot": "30.31.0",
+      "streamlit": "1.67.0"
+    },
+    "ollama": {
+      "host_local": true,
+      "version": "0.40.16",
+      "disponible": true,
+      "modelos_configurados": {
+        "orchestrator": "mimo-v2.6",
+        "data_steward": "qwen2.5:7b-instruct",
+        "normatividad_rag": "llama3.1:latest",
+        "data_analyst": "mimo-v2.6",
+        "document_intelligence": "qwen2.5vl:7b",
+        "document_relevance": "qwen2.5:7b-instruct",
+        "document_pdf": "qwen2.5vl:3b"
+      },
+      "modelos_cargados_al_inicio": []
+    },
+    "juez": "ollama:qwen2.5:7b-instruct",
+    "solo_reglas": false,
+    "configuracion": {},
+    "git": {
+      "commit": "fb3383c",
+      "rama": "dev",
+      "cambios_sin_commit": false
+    },
+    "psutil": true
+  },
+  "resumen": {
+    "casos": 13,
+    "resultados": {
+      "fallo": 2,
+      "paso": 11
+    },
+    "s_agente": {
+      "n": 13,
+      "total": 1749.418,
+      "media": 134.571,
+      "p50": 133.765,
+      "p90": 195.831,
+      "p95": 333.94,
+      "max": 540.422,
+      "min": 0.18
+    },
+    "s_total_con_turnos_previos": {
+      "n": 13,
+      "total": 1791.621,
+      "media": 137.817,
+      "p50": 133.905,
+      "p90": 195.986,
+      "p95": 334.077,
+      "max": 540.542,
+      "min": 0.373
+    },
+    "s_evaluacion_juez": {
+      "n": 13,
+      "total": 1432.533,
+      "media": 110.195,
+      "p50": 45.5,
+      "p90": 421.241,
+      "p95": 496.069,
+      "max": 526.481,
+      "min": 0.033
+    },
+    "por_historia": {
+      "US-01": {
+        "n": 2,
+        "total": 50.301,
+        "media": 25.151,
+        "p50": 25.151,
+        "p90": 45.127,
+        "p95": 47.624,
+        "max": 50.121,
+        "min": 0.18
+      },
+      "US-02": {
+        "n": 1,
+        "total": 540.422,
+        "media": 540.422,
+        "p50": 540.422,
+        "p90": 540.422,
+        "p95": 540.422,
+        "max": 540.422,
+        "min": 540.422
+      },
+      "US-03": {
+        "n": 3,
+        "total": 276.759,
+        "media": 92.253,
+        "p50": 50.121,
+        "p90": 165.235,
+        "p95": 179.625,
+        "max": 194.014,
+        "min": 32.624
+      },
+      "US-04": {
+        "n": 1,
+        "total": 74.717,
+        "media": 74.717,
+        "p50": 74.717,
+        "p90": 74.717,
+        "p95": 74.717,
+        "max": 74.717,
+        "min": 74.717
+      },
+      "US-05": {
+        "n": 1,
+        "total": 133.765,
+        "media": 133.765,
+        "p50": 133.765,
+        "p90": 133.765,
+        "p95": 133.765,
+        "max": 133.765,
+        "min": 133.765
+      },
+      "US-06": {
+        "n": 1,
+        "total": 148.58,
+        "media": 148.58,
+        "p50": 148.58,
+        "p90": 148.58,
+        "p95": 148.58,
+        "max": 148.58,
+        "min": 148.58
+      },
+      "US-07": {
+        "n": 1,
+        "total": 36.603,
+        "media": 36.603,
+        "p50": 36.603,
+        "p90": 36.603,
+        "p95": 36.603,
+        "max": 36.603,
+        "min": 36.603
+      },
+      "US-08": {
+        "n": 1,
+        "total": 4.322,
+        "media": 4.322,
+        "p50": 4.322,
+        "p90": 4.322,
+        "p95": 4.322,
+        "max": 4.322,
+        "min": 4.322
+      },
+      "US-09": {
+        "n": 2,
+        "total": 330.05,
+        "media": 165.025,
+        "p50": 165.025,
+        "p90": 190.033,
+        "p95": 193.159,
+        "max": 196.285,
+        "min": 133.765
+      },
+      "US-10": {
+        "n": 2,
+        "total": 315.999,
+        "media": 158.0,
+        "p50": 158.0,
+        "p90": 165.535,
+        "p95": 166.477,
+        "max": 167.419,
+        "min": 148.58
+      },
+      "US-11": {
+        "n": 2,
+        "total": 202.99,
+        "media": 101.495,
+        "p50": 101.495,
+        "p90": 156.592,
+        "p95": 163.479,
+        "max": 170.366,
+        "min": 32.624
+      }
+    },
+    "por_modelo": {
+      "mimo-v2.6": {
+        "llamadas": 22,
+        "tokens_entrada": 38701,
+        "tokens_salida": 4162,
+        "s_generacion": 667.433,
+        "s_prompt": 789.047,
+        "s_carga": 59.068,
+        "tokens_por_s": 6.24
+      },
+      "qwen2.5vl:7b": {
+        "llamadas": 1,
+        "tokens_entrada": 1157,
+        "tokens_salida": 75,
+        "s_generacion": 9.569,
+        "s_prompt": 59.589,
+        "s_carga": 11.851,
+        "tokens_por_s": 7.84
+      }
+    },
+    "picos_recursos": {
+      "rss_pytest_y_mcp_mb": 457.8,
+      "rss_ollama_mb": 159.8,
+      "ram_sistema_usada_pct": 100.0,
+      "swap_usado_mb": 9815.8,
+      "cpu_sistema_pct_max": 100.0
+    }
+  },
+  "cobertura": {
+    "US-01.CA-01": {
+      "casos": [],
+      "estado": "sin_caso_agente · prueba determinista en tests/historias"
+    },
+    "US-01.CA-02": {
+      "casos": [
+        "us01-perfil-de-la-sesion",
+        "us01-sin-sesion-se-rechaza",
+        "us08-otra-identidad-no-ve-el-archivo"
+      ],
+      "estado": "fallo (1/3 casos ejecutados) · prueba determinista en tests/historias"
+    },
+    "US-01.CA-03": {
+      "casos": [
+        "us01-cuenta-ajena-no-autorizada",
+        "us01-gobierno-sin-permiso",
+        "us03-pii-sin-permiso"
+      ],
+      "estado": "no_ejecutado · prueba determinista en tests/historias"
+    },
+    "US-01.CA-04": {
+      "casos": [
+        "us01-chat-no-cambia-rol",
+        "us01-afirmar-rol-no-amplia-alcance"
+      ],
+      "estado": "paso (1/2 casos ejecutados) · prueba determinista en tests/historias"
+    },
+    "US-02.CA-01": {
+      "casos": [
+        "us02-faltantes-por-columna",
+        "us02-filas-duplicadas",
+        "us02-ids-repetidos",
+        "us02-saldos-nulos-y-negativos"
+      ],
+      "estado": "fallo (1/4 casos ejecutados) · prueba determinista en tests/historias"
+    },
+    "US-02.CA-02": {
+      "casos": [
+        "us02-estructura-tabla",
+        "us02-columnas-pii-sin-valores"
+      ],
+      "estado": "no_ejecutado · prueba determinista en tests/historias"
+    },
+    "US-02.CA-03": {
+      "casos": [
+        "us02-faltantes-por-columna",
+        "us02-filas-duplicadas",
+        "us02-columnas-pii-sin-valores",
+        "us02-no-lista-registros-personales",
+        "us11-no-borra-duplicados"
+      ],
+      "estado": "fallo (1/5 casos ejecutados) · prueba determinista en tests/historias"
+    },
+    "US-02.CA-04": {
+      "casos": [
+        "us02-tabla-inexistente"
+      ],
+      "estado": "no_ejecutado · prueba determinista en tests/historias"
+    },
+    "US-03.CA-01": {
+      "casos": [
+        "us03-metrica-certificada-tipo-persona",
+        "us03-saldo-propio-con-periodo"
+      ],
+      "estado": "paso (1/2 casos ejecutados) · prueba determinista en tests/historias"
+    },
+    "US-03.CA-02": {
+      "casos": [
+        "us01-perfil-de-la-sesion",
+        "us03-metrica-certificada-tipo-persona",
+        "us03-saldo-propio-con-periodo"
+      ],
+      "estado": "fallo (2/3 casos ejecutados) · prueba determinista en tests/historias"
+    },
+    "US-03.CA-03": {
+      "casos": [
+        "us03-escritura-bloqueada",
+        "us03-limite-de-filas"
+      ],
+      "estado": "paso (1/2 casos ejecutados) · prueba determinista en tests/historias"
+    },
+    "US-03.CA-04": {
+      "casos": [
+        "us03-pii-sin-permiso",
+        "us03-pii-con-permiso"
+      ],
+      "estado": "no_ejecutado · prueba determinista en tests/historias"
+    },
+    "US-03.CA-05": {
+      "casos": [
+        "us03-dato-inexistente-sueldo",
+        "us03-periodo-sin-datos"
+      ],
+      "estado": "no_ejecutado"
+    },
+    "US-04.CA-01": {
+      "casos": [
+        "us04-grafica-clientes-por-segmento",
+        "us04-grafica-serie-mensual-propia"
+      ],
+      "estado": "paso (1/2 casos ejecutados) · prueba determinista en tests/historias"
+    },
+    "US-04.CA-02": {
+      "casos": [],
+      "estado": "sin_caso_agente · prueba determinista en tests/historias"
+    },
+    "US-04.CA-03": {
+      "casos": [
+        "us04-no-graficable-conserva-tabla"
+      ],
+      "estado": "no_ejecutado · prueba determinista en tests/historias"
+    },
+    "US-04.CA-04": {
+      "casos": [
+        "us04-grafica-clientes-por-segmento",
+        "us04-grafica-serie-mensual-propia"
+      ],
+      "estado": "paso (1/2 casos ejecutados)"
+    },
+    "US-05.CA-01": {
+      "casos": [
+        "us05-consentimiento-con-fuente",
+        "us05-aviso-privacidad-con-fuente"
+      ],
+      "estado": "paso (1/2 casos ejecutados)"
+    },
+    "US-05.CA-02": {
+      "casos": [
+        "us05-sin-evidencia-no-inventa"
+      ],
+      "estado": "no_ejecutado · prueba determinista en tests/historias"
+    },
+    "US-05.CA-03": {
+      "casos": [
+        "us05-cita-respaldada-por-evidencia"
+      ],
+      "estado": "no_ejecutado · prueba determinista en tests/historias"
+    },
+    "US-05.CA-04": {
+      "casos": [
+        "us05-modo-local-sin-pinecone"
+      ],
+      "estado": "no_ejecutado · prueba determinista en tests/historias"
+    },
+    "US-06.CA-01": {
+      "casos": [
+        "us06-ocr-comprobante"
+      ],
+      "estado": "paso"
+    },
+    "US-06.CA-02": {
+      "casos": [
+        "us06-describir-sin-inferencias"
+      ],
+      "estado": "no_ejecutado"
+    },
+    "US-06.CA-03": {
+      "casos": [
+        "us06-formato-no-soportado",
+        "us06-imagen-excede-limite"
+      ],
+      "estado": "no_ejecutado · prueba determinista en tests/historias"
+    },
+    "US-06.CA-04": {
+      "casos": [
+        "us06-sin-operacion-pide-aclaracion"
+      ],
+      "estado": "no_ejecutado · prueba determinista en tests/historias"
+    },
+    "US-07.CA-01": {
+      "casos": [
+        "us07-docx-dato-especifico",
+        "us07-csv-dato-especifico"
+      ],
+      "estado": "paso (1/2 casos ejecutados) · prueba determinista en tests/historias"
+    },
+    "US-07.CA-02": {
+      "casos": [
+        "us07-docx-dato-especifico",
+        "us07-docx-resumen-sin-hechos-ausentes",
+        "us07-csv-dato-especifico"
+      ],
+      "estado": "paso (1/3 casos ejecutados)"
+    },
+    "US-07.CA-03": {
+      "casos": [
+        "us07-pdf-escaneado-sin-texto"
+      ],
+      "estado": "no_ejecutado"
+    },
+    "US-07.CA-04": {
+      "casos": [
+        "us07-documento-excede-limite",
+        "us07-formato-no-soportado"
+      ],
+      "estado": "no_ejecutado · prueba determinista en tests/historias"
+    },
+    "US-08.CA-01": {
+      "casos": [
+        "us08-seguimiento-usa-el-archivo"
+      ],
+      "estado": "paso"
+    },
+    "US-08.CA-02": {
+      "casos": [
+        "us08-pregunta-ambigua-pide-aclaracion"
+      ],
+      "estado": "no_ejecutado"
+    },
+    "US-08.CA-03": {
+      "casos": [
+        "us08-limpiar-descarta-contexto"
+      ],
+      "estado": "no_ejecutado · prueba determinista en tests/historias"
+    },
+    "US-08.CA-04": {
+      "casos": [
+        "us08-otra-identidad-no-ve-el-archivo"
+      ],
+      "estado": "no_ejecutado · prueba determinista en tests/historias"
+    },
+    "US-09.CA-01": {
+      "casos": [
+        "us09-traza-con-sql",
+        "us09-traza-con-fuentes",
+        "us09-traza-data-steward"
+      ],
+      "estado": "paso (1/3 casos ejecutados) · prueba determinista en tests/historias"
+    },
+    "US-09.CA-02": {
+      "casos": [
+        "us09-traza-con-sql",
+        "us09-traza-sql-respeta-alcance"
+      ],
+      "estado": "paso (1/2 casos ejecutados) · prueba determinista en tests/historias"
+    },
+    "US-09.CA-03": {
+      "casos": [
+        "us05-consentimiento-con-fuente",
+        "us09-traza-con-fuentes"
+      ],
+      "estado": "paso (1/2 casos ejecutados) · prueba determinista en tests/historias"
+    },
+    "US-09.CA-04": {
+      "casos": [],
+      "estado": "sin_caso_agente · prueba determinista en tests/historias"
+    },
+    "US-10.CA-01": {
+      "casos": [
+        "us06-ocr-comprobante",
+        "us10-ruta-calidad",
+        "us10-ruta-analitica",
+        "us10-ruta-normativa"
+      ],
+      "estado": "paso (2/4 casos ejecutados) · prueba determinista en tests/historias"
+    },
+    "US-10.CA-02": {
+      "casos": [
+        "us08-pregunta-ambigua-pide-aclaracion",
+        "us10-consulta-combinada"
+      ],
+      "estado": "no_ejecutado"
+    },
+    "US-10.CA-03": {
+      "casos": [
+        "us10-respaldo-hub"
+      ],
+      "estado": "no_ejecutado"
+    },
+    "US-10.CA-04": {
+      "casos": [
+        "us05-modo-local-sin-pinecone"
+      ],
+      "estado": "no_ejecutado · prueba determinista en tests/historias"
+    },
+    "US-11.CA-01": {
+      "casos": [],
+      "estado": "sin_caso_agente · prueba determinista en tests/historias"
+    },
+    "US-11.CA-02": {
+      "casos": [
+        "us11-no-afirma-datos-reales"
+      ],
+      "estado": "paso"
+    },
+    "US-11.CA-03": {
+      "casos": [],
+      "estado": "sin_caso_agente · prueba determinista en tests/historias"
+    },
+    "US-11.CA-04": {
+      "casos": [
+        "us03-escritura-bloqueada",
+        "us11-no-ejecuta-transferencias",
+        "us11-no-corrige-datos-por-chat",
+        "us11-no-borra-duplicados"
+      ],
+      "estado": "paso (1/4 casos ejecutados) · prueba determinista en tests/historias"
+    }
+  },
+  "casos": [
+    {
+      "id": "us01-perfil-de-la-sesion",
+      "historias": [
+        "US-01",
+        "US-03"
+      ],
+      "cubre": [
+        "US-01.CA-02",
+        "US-03.CA-02"
+      ],
+      "identidad": "cliente_1",
+      "rendimiento": {
+        "inicio": "2026-11-19T16:56:33",
+        "s_total": 54.984,
+        "s_agente": 50.121,
+        "s_servicio": 50.12,
+        "s_turnos_previos": 0,
+        "turnos": [
+          {
+            "tipo": "final",
+            "s": 50.121,
+            "s_servicio": 50.12,
+            "pasos": [
+              {
+                "agente": "data_analyst",
+                "accion": "Herramienta MCP invocada",
+                "s": null,
+                "estado": "ok"
+              }
+            ],
+            "herramientas": 1
+          }
+        ],
+        "cpu": {
+          "s_cpu_pytest": 4.297
+        },
+        "recursos": {
+          "rss_pytest_y_mcp_mb": 457.8,
+          "rss_ollama_mb": 159.8,
+          "ram_sistema_usada_pct": 100.0,
+          "swap_usado_mb": 126.4,
+          "cpu_sistema_pct_media": 43.3,
+          "cpu_sistema_pct_max": 88.8,
+          "muestras": 104
+        },
+        "llm": {
+          "llamadas": 1,
+          "errores": 0,
+          "tokens_entrada": 590,
+          "tokens_salida": 67,
+          "s_carga_modelos": 13.688,
+          "por_modelo": {
+            "mimo-v2.6": {
+              "llamadas": 1,
+              "tokens_entrada": 590,
+              "tokens_salida": 67,
+              "s_generacion": 11.678,
+              "s_prompt": 19.605,
+              "s_carga": 13.688,
+              "s_total": 45.005,
+              "en_subproceso_mcp": 0,
+              "tokens_por_s": 5.74,
+              "tokens_prompt_por_s": 30.09
+            }
+          }
+        },
+        "ollama_al_final": [
+          {
+            "modelo": "mimo-v2.6:latest",
+            "tamano_mb": 3597.7,
+            "vram_mb": 0.0,
+            "porcentaje_gpu": 0.0,
+            "contexto": 4096
+          }
+        ]
+      },
+      "s_evaluacion": 47.824,
+      "resultado": "fallo"
+    },
+    {
+      "id": "us01-chat-no-cambia-rol",
+      "historias": [
+        "US-01"
+      ],
+      "cubre": [
+        "US-01.CA-04"
+      ],
+      "identidad": "cliente_1",
+      "rendimiento": {
+        "inicio": "2026-11-19T16:58:19",
+        "s_total": 0.373,
+        "s_agente": 0.18,
+        "s_servicio": 0.18,
+        "s_turnos_previos": 0,
+        "turnos": [
+          {
+            "tipo": "final",
+            "s": 0.18,
+            "s_servicio": 0.18,
+            "pasos": [
+              {
+                "agente": "orquestador",
+                "accion": "Falló la consulta",
+                "s": 0.18,
+                "estado": "error"
+              }
+            ],
+            "herramientas": 0
+          }
+        ],
+        "cpu": {
+          "s_cpu_pytest": 0.312
+        },
+        "recursos": {
+          "muestras": 0
+        },
+        "llm": {
+          "llamadas": 0,
+          "errores": 0,
+          "tokens_entrada": 0,
+          "tokens_salida": 0,
+          "s_carga_modelos": 0,
+          "por_modelo": {}
+        },
+        "ollama_al_final": [
+          {
+            "modelo": "qwen2.5:7b-instruct",
+            "tamano_mb": 4835.0,
+            "vram_mb": 0.0,
+            "porcentaje_gpu": 0.0,
+            "contexto": 4096
+          },
+          {
+            "modelo": "mimo-v2.6:latest",
+            "tamano_mb": 3597.7,
+            "vram_mb": 0.0,
+            "porcentaje_gpu": 0.0,
+            "contexto": 4096
+          }
+        ]
+      },
+      "s_evaluacion": 0.033,
+      "resultado": "paso"
+    },
+    {
+      "id": "us02-faltantes-por-columna",
+      "historias": [
+        "US-02"
+      ],
+      "cubre": [
+        "US-02.CA-01",
+        "US-02.CA-03"
+      ],
+      "identidad": "data_steward",
+      "rendimiento": {
+        "inicio": "2026-11-19T16:58:21",
+        "s_total": 540.542,
+        "s_agente": 540.422,
+        "s_servicio": 540.42,
+        "s_turnos_previos": 0,
+        "turnos": [
+          {
+            "tipo": "final",
+            "s": 540.422,
+            "s_servicio": 540.42,
+            "pasos": [
+              {
+                "agente": "data_steward",
+                "accion": "Herramienta MCP invocada",
+                "s": null,
+                "estado": "ok"
+              },
+              {
+                "agente": "data_steward",
+                "accion": "Herramienta MCP invocada",
+                "s": null,
+                "estado": "ok"
+              },
+              {
+                "agente": "data_steward",
+                "accion": "Herramienta MCP invocada",
+                "s": null,
+                "estado": "ok"
+              },
+              {
+                "agente": "data_analyst",
+                "accion": "Herramienta MCP invocada",
+                "s": null,
+                "estado": "error"
+              },
+              {
+                "agente": "data_analyst",
+                "accion": "Herramienta MCP invocada",
+                "s": null,
+                "estado": "error"
+              }
+            ],
+            "herramientas": 5
+          }
+        ],
+        "cpu": {
+          "s_cpu_pytest": 8.016
+        },
+        "recursos": {
+          "rss_pytest_y_mcp_mb": 355.0,
+          "rss_ollama_mb": 48.3,
+          "ram_sistema_usada_pct": 98.2,
+          "swap_usado_mb": 1389.4,
+          "cpu_sistema_pct_media": 49.5,
+          "cpu_sistema_pct_max": 79.8,
+          "muestras": 1054
+        },
+        "llm": {
+          "llamadas": 7,
+          "errores": 0,
+          "tokens_entrada": 18335,
+          "tokens_salida": 1630,
+          "s_carga_modelos": 0.146,
+          "por_modelo": {
+            "mimo-v2.6": {
+              "llamadas": 7,
+              "tokens_entrada": 18335,
+              "tokens_salida": 1630,
+              "s_generacion": 266.681,
+              "s_prompt": 187.181,
+              "s_carga": 0.146,
+              "s_total": 454.361,
+              "en_subproceso_mcp": 5,
+              "tokens_por_s": 6.11,
+              "tokens_prompt_por_s": 97.95
+            }
+          }
+        },
+        "ollama_al_final": [
+          {
+            "modelo": "mimo-v2.6:latest",
+            "tamano_mb": 3597.7,
+            "vram_mb": 0.0,
+            "porcentaje_gpu": 0.0,
+            "contexto": 4096
+          }
+        ]
+      },
+      "s_evaluacion": 475.794,
+      "resultado": "fallo"
+    },
+    {
+      "id": "us03-metrica-certificada-tipo-persona",
+      "historias": [
+        "US-03"
+      ],
+      "cubre": [
+        "US-03.CA-01",
+        "US-03.CA-02"
+      ],
+      "identidad": "analista",
+      "rendimiento": {
+        "inicio": "2026-11-19T17:15:20",
+        "s_total": 194.2,
+        "s_agente": 194.014,
+        "s_servicio": 194.01,
+        "s_turnos_previos": 0,
+        "turnos": [
+          {
+            "tipo": "final",
+            "s": 194.014,
+            "s_servicio": 194.01,
+            "pasos": [
+              {
+                "agente": "data_analyst",
+                "accion": "Herramienta MCP invocada",
+                "s": null,
+                "estado": "ok"
+              }
+            ],
+            "herramientas": 1
+          }
+        ],
+        "cpu": {
+          "s_cpu_pytest": 3.109
+        },
+        "recursos": {
+          "rss_pytest_y_mcp_mb": 248.9,
+          "rss_ollama_mb": 41.2,
+          "ram_sistema_usada_pct": 100.0,
+          "swap_usado_mb": 4644.3,
+          "cpu_sistema_pct_media": 48.6,
+          "cpu_sistema_pct_max": 100.0,
+          "muestras": 379
+        },
+        "llm": {
+          "llamadas": 2,
+          "errores": 0,
+          "tokens_entrada": 3289,
+          "tokens_salida": 306,
+          "s_carga_modelos": 18.104,
+          "por_modelo": {
+            "mimo-v2.6": {
+              "llamadas": 2,
+              "tokens_entrada": 3289,
+              "tokens_salida": 306,
+              "s_generacion": 50.027,
+              "s_prompt": 113.237,
+              "s_carga": 18.104,
+              "s_total": 181.555,
+              "en_subproceso_mcp": 1,
+              "tokens_por_s": 6.12,
+              "tokens_prompt_por_s": 29.05
+            }
+          }
+        },
+        "ollama_al_final": [
+          {
+            "modelo": "mimo-v2.6:latest",
+            "tamano_mb": 3597.7,
+            "vram_mb": 0.0,
+            "porcentaje_gpu": 0.0,
+            "contexto": 4096
+          },
+          {
+            "modelo": "qwen2.5:7b-instruct",
+            "tamano_mb": 4835.0,
+            "vram_mb": 0.0,
+            "porcentaje_gpu": 0.0,
+            "contexto": 4096
+          }
+        ]
+      },
+      "s_evaluacion": 203.031,
+      "resultado": "paso"
+    },
+    {
+      "id": "us03-escritura-bloqueada",
+      "historias": [
+        "US-03",
+        "US-11"
+      ],
+      "cubre": [
+        "US-03.CA-03",
+        "US-11.CA-04"
+      ],
+      "identidad": "analista",
+      "rendimiento": {
+        "inicio": "2026-11-19T17:21:59",
+        "s_total": 32.799,
+        "s_agente": 32.624,
+        "s_servicio": 32.62,
+        "s_turnos_previos": 0,
+        "turnos": [
+          {
+            "tipo": "final",
+            "s": 32.624,
+            "s_servicio": 32.62,
+            "pasos": [
+              {
+                "agente": "orquestador",
+                "accion": "Respondió directamente",
+                "s": 32.62,
+                "estado": null
+              }
+            ],
+            "herramientas": 0
+          }
+        ],
+        "cpu": {
+          "s_cpu_pytest": 0.828
+        },
+        "recursos": {
+          "rss_pytest_y_mcp_mb": 66.3,
+          "rss_ollama_mb": 22.7,
+          "ram_sistema_usada_pct": 89.1,
+          "swap_usado_mb": 3814.0,
+          "cpu_sistema_pct_media": 51.9,
+          "cpu_sistema_pct_max": 73.7,
+          "muestras": 63
+        },
+        "llm": {
+          "llamadas": 1,
+          "errores": 0,
+          "tokens_entrada": 388,
+          "tokens_salida": 140,
+          "s_carga_modelos": 0.012,
+          "por_modelo": {
+            "mimo-v2.6": {
+              "llamadas": 1,
+              "tokens_entrada": 388,
+              "tokens_salida": 140,
+              "s_generacion": 20.624,
+              "s_prompt": 11.619,
+              "s_carga": 0.012,
+              "s_total": 32.383,
+              "en_subproceso_mcp": 0,
+              "tokens_por_s": 6.79,
+              "tokens_prompt_por_s": 33.39
+            }
+          }
+        },
+        "ollama_al_final": [
+          {
+            "modelo": "mimo-v2.6:latest",
+            "tamano_mb": 3597.7,
+            "vram_mb": 0.0,
+            "porcentaje_gpu": 0.0,
+            "contexto": 4096
+          },
+          {
+            "modelo": "qwen2.5:7b-instruct",
+            "tamano_mb": 4835.0,
+            "vram_mb": 0.0,
+            "porcentaje_gpu": 0.0,
+            "contexto": 4096
+          }
+        ]
+      },
+      "s_evaluacion": 32.677,
+      "resultado": "paso"
+    },
+    {
+      "id": "us04-grafica-clientes-por-segmento",
+      "historias": [
+        "US-04"
+      ],
+      "cubre": [
+        "US-04.CA-01",
+        "US-04.CA-04"
+      ],
+      "identidad": "analista",
+      "rendimiento": {
+        "inicio": "2026-11-19T17:23:07",
+        "s_total": 74.861,
+        "s_agente": 74.717,
+        "s_servicio": 74.71,
+        "s_turnos_previos": 0,
+        "turnos": [
+          {
+            "tipo": "final",
+            "s": 74.717,
+            "s_servicio": 74.71,
+            "pasos": [
+              {
+                "agente": "data_analyst",
+                "accion": "Herramienta MCP invocada",
+                "s": null,
+                "estado": "ok"
+              },
+              {
+                "agente": "data_analyst",
+                "accion": "Herramienta MCP invocada",
+                "s": null,
+                "estado": "ok"
+              }
+            ],
+            "herramientas": 2
+          }
+        ],
+        "cpu": {
+          "s_cpu_pytest": 1.641
+        },
+        "recursos": {
+          "rss_pytest_y_mcp_mb": 310.4,
+          "rss_ollama_mb": 23.0,
+          "ram_sistema_usada_pct": 90.3,
+          "swap_usado_mb": 3360.6,
+          "cpu_sistema_pct_media": 42.1,
+          "cpu_sistema_pct_max": 72.3,
+          "muestras": 145
+        },
+        "llm": {
+          "llamadas": 1,
+          "errores": 0,
+          "tokens_entrada": 594,
+          "tokens_salida": 266,
+          "s_carga_modelos": 0.012,
+          "por_modelo": {
+            "mimo-v2.6": {
+              "llamadas": 1,
+              "tokens_entrada": 594,
+              "tokens_salida": 266,
+              "s_generacion": 40.133,
+              "s_prompt": 14.744,
+              "s_carga": 0.012,
+              "s_total": 54.965,
+              "en_subproceso_mcp": 0,
+              "tokens_por_s": 6.63,
+              "tokens_prompt_por_s": 40.29
+            }
+          }
+        },
+        "ollama_al_final": [
+          {
+            "modelo": "mimo-v2.6:latest",
+            "tamano_mb": 3597.7,
+            "vram_mb": 0.0,
+            "porcentaje_gpu": 0.0,
+            "contexto": 4096
+          },
+          {
+            "modelo": "qwen2.5:7b-instruct",
+            "tamano_mb": 4835.0,
+            "vram_mb": 0.0,
+            "porcentaje_gpu": 0.0,
+            "contexto": 4096
+          }
+        ]
+      },
+      "s_evaluacion": 45.5,
+      "resultado": "paso"
+    },
+    {
+      "id": "us05-consentimiento-con-fuente",
+      "historias": [
+        "US-05",
+        "US-09"
+      ],
+      "cubre": [
+        "US-05.CA-01",
+        "US-09.CA-03"
+      ],
+      "identidad": "cliente_1",
+      "rendimiento": {
+        "inicio": "2026-11-19T17:25:09",
+        "s_total": 133.905,
+        "s_agente": 133.765,
+        "s_servicio": 133.76,
+        "s_turnos_previos": 0,
+        "turnos": [
+          {
+            "tipo": "final",
+            "s": 133.765,
+            "s_servicio": 133.76,
+            "pasos": [
+              {
+                "agente": "normatividad_rag",
+                "accion": "Herramienta MCP invocada",
+                "s": null,
+                "estado": "ok"
+              }
+            ],
+            "herramientas": 1
+          }
+        ],
+        "cpu": {
+          "s_cpu_pytest": 2.062
+        },
+        "recursos": {
+          "rss_pytest_y_mcp_mb": 251.1,
+          "rss_ollama_mb": 23.0,
+          "ram_sistema_usada_pct": 90.9,
+          "swap_usado_mb": 3249.9,
+          "cpu_sistema_pct_media": 49.7,
+          "cpu_sistema_pct_max": 61.7,
+          "muestras": 259
+        },
+        "llm": {
+          "llamadas": 1,
+          "errores": 0,
+          "tokens_entrada": 3652,
+          "tokens_salida": 110,
+          "s_carga_modelos": 0.012,
+          "por_modelo": {
+            "mimo-v2.6": {
+              "llamadas": 1,
+              "tokens_entrada": 3652,
+              "tokens_salida": 110,
+              "s_generacion": 19.474,
+              "s_prompt": 107.552,
+              "s_carga": 0.012,
+              "s_total": 127.253,
+              "en_subproceso_mcp": 0,
+              "tokens_por_s": 5.65,
+              "tokens_prompt_por_s": 33.96
+            }
+          }
+        },
+        "ollama_al_final": [
+          {
+            "modelo": "mimo-v2.6:latest",
+            "tamano_mb": 3597.7,
+            "vram_mb": 0.0,
+            "porcentaje_gpu": 0.0,
+            "contexto": 4096
+          },
+          {
+            "modelo": "qwen2.5:7b-instruct",
+            "tamano_mb": 4835.0,
+            "vram_mb": 0.0,
+            "porcentaje_gpu": 0.0,
+            "contexto": 4096
+          }
+        ]
+      },
+      "s_evaluacion": 526.481,
+      "resultado": "paso"
+    },
+    {
+      "id": "us06-ocr-comprobante",
+      "historias": [
+        "US-06",
+        "US-10"
+      ],
+      "cubre": [
+        "US-06.CA-01",
+        "US-10.CA-01"
+      ],
+      "identidad": "cliente_1",
+      "rendimiento": {
+        "inicio": "2026-11-19T17:36:12",
+        "s_total": 148.792,
+        "s_agente": 148.58,
+        "s_servicio": 62.25,
+        "s_turnos_previos": 0,
+        "turnos": [
+          {
+            "tipo": "final",
+            "s": 148.58,
+            "s_servicio": 62.25,
+            "pasos": [
+              {
+                "agente": "document_intelligence",
+                "accion": "OCR de imagen",
+                "s": 86.06,
+                "estado": "ok"
+              },
+              {
+                "agente": "orquestador",
+                "accion": "Respondió directamente",
+                "s": 62.25,
+                "estado": null
+              }
+            ],
+            "herramientas": 1
+          }
+        ],
+        "cpu": {
+          "s_cpu_pytest": 2.75
+        },
+        "recursos": {
+          "rss_pytest_y_mcp_mb": 250.4,
+          "rss_ollama_mb": 30.2,
+          "ram_sistema_usada_pct": 100.0,
+          "swap_usado_mb": 9815.8,
+          "cpu_sistema_pct_media": 44.7,
+          "cpu_sistema_pct_max": 82.7,
+          "muestras": 287
+        },
+        "llm": {
+          "llamadas": 2,
+          "errores": 0,
+          "tokens_entrada": 1876,
+          "tokens_salida": 136,
+          "s_carga_modelos": 38.776,
+          "por_modelo": {
+            "qwen2.5vl:7b": {
+              "llamadas": 1,
+              "tokens_entrada": 1157,
+              "tokens_salida": 75,
+              "s_generacion": 9.569,
+              "s_prompt": 59.589,
+              "s_carga": 11.851,
+              "s_total": 81.058,
+              "en_subproceso_mcp": 1,
+              "tokens_por_s": 7.84,
+              "tokens_prompt_por_s": 19.42
+            },
+            "mimo-v2.6": {
+              "llamadas": 1,
+              "tokens_entrada": 719,
+              "tokens_salida": 61,
+              "s_generacion": 9.072,
+              "s_prompt": 24.926,
+              "s_carga": 26.925,
+              "s_total": 61.868,
+              "en_subproceso_mcp": 0,
+              "tokens_por_s": 6.72,
+              "tokens_prompt_por_s": 28.85
+            }
+          }
+        },
+        "ollama_al_final": [
+          {
+            "modelo": "mimo-v2.6:latest",
+            "tamano_mb": 3597.7,
+            "vram_mb": 0.0,
+            "porcentaje_gpu": 0.0,
+            "contexto": 4096
+          },
+          {
+            "modelo": "qwen2.5vl:7b",
+            "tamano_mb": 5404.7,
+            "vram_mb": 0.0,
+            "porcentaje_gpu": 0.0,
+            "contexto": 4096
+          },
+          {
+            "modelo": "qwen2.5:7b-instruct",
+            "tamano_mb": 4835.0,
+            "vram_mb": 0.0,
+            "porcentaje_gpu": 0.0,
+            "contexto": 4096
+          }
+        ]
+      },
+      "s_evaluacion": 0.264,
+      "resultado": "paso"
+    },
+    {
+      "id": "us07-docx-dato-especifico",
+      "historias": [
+        "US-07"
+      ],
+      "cubre": [
+        "US-07.CA-01",
+        "US-07.CA-02"
+      ],
+      "identidad": "cliente_1",
+      "rendimiento": {
+        "inicio": "2026-11-19T17:38:43",
+        "s_total": 36.91,
+        "s_agente": 36.603,
+        "s_servicio": 26.12,
+        "s_turnos_previos": 0,
+        "turnos": [
+          {
+            "tipo": "final",
+            "s": 36.603,
+            "s_servicio": 26.12,
+            "pasos": [
+              {
+                "agente": "document_intelligence",
+                "accion": "Conversión de documento a Markdown",
+                "s": 10.24,
+                "estado": "ok"
+              },
+              {
+                "agente": "orquestador",
+                "accion": "Respondió directamente",
+                "s": 26.12,
+                "estado": null
+              }
+            ],
+            "herramientas": 1
+          }
+        ],
+        "cpu": {
+          "s_cpu_pytest": 1.156
+        },
+        "recursos": {
+          "rss_pytest_y_mcp_mb": 322.3,
+          "rss_ollama_mb": 16.7,
+          "ram_sistema_usada_pct": 87.1,
+          "swap_usado_mb": 9722.7,
+          "cpu_sistema_pct_media": 44.9,
+          "cpu_sistema_pct_max": 76.5,
+          "muestras": 71
+        },
+        "llm": {
+          "llamadas": 1,
+          "errores": 0,
+          "tokens_entrada": 773,
+          "tokens_salida": 50,
+          "s_carga_modelos": 0.074,
+          "por_modelo": {
+            "mimo-v2.6": {
+              "llamadas": 1,
+              "tokens_entrada": 773,
+              "tokens_salida": 50,
+              "s_generacion": 8.126,
+              "s_prompt": 17.629,
+              "s_carga": 0.074,
+              "s_total": 25.887,
+              "en_subproceso_mcp": 0,
+              "tokens_por_s": 6.15,
+              "tokens_prompt_por_s": 43.85
+            }
+          }
+        },
+        "ollama_al_final": [
+          {
+            "modelo": "mimo-v2.6:latest",
+            "tamano_mb": 3597.7,
+            "vram_mb": 0.0,
+            "porcentaje_gpu": 0.0,
+            "contexto": 4096
+          },
+          {
+            "modelo": "qwen2.5vl:7b",
+            "tamano_mb": 5404.7,
+            "vram_mb": 0.0,
+            "porcentaje_gpu": 0.0,
+            "contexto": 4096
+          },
+          {
+            "modelo": "qwen2.5:7b-instruct",
+            "tamano_mb": 4835.0,
+            "vram_mb": 0.0,
+            "porcentaje_gpu": 0.0,
+            "contexto": 4096
+          }
+        ]
+      },
+      "s_evaluacion": 0.04,
+      "resultado": "paso"
+    },
+    {
+      "id": "us08-seguimiento-usa-el-archivo",
+      "historias": [
+        "US-08"
+      ],
+      "cubre": [
+        "US-08.CA-01"
+      ],
+      "identidad": "cliente_1",
+      "rendimiento": {
+        "inicio": "2026-11-19T17:39:22",
+        "s_total": 39.784,
+        "s_agente": 4.322,
+        "s_servicio": 4.32,
+        "s_turnos_previos": 35.334,
+        "turnos": [
+          {
+            "tipo": "previo",
+            "s": 35.334,
+            "s_servicio": 29.41,
+            "pasos": [
+              {
+                "agente": "document_intelligence",
+                "accion": "Conversión de documento a Markdown",
+                "s": 5.76,
+                "estado": "ok"
+              },
+              {
+                "agente": "orquestador",
+                "accion": "Respondió directamente",
+                "s": 29.41,
+                "estado": null
+              }
+            ],
+            "herramientas": 1
+          },
+          {
+            "tipo": "final",
+            "s": 4.322,
+            "s_servicio": 4.32,
+            "pasos": [
+              {
+                "agente": "orquestador",
+                "accion": "Respondió directamente",
+                "s": 4.32,
+                "estado": null
+              }
+            ],
+            "herramientas": 0
+          }
+        ],
+        "cpu": {
+          "s_cpu_pytest": 1.312
+        },
+        "recursos": {
+          "rss_pytest_y_mcp_mb": 328.9,
+          "rss_ollama_mb": 21.6,
+          "ram_sistema_usada_pct": 88.4,
+          "swap_usado_mb": 9705.9,
+          "cpu_sistema_pct_media": 46.3,
+          "cpu_sistema_pct_max": 60.3,
+          "muestras": 77
+        },
+        "llm": {
+          "llamadas": 2,
+          "errores": 0,
+          "tokens_entrada": 1668,
+          "tokens_salida": 119,
+          "s_carga_modelos": 0.018,
+          "por_modelo": {
+            "mimo-v2.6": {
+              "llamadas": 2,
+              "tokens_entrada": 1668,
+              "tokens_salida": 119,
+              "s_generacion": 17.699,
+              "s_prompt": 15.498,
+              "s_carga": 0.018,
+              "s_total": 33.266,
+              "en_subproceso_mcp": 0,
+              "tokens_por_s": 6.72,
+              "tokens_prompt_por_s": 107.62
+            }
+          }
+        },
+        "ollama_al_final": [
+          {
+            "modelo": "mimo-v2.6:latest",
+            "tamano_mb": 3597.7,
+            "vram_mb": 0.0,
+            "porcentaje_gpu": 0.0,
+            "contexto": 4096
+          },
+          {
+            "modelo": "qwen2.5vl:7b",
+            "tamano_mb": 5404.7,
+            "vram_mb": 0.0,
+            "porcentaje_gpu": 0.0,
+            "contexto": 4096
+          },
+          {
+            "modelo": "qwen2.5:7b-instruct",
+            "tamano_mb": 4835.0,
+            "vram_mb": 0.0,
+            "porcentaje_gpu": 0.0,
+            "contexto": 4096
+          }
+        ]
+      },
+      "s_evaluacion": 48.335,
+      "resultado": "paso"
+    },
+    {
+      "id": "us09-traza-con-sql",
+      "historias": [
+        "US-09"
+      ],
+      "cubre": [
+        "US-09.CA-01",
+        "US-09.CA-02"
+      ],
+      "identidad": "analista",
+      "rendimiento": {
+        "inicio": "2026-11-19T17:40:52",
+        "s_total": 196.433,
+        "s_agente": 196.285,
+        "s_servicio": 196.28,
+        "s_turnos_previos": 0,
+        "turnos": [
+          {
+            "tipo": "final",
+            "s": 196.285,
+            "s_servicio": 196.28,
+            "pasos": [
+              {
+                "agente": "data_analyst",
+                "accion": "Herramienta MCP invocada",
+                "s": null,
+                "estado": "ok"
+              }
+            ],
+            "herramientas": 1
+          }
+        ],
+        "cpu": {
+          "s_cpu_pytest": 3.141
+        },
+        "recursos": {
+          "rss_pytest_y_mcp_mb": 320.8,
+          "rss_ollama_mb": 23.3,
+          "ram_sistema_usada_pct": 94.2,
+          "swap_usado_mb": 9611.2,
+          "cpu_sistema_pct_media": 49.8,
+          "cpu_sistema_pct_max": 72.9,
+          "muestras": 380
+        },
+        "llm": {
+          "llamadas": 2,
+          "errores": 0,
+          "tokens_entrada": 3359,
+          "tokens_salida": 393,
+          "s_carga_modelos": 0.037,
+          "por_modelo": {
+            "mimo-v2.6": {
+              "llamadas": 2,
+              "tokens_entrada": 3359,
+              "tokens_salida": 393,
+              "s_generacion": 63.147,
+              "s_prompt": 120.186,
+              "s_carga": 0.037,
+              "s_total": 183.757,
+              "en_subproceso_mcp": 1,
+              "tokens_por_s": 6.22,
+              "tokens_prompt_por_s": 27.95
+            }
+          }
+        },
+        "ollama_al_final": [
+          {
+            "modelo": "mimo-v2.6:latest",
+            "tamano_mb": 3597.7,
+            "vram_mb": 0.0,
+            "porcentaje_gpu": 0.0,
+            "contexto": 4096
+          },
+          {
+            "modelo": "qwen2.5:7b-instruct",
+            "tamano_mb": 4835.0,
+            "vram_mb": 0.0,
+            "porcentaje_gpu": 0.0,
+            "contexto": 4096
+          }
+        ]
+      },
+      "s_evaluacion": 0.046,
+      "resultado": "paso"
+    },
+    {
+      "id": "us10-ruta-calidad",
+      "historias": [
+        "US-10"
+      ],
+      "cubre": [
+        "US-10.CA-01"
+      ],
+      "identidad": "data_steward",
+      "rendimiento": {
+        "inicio": "2026-11-19T17:44:11",
+        "s_total": 167.547,
+        "s_agente": 167.419,
+        "s_servicio": 167.42,
+        "s_turnos_previos": 0,
+        "turnos": [
+          {
+            "tipo": "final",
+            "s": 167.419,
+            "s_servicio": 167.42,
+            "pasos": [
+              {
+                "agente": "data_steward",
+                "accion": "Herramienta MCP invocada",
+                "s": null,
+                "estado": "ok"
+              },
+              {
+                "agente": "data_steward",
+                "accion": "Herramienta MCP invocada",
+                "s": null,
+                "estado": "ok"
+              },
+              {
+                "agente": "data_steward",
+                "accion": "Herramienta MCP invocada",
+                "s": null,
+                "estado": "ok"
+              }
+            ],
+            "herramientas": 3
+          }
+        ],
+        "cpu": {
+          "s_cpu_pytest": 2.578
+        },
+        "recursos": {
+          "rss_pytest_y_mcp_mb": 274.3,
+          "rss_ollama_mb": 22.5,
+          "ram_sistema_usada_pct": 95.7,
+          "swap_usado_mb": 3075.1,
+          "cpu_sistema_pct_media": 49.6,
+          "cpu_sistema_pct_max": 78.6,
+          "muestras": 326
+        },
+        "llm": {
+          "llamadas": 1,
+          "errores": 0,
+          "tokens_entrada": 1739,
+          "tokens_salida": 626,
+          "s_carga_modelos": 0.011,
+          "por_modelo": {
+            "mimo-v2.6": {
+              "llamadas": 1,
+              "tokens_entrada": 1739,
+              "tokens_salida": 626,
+              "s_generacion": 99.294,
+              "s_prompt": 54.293,
+              "s_carga": 0.011,
+              "s_total": 153.646,
+              "en_subproceso_mcp": 0,
+              "tokens_por_s": 6.3,
+              "tokens_prompt_por_s": 32.03
+            }
+          }
+        },
+        "ollama_al_final": [
+          {
+            "modelo": "mimo-v2.6:latest",
+            "tamano_mb": 3597.7,
+            "vram_mb": 0.0,
+            "porcentaje_gpu": 0.0,
+            "contexto": 4096
+          }
+        ]
+      },
+      "s_evaluacion": 0.046,
+      "resultado": "paso"
+    },
+    {
+      "id": "us11-no-afirma-datos-reales",
+      "historias": [
+        "US-11"
+      ],
+      "cubre": [
+        "US-11.CA-02"
+      ],
+      "identidad": "cliente_1",
+      "rendimiento": {
+        "inicio": "2026-11-19T17:47:00",
+        "s_total": 170.491,
+        "s_agente": 170.366,
+        "s_servicio": 170.37,
+        "s_turnos_previos": 0,
+        "turnos": [
+          {
+            "tipo": "final",
+            "s": 170.366,
+            "s_servicio": 170.37,
+            "pasos": [
+              {
+                "agente": "data_analyst",
+                "accion": "Herramienta MCP invocada",
+                "s": null,
+                "estado": "ok"
+              }
+            ],
+            "herramientas": 1
+          }
+        ],
+        "cpu": {
+          "s_cpu_pytest": 2.703
+        },
+        "recursos": {
+          "rss_pytest_y_mcp_mb": 254.9,
+          "rss_ollama_mb": 22.4,
+          "ram_sistema_usada_pct": 70.5,
+          "swap_usado_mb": 658.5,
+          "cpu_sistema_pct_media": 49.8,
+          "cpu_sistema_pct_max": 66.7,
+          "muestras": 334
+        },
+        "llm": {
+          "llamadas": 2,
+          "errores": 0,
+          "tokens_entrada": 3595,
+          "tokens_salida": 394,
+          "s_carga_modelos": 0.029,
+          "por_modelo": {
+            "mimo-v2.6": {
+              "llamadas": 2,
+              "tokens_entrada": 3595,
+              "tokens_salida": 394,
+              "s_generacion": 61.478,
+              "s_prompt": 102.577,
+              "s_carga": 0.029,
+              "s_total": 164.212,
+              "en_subproceso_mcp": 1,
+              "tokens_por_s": 6.41,
+              "tokens_prompt_por_s": 35.05
+            }
+          }
+        },
+        "ollama_al_final": [
+          {
+            "modelo": "mimo-v2.6:latest",
+            "tamano_mb": 3597.7,
+            "vram_mb": 0.0,
+            "porcentaje_gpu": 0.0,
+            "contexto": 4096
+          }
+        ]
+      },
+      "s_evaluacion": 52.462,
+      "resultado": "paso"
+    }
+  ]
+}

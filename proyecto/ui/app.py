@@ -353,44 +353,50 @@ with izquierda:
                     limpiar()
 
         with st.container(key="chat_scroll"):
-            if not st.session_state.mensajes:
-                componentes.hero()
-                columnas = st.columns(3, gap="small")
-                for (clave, pregunta), columna in zip(SUGERENCIAS, columnas):
-                    with columna:
-                        if st.button(
-                            pregunta,
-                            key=clave,
-                            width="stretch",
-                            disabled=not puede_consultar or st.session_state.pensando,
-                        ):
-                            iniciar(pregunta)
-            else:
-                for mensaje in st.session_state.mensajes:
-                    with st.chat_message(mensaje["rol"]):
-                        if mensaje.get("formato") == "texto":
-                            st.code(mensaje["texto"], language="text")
+            # Mantén separados el estado inicial y el historial. Las columnas de
+            # sugerencias ya no comparten el mismo árbol de render con los mensajes.
+            with st.container(key="chat_empty"):
+                if not st.session_state.mensajes:
+                    componentes.hero()
+                    columnas = st.columns(3, gap="small")
+                    for (clave, pregunta), columna in zip(SUGERENCIAS, columnas):
+                        with columna:
+                            if st.button(
+                                pregunta,
+                                key=clave,
+                                width="stretch",
+                                disabled=not puede_consultar or st.session_state.pensando,
+                            ):
+                                iniciar(pregunta)
+
+            with st.container(key="chat_history"):
+                if st.session_state.mensajes:
+                    for indice, mensaje in enumerate(st.session_state.mensajes):
+                        with st.container(key=f"chat_message_{indice}"):
+                            with st.chat_message(mensaje["rol"]):
+                                if mensaje.get("formato") == "texto":
+                                    st.code(mensaje["texto"], language="text")
+                                else:
+                                    st.markdown(componentes.texto(mensaje["texto"]))
+                                if mensaje["rol"] == "assistant":
+                                    grafica = mensaje.get("grafica")
+                                    if grafica:
+                                        _mostrar_grafica(grafica, mensaje.get('visualizacion'))
+                                    st.markdown(
+                                        componentes.meta_mensaje(
+                                            mensaje.get("pasos"),
+                                            mensaje.get("duracion"),
+                                        ),
+                                        unsafe_allow_html=True,
+                                    )
+                    if st.session_state.pensando:
+                        if st.session_state.get("archivo_tipo") == "imagen":
+                            estado = "Procesando imagen…"
+                        elif st.session_state.get("archivo_tipo") == "documento":
+                            estado = "Leyendo documento (un PDF escaneado puede tardar)…"
                         else:
-                            st.markdown(componentes.texto(mensaje["texto"]))
-                        if mensaje["rol"] == "assistant":
-                            grafica = mensaje.get("grafica")
-                            if grafica:
-                                _mostrar_grafica(grafica, mensaje.get('visualizacion'))
-                            st.markdown(
-                                componentes.meta_mensaje(
-                                    mensaje.get("pasos"),
-                                    mensaje.get("duracion"),
-                                ),
-                                unsafe_allow_html=True,
-                            )
-                if st.session_state.pensando:
-                    if st.session_state.get("archivo_tipo") == "imagen":
-                        estado = "Procesando imagen…"
-                    elif st.session_state.get("archivo_tipo") == "documento":
-                        estado = "Leyendo documento (un PDF escaneado puede tardar)…"
-                    else:
-                        estado = "Analizando la consulta…"
-                    componentes.pensando(estado)
+                            estado = "Analizando la consulta…"
+                        componentes.pensando(estado)
 
         if st.session_state.get("documento_consultable"):
             if st.session_state.pop("documento_nuevo", False):
@@ -458,7 +464,11 @@ if abierta:
 # chat_scroll altera su scrollHeight y puede colapsar el layout durante el
 # rerun. El bucle reintenta mientras Streamlit termina de montar los mensajes.
 if st.session_state.mensajes:
-    firma = f"{len(st.session_state.mensajes)}-{len(st.session_state.mensajes[-1].get('texto', ''))}"
+    firma = (
+        f"{len(st.session_state.mensajes)}-"
+        f"{len(st.session_state.mensajes[-1].get('texto', ''))}-"
+        f"{int(abierta)}"
+    )
     st.iframe(
         f"""
         <script>
@@ -472,7 +482,7 @@ if st.session_state.mensajes:
         }};
         const bucle = () => {{
           alFinal();
-          if (performance.now() - inicio < 2500) requestAnimationFrame(bucle);
+          if (performance.now() - inicio < 2200) setTimeout(bucle, 70);
         }};
         bucle();
         /* {firma} */

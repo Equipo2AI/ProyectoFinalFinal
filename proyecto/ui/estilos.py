@@ -180,8 +180,9 @@ html, body, .stApp { background-color: var(--papel) !important; }
 }
 
 [data-testid="stVerticalBlock"].st-key-chat {
-  height: calc(100dvh - 126px);
-  min-height: 470px;
+  height: calc(100dvh - 205px);
+  max-height: calc(100dvh - 205px);
+  min-height: min(470px, calc(100dvh - 205px));
   display: flex !important;
   flex-direction: column !important;
   gap: 0 !important;
@@ -190,8 +191,9 @@ html, body, .stApp { background-color: var(--papel) !important; }
 }
 
 [data-testid="stVerticalBlock"].st-key-consola {
-  height: calc(100dvh - 126px);
-  min-height: 470px;
+  height: calc(100dvh - 205px);
+  max-height: calc(100dvh - 205px);
+  min-height: min(470px, calc(100dvh - 205px));
   display: flex !important;
   flex-direction: column !important;
   gap: 0 !important;
@@ -218,12 +220,12 @@ html, body, .stApp { background-color: var(--papel) !important; }
   min-height: 0 !important;
   overflow-y: auto;
   overflow-x: hidden;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(236, 240, 244, 0.2) transparent;
+  -ms-overflow-style: auto;
   gap: 0 !important;
   padding: 12px 24px 20px !important;
 }
-.st-key-consola_scroll::-webkit-scrollbar { display: none; width: 0; height: 0; }
 
 [data-testid="stVerticalBlock"].st-key-chat {
   container-type: inline-size;
@@ -319,12 +321,33 @@ html, body, .stApp { background-color: var(--papel) !important; }
   padding: 16px 26px 10px !important;
   display: flex !important;
   flex-direction: column !important;
+  flex-wrap: nowrap !important;
+  align-items: stretch !important;
   gap: 0 !important;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(236, 240, 244, 0.2) transparent;
+  -ms-overflow-style: auto;
 }
-.st-key-chat_scroll::-webkit-scrollbar { display: none; width: 0; height: 0; }
 .st-key-chat_scroll:has(.hero) { justify-content: center; }
+.st-key-chat_scroll:has([data-testid="stChatMessage"]) .st-key-chat_empty {
+  display: none !important;
+}
+.st-key-chat_scroll:not(:has([data-testid="stChatMessage"])) .st-key-chat_history {
+  display: none !important;
+}
+.st-key-chat_history {
+  display: flex !important;
+  flex: 0 0 auto !important;
+  flex-direction: column !important;
+  gap: 0 !important;
+  width: 100% !important;
+  min-width: 0 !important;
+}
+.st-key-chat_history [class*="st-key-chat_message_"] {
+  flex: 0 0 auto !important;
+  width: 100% !important;
+  min-width: 0 !important;
+}
 
 .hero {
   position: relative;
@@ -455,18 +478,35 @@ html, body, .stApp { background-color: var(--papel) !important; }
 .st-key-sug_1 button::after { background-image: var(--ico-db); }
 .st-key-sug_2 button::after { background-image: var(--ico-book); }
 
+[data-testid="stElementContainer"][height="1px"]:has(> iframe[data-testid="stIFrame"]) {
+  position: fixed !important;
+  left: 0 !important;
+  bottom: 0 !important;
+  z-index: -1 !important;
+  width: 1px !important;
+  height: 1px !important;
+  overflow: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
 [data-testid="stChatMessage"] {
   background: transparent !important;
   border: none !important;
   padding: 0 !important;
   box-shadow: none !important;
   width: fit-content;
+  min-width: 0;
   max-width: min(94%, 740px);
+  flex: 0 0 auto !important;
   gap: 10px;
   align-items: flex-start;
   margin-bottom: 12px;
 }
 [data-testid="stChatMessageContent"] {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
   background: rgba(34, 38, 43, 0.72);
   -webkit-backdrop-filter: blur(22px) saturate(108%);
   backdrop-filter: blur(22px) saturate(108%);
@@ -505,6 +545,12 @@ html, body, .stApp { background-color: var(--papel) !important; }
   color: var(--inverso);
 }
 [data-testid="stChatMessageContent"] strong { color: var(--tinta); font-weight: 600; }
+[data-testid="stChatMessageContent"] img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: 12px;
+}
 
 [data-testid="stChatMessageAvatarAssistant"] {
   width: 30px !important;
@@ -1146,8 +1192,9 @@ html, body, .stApp { background-color: var(--papel) !important; }
   [data-testid="stMainBlockContainer"] { padding: 0.9rem 0.8rem 1.2rem; }
 
   [data-testid="stVerticalBlock"].st-key-chat {
-    height: 70dvh;
-    min-height: 420px;
+    height: min(70dvh, calc(100dvh - 210px));
+    max-height: calc(100dvh - 210px);
+    min-height: min(420px, calc(100dvh - 210px));
   }
   [data-testid="stVerticalBlock"].st-key-consola {
     height: auto;
@@ -1190,7 +1237,11 @@ html, body, .stApp { background-color: var(--papel) !important; }
 }
 
 @media (max-width: 600px) {
-  [data-testid="stVerticalBlock"].st-key-chat { height: 74dvh; }
+  [data-testid="stVerticalBlock"].st-key-chat {
+    height: min(74dvh, calc(100dvh - 230px));
+    max-height: calc(100dvh - 230px);
+    min-height: min(380px, calc(100dvh - 230px));
+  }
   .st-key-chat_head .rotulo { font-size: 8px; }
   .meta-mensaje { font-size: 7.5px; letter-spacing: 0.08em; }
   .paso { grid-template-columns: 30px minmax(0, 1fr) auto; gap: 10px; }

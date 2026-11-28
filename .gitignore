@@ -36,14 +36,6 @@ AGENTS.md
 docs/*
 !docs/reporte_validacion_preguntas.md
 
-# DeepEval: caché y resultados locales
-.deepeval/
-deepeval/resultados/*
-!deepeval/resultados/consolidado_20261110.md
-# Corridas publicadas de 18 y 12 casos
-!deepeval/resultados/test_run_20261109_215032.json
-!deepeval/resultados/test_run_20261110_122956.json
-
 # Datos locales de prueba (no se suben)
 files/Base Cards para TEC - Diccionario de Variables.csv
 proyecto/data/clientes.csv
@@ -53,6 +45,9 @@ proyecto/data/bank_metadata_simple.json
 benchmarks/multimodal/documentos/
 benchmarks/multimodal/casos.locales/
 benchmarks/multimodal/resultados/
+
+# Capa semántica de diseño: referencia local, no runtime
+capa_semantica_financiera_v1/
 
 # Herramientas
 .ruff_cache/
