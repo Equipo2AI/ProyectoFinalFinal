@@ -29,31 +29,73 @@ def requirements_matrix():
 def _presence(lines, field):
     """Tres valores: dato extraído, ausencia explícita o no verificable."""
     values = []
-    for line in lines:
-        match = re.fullmatch(r'\s*(?:' + field + r')\s*:\s*(.*?)\s*', line)
+    facts = []
+    # Ordenar alias evita interpretar «nombre completo» como nombre=«completo».
+    labels = '|'.join(sorted(field.split('|'), key=len, reverse=True))
+    boundary = (r'nombre completo|titular|curp|domicilio(?: del servicio)?|direccion|'
+                r'clave de [a-z]+|numero de registro|numero de credencial|folio(?: ficticio)?|'
+                r'entidad de registro|fecha de \w+|emision|vigencia|vencimiento|registro')
+    for index, original in enumerate(lines):
+        line = re.sub(r'^(?:[a-z]\s+){1,3}(?=(?:' + labels + r')\b)', '', original.strip())
+        match = re.fullmatch(r'(?:' + labels + r')\b(?P<separator>\s*[:\-]\s*|\s+|$)(?P<value>.*?)\s*', line)
         if match:
-            value = match[1].strip()
+            value = match['value'].strip()
+            explicit = ':' in match['separator'] or '-' in match['separator']
+            # Texto superpuesto/corrupto no constituye un valor. Una cabecera
+            # de columnas puede preceder al valor, pero no acredita otro campo.
+            if not explicit and '\ufffd' in value:
+                continue
+            if not explicit and re.search(r'\b(?:evaluacion|instrucciones|descripcion)\b.*\b(?:requisitos|campos|documentos)\b', value):
+                continue
+            column_heading = bool(re.match(r'(?:' + boundary + r')(?=\s|:|$)', value))
+            if not value or column_heading:
+                following = index + 1
+                while following < len(lines) and re.fullmatch(r'[a-z]', lines[following].strip()):
+                    following += 1
+                candidate = lines[following].strip() if following < len(lines) else ''
+                candidate = re.sub(r'^(?:[a-z]\s+){1,3}(?=(?:' + boundary + r')\b)', '', candidate)
+                if not candidate or re.match(r'(?:' + boundary + r')(?=\s|:|$)', candidate):
+                    if explicit:
+                        values.append(None)
+                    continue
+                value = candidate
+            # Una palabra genérica dentro del valor de un nombre no es otra
+            # etiqueta «Persona». Las etiquetas sin separador deben ser claras.
+            if not explicit and re.match(r'^persona\s+', line) and not re.match(r'^persona registrada\b', line):
+                continue
             if value in {'no', 'no incluida', 'no incluido', 'no consta', 'no incluye', 'ausente'}:
                 values.append(False)
             elif not value or value in {'si', 'presente', 'incluida', 'incluido', 'n/a', 'sin dato', 'sin datos'} or re.search(r'ilegible|redactad|no disponible|no verificable|\*{3,}|\[.*\]', value):
                 values.append(None)
             else:
                 values.append(True)
-    if not values or None in values or len(set(values)) != 1:
+                facts.append(value)
+    if not values or None in values or len(set(values)) != 1 or len(set(facts)) > 1:
         return None
     return values[0]
 
 
 def _date_fact(lines, label):
     values = []
-    for line in lines:
-        match = re.fullmatch(r'\s*(?:' + label + r')\s*:\s*(.*?)\s*', line)
-        if match:
-            values.append(match[1])
-    if len(set(values)) != 1:
+    date_labels = (r'fecha final de vigencia declarada|fecha de emision ilustrativa|fecha de vencimiento|'
+                   r'fecha de expedicion|fecha de nacimiento|fecha de emision|vigente hasta|vencimiento|vigencia|emision')
+    for index, line in enumerate(lines):
+        matches = list(re.finditer(r'\b(?:' + date_labels + r')\b\s*:?\s*', line))
+        # Una mención narrativa («la fecha de emisión...») no es otro dato.
+        if matches and line[:matches[0].start()].strip():
+            continue
+        for position, match in enumerate(matches):
+            name = re.sub(r'\s*:\s*$', '', match[0].strip()).strip()
+            if not re.fullmatch(label, name):
+                continue
+            end = matches[position + 1].start() if position + 1 < len(matches) else len(line)
+            value = line[match.end():end].strip()
+            if not value and index + 1 < len(lines):
+                value = lines[index + 1].strip()
+            values.append(_explicit_date(value))
+    if not values or None in values or len(set(values)) != 1:
         return None
-    value = _explicit_date(values[0])
-    return value.isoformat() if value else None
+    return values[0].isoformat()
 
 
 def requirement_metadata(pages, incomplete):
@@ -99,19 +141,25 @@ def requirement_metadata(pages, incomplete):
                      for c in re.split(r';\s*|\.\s+(?=[a-z])', line)]
             if local:
                 blocks.append(local)
-    local = blocks[0] if blocks else []
-    heading = local[0] if local else ''
     # Se consume TODO el encabezado: un prefijo "Constancia CURP" no acredita
     # una "Constancia CURP: lectura comentada". Calificadores desconocidos
     # conservan incertidumbre, no se suprimen para hacer coincidir el título.
-    qualifier = (r'(?:\s*[-:|()]?\s*(?:simulacion|documento sintetico|sintetic[oa]|'
+    qualifier = (r'(?:\s*[-:|()]?\s*(?:simulacion(?: academica)?|registro sintetico|comprobante sintetico|documento sintetico|sintetic[oa]|'
                  r'simulad[oa]|solo pruebas|sin validez oficial|de prueba|de demostracion))*\s*[-.)]*')
-    presented_types = []
-    for candidate, pattern in type_patterns:
-        match = re.match(pattern, heading)
-        if match and re.fullmatch(qualifier, heading[match.end():]):
-            presented_types.append(candidate)
-    record_headers = sum(bool(re.match(pattern, block[0])) for block in blocks for _, pattern in type_patterns)
+    regions = []
+    record_headers = 0
+    for block in blocks:
+        headers = [(index, candidate, match) for index, line in enumerate(block)
+                   for candidate, pattern in type_patterns if (match := re.match(pattern, line))]
+        record_headers += bool(headers)
+        # No unir bloques para completar un encabezado aislado. El membrete
+        # anterior al título no participa en los hechos del registro.
+        if headers:
+            index, candidate, match = headers[0]
+            if re.fullmatch(qualifier, block[index][match.end():]):
+                regions.append((candidate, block[index:]))
+    presented_types = [kind for kind, _ in regions]
+    local = regions[0][1] if len(regions) == 1 else []
     purpose_uncertain = purpose_uncertain or bool(re.search(
         r'\b(?:material (?:de estudio|educativo|didactico)|lectura comentada|'
         r'ejercicio (?:resuelto|didactico)|modelo de (?:constancia|credencial|comprobante))\b', body))
@@ -120,10 +168,10 @@ def requirement_metadata(pages, incomplete):
     purpose_uncertain = purpose_uncertain or bool(
         re.search(r'\b(?:curso|seminario|leccion|clase|alumnado)\b', body)
         and re.search(r'\b(?:transcripcion|reproduccion|reproduce|campos|apartados)\b', body))
-    person = _presence(local, 'persona|persona registrada|titular|nombre') is True
+    person = _presence(local, 'persona|persona registrada|titular|nombre|nombre completo') is True
     population = _presence(local, 'curp|valor de la curp') is True
     address = _presence(local, 'domicilio|direccion|domicilio del servicio|domicilio de instalacion') is True
-    record = _presence(local, 'numero de registro|registro|clave de elector|numero de credencial') is True
+    record = _presence(local, 'numero de registro|registro|clave de elector|numero de credencial|folio ficticio|folio') is True
     expiry = _date_fact(local, 'vigente hasta|fecha de vencimiento|vencimiento|vigencia|fecha final de vigencia declarada')
     issued = _date_fact(local, 'fecha de emision|emision|fecha de expedicion|fecha de emision ilustrativa')
     service = bool(re.search(r'\b(?:recibo de (?:luz|energia electrica|telefonia fija|predial|television de paga)|tipo de recibo: (?:luz|telefonia fija|predial|television de paga))\b', '\n'.join(local)))

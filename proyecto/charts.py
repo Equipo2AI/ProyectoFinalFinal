@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import re
+import math
 from decimal import Decimal
 from typing import Any
 
@@ -52,9 +53,11 @@ def _numero(valor: Any) -> float | None:
     if isinstance(valor, bool) or valor is None:
         return None
     if isinstance(valor, (int, float, Decimal)):
-        return float(valor)
+        number = float(valor)
+        return number if math.isfinite(number) else None
     if isinstance(valor, str) and _NUMERO.match(valor.strip()):
-        return float(valor.strip())
+        number = float(valor.strip())
+        return number if math.isfinite(number) else None
     return None
 
 
@@ -72,8 +75,11 @@ def _parece_anio_mes(valor: Any) -> bool:
 
 def _texto_categoria(valor: Any) -> str:
     if valor is None:
-        return ""
-    return str(valor).strip()
+        return 'Sin clasificar'
+    if _parece_anio_mes(valor):
+        value = int(float(valor))
+        return f'{value // 100:04}-{value % 100:02}'
+    return str(valor).strip() or 'Sin clasificar'
 
 
 def _titulo_limpio(titulo: str) -> str:
@@ -174,9 +180,9 @@ def _elegir_tipo(
         )
     if tipo != "auto":
         return tipo
-    if len(x_valores) > 2 and all(_parece_fecha(valor) for valor in x_valores):
+    if len(x_valores) >= 2 and all(_parece_fecha(valor) for valor in x_valores):
         return "line"
-    if len(x_valores) > 2 and all(_parece_anio_mes(valor) for valor in x_valores):
+    if len(x_valores) >= 2 and all(_parece_anio_mes(valor) for valor in x_valores):
         return "line"
     if x_valores and all(_numero(valor) is not None for valor in x_valores):
         return "scatter"
@@ -210,8 +216,7 @@ def _preparar_puntos(
             else _texto_categoria(fila[indice_x])
         )
         if y is None or x in (None, ""):
-            descartadas += 1
-            continue
+            raise ValueError('Hay valores no numéricos o no finitos; no se genera una gráfica parcial.')
         puntos.append((x, y))
 
     if descartadas:
@@ -322,6 +327,7 @@ def generar_grafica(
     eje_y: str = "",
     titulo: str = "",
     orden: str = "ninguno",
+    unidad: str = '',
 ) -> dict[str, Any]:
     """Genera un PNG determinista y devuelve bytes + especificación.
 
@@ -343,7 +349,7 @@ def generar_grafica(
         x_valores,
         y_valores,
         eje_x,
-        eje_y,
+        eje_y + (f' ({unidad})' if unidad else ''),
         titulo,
     )
     return {
@@ -352,8 +358,12 @@ def generar_grafica(
             "tipo": tipo_elegido,
             "eje_x": eje_x,
             "eje_y": eje_y,
+            'unidad': unidad,
+            'etiqueta_y': eje_y + (f' ({unidad})' if unidad else ''),
             "titulo": titulo or f"{eje_y} por {eje_x}",
             "orden": orden,
+            'categorias_valores': x_valores,
+            'valores': y_valores,
             "filas": len(x_valores),
             "categorias": len(
                 {str(valor) for valor in x_valores}
@@ -363,6 +373,52 @@ def generar_grafica(
         },
         "advertencias": advertencias,
     }
+
+
+def visualizar_resultado_sql(sql: str, datos: dict, tipo: str = 'auto') -> dict:
+    """Renderiza solo filas del resultado autorizado; no consulta ni ejecuta código."""
+    import sqlglot
+    from sqlglot import exp
+    if not isinstance(datos, dict) or datos.get('error') or datos.get('truncado'):
+        raise ValueError('No hay un resultado completo y autorizado para graficar.')
+    try:
+        statements = sqlglot.parse(sql, read='sqlite')
+    except Exception:
+        raise ValueError('No se pudo verificar el origen SQL de la gráfica.') from None
+    if len(statements) != 1 or not isinstance(statements[0], exp.Select) or not statements[0].find(exp.AggFunc):
+        raise ValueError('La gráfica requiere una consulta agregada verificable de solo lectura.')
+    tree = statements[0]
+    columns, rows = datos.get('columnas', []), datos.get('filas', [])
+    _columnas_unicas(columns, rows)
+    x, y, _ = _elegir_ejes(columns, rows, '', '')
+    projections = {e.alias_or_name: e for e in tree.expressions}
+    axis = projections.get(x)
+    if axis is None or any(c.name.lower() in COLUMNAS_PROHIBIDAS for c in axis.find_all(exp.Column)):
+        raise ValueError('No se grafica un eje individual o de origen incierto.')
+    unit = str(datos.get('unidad') or '')
+    expression = projections.get(y)
+    if not unit and expression is not None:
+        if expression.find(exp.Count):
+            unit = 'recuento'
+        else:
+            from proyecto.metrics import catalogo_metricas
+            names = {c.name for c in expression.find_all(exp.Column)}
+            sources = {t.name.lower() for t in tree.find_all(exp.Table)}
+            # En esta vista importe_firmado = saldo_txn * signo: cambia el
+            # signo, no la unidad monetaria documentada en el catálogo.
+            if sources == {'vw_txn_firmada'} and names == {'saldo_txn'}:
+                names = {'importe_firmado'}
+            units = {m['unidad'] for m in catalogo_metricas()
+                     if m['columna'] in names and m['vista'].lower() in sources}
+            unit = next(iter(units)) if len(units) == 1 else ''
+    actual_type = _elegir_tipo(tipo, [row[columns.index(x)] for row in rows], rows)
+    chart = generar_grafica(columns, rows, tipo=actual_type, eje_x=x, eje_y=y, unidad=unit,
+                           orden='asc' if actual_type == 'line' else 'ninguno')
+    spec = chart['especificacion']
+    spec['fuente'] = sorted({t.name for t in tree.find_all(exp.Table)})
+    temporal = all(_parece_fecha(v) for v in spec['categorias_valores'])
+    spec['periodo'] = {'desde': min(spec['categorias_valores']), 'hasta': max(spec['categorias_valores'])} if temporal else None
+    return chart
 
 
 __all__ = [

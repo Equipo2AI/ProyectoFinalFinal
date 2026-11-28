@@ -176,6 +176,22 @@ def boton_tema() -> None:
         st.rerun()
 
 
+def _mostrar_grafica(grafica, visualizacion=None):
+    st.image(grafica, width='stretch')
+    if visualizacion:
+        details = ['Fuente: ' + ', '.join(visualizacion.get('fuente', []))]
+        if visualizacion.get('unidad'):
+            details.append('Unidad: ' + visualizacion['unidad'])
+        period = visualizacion.get('periodo')
+        if period:
+            details.append('Periodo: ' + period['desde'] + ' a ' + period['hasta'])
+        if visualizacion.get('consultado_en'):
+            details.append('Consulta: ' + visualizacion['consultado_en'])
+        if visualizacion.get('reutilizado'):
+            details.append('Resultados anteriores; no se volvió a consultar la base')
+        st.caption(' · '.join(details))
+
+
 def _pasos(artefacto: dict) -> list[dict]:
     pasos = artefacto.get("pasos") or []
     if pasos:
@@ -194,7 +210,7 @@ def panel_consola(artefacto: dict | None, pensando: bool) -> None:
     componentes.traza(_pasos(artefacto))
 
     if artefacto.get('integridad_documental'):
-        with st.expander('Integridad documental: reglas verificables', expanded=True):
+        with st.expander('Integridad documental: reglas verificables', expanded=False):
             st.json(artefacto['integridad_documental'])
     if artefacto.get('pertinencia_documental') or artefacto.get('metadatos_documentales'):
         with st.expander('Tipo, período y pertinencia de la consulta', expanded=False):
@@ -247,7 +263,7 @@ def panel_consola(artefacto: dict | None, pensando: bool) -> None:
 
     if grafica:
         componentes.seccion("Gráfica")
-        st.image(grafica, width="stretch")
+        _mostrar_grafica(grafica, artefacto.get('visualizacion'))
         st.download_button(
             "Descargar gráfica",
             data=grafica,
@@ -365,7 +381,7 @@ with izquierda:
                                 if mensaje["rol"] == "assistant":
                                     grafica = mensaje.get("grafica")
                                     if grafica:
-                                        st.image(grafica, width="stretch")
+                                        _mostrar_grafica(grafica, mensaje.get('visualizacion'))
                                     st.markdown(
                                         componentes.meta_mensaje(
                                             mensaje.get("pasos"),
@@ -407,9 +423,15 @@ with izquierda:
                 if len(archivos) > 8 or (len(archivos) > 1 and any(Path(a.name).suffix.lower() != '.pdf' for a in archivos)):
                     st.error('Puedes adjuntar hasta ocho PDF juntos; otros formatos se procesan individualmente.')
                 else:
-                    guardados = [_guardar_archivo_chat(a) for a in archivos]
+                    try:
+                        guardados = [_guardar_archivo_chat(a) for a in archivos]
+                    except (OSError, ValueError):
+                        guardados = []
+                        st.error('No se pudieron registrar los adjuntos. Comprueba tu sesión y vuelve a enviarlos; no se inició ningún análisis.')
                     guardado = guardados[0] if len(guardados) == 1 else None
-                    if all(guardados) and (len(guardados) > 1 or guardados[0][2] == 'documento' and Path(archivos[0].name).suffix.lower() == '.pdf'):
+                    if guardados and not all(guardados):
+                        st.error('No se registraron todos los adjuntos; no se inició ningún análisis. Revisa los errores de carga.')
+                    if guardados and all(guardados) and (len(guardados) > 1 or guardados[0][2] == 'documento' and Path(archivos[0].name).suffix.lower() == '.pdf'):
                         iniciar(texto or 'Analiza los documentos adjuntos.', archivo_path=guardados,
                                 archivo_tipo='documentos')
                 if guardado:
@@ -525,6 +547,7 @@ if st.session_state.pensando:
                 "duracion": artefacto.get("duracion"),
                 "formato": artefacto.get("formato"),
                 "grafica": artefacto.get("grafica"),
+                'visualizacion': artefacto.get('visualizacion'),
             }
         )
     finally:
