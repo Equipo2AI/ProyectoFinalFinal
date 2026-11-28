@@ -42,9 +42,20 @@ def plan_query(question):
     if 'sucursales' in q and 'promotores' in q:
         return 'Catalogos bancarios', 'SELECT (SELECT COUNT(*) FROM dim_sucursal) sucursales,(SELECT COUNT(*) FROM dim_promotor) promotores'
     if 'clientes' in q and 'segmento' in q and not re.search(r'saldo|promedio', q):
-        return 'Clientes por segmento dentro del alcance autorizado', 'SELECT segmento,COUNT(*) clientes FROM vw_cliente_publico GROUP BY segmento ORDER BY segmento'
+        if filters or year:
+            return None  # Filtros o una fecha de referencia requieren interpretación, no un total sin filtrar.
+        return 'Clientes por segmento dentro del alcance autorizado', (
+            "SELECT COALESCE(NULLIF(TRIM(s.descripcion),''),'Sin clasificar') segmento,COUNT(DISTINCT c.num_cte) clientes "
+            "FROM dim_cliente c LEFT JOIN dim_segmento s ON c.cve_segmento=s.cve_segmento GROUP BY 1 ORDER BY 1")
     if 'retiros' in q and re.search(r'por mes|mensual', q):
-        return 'Importe de retiros por mes', "SELECT substr(fec_txn,1,7) mes,ROUND(SUM(saldo_txn),2) importe_retiros FROM vw_txn_firmada WHERE desc_txn='RETIRO' GROUP BY substr(fec_txn,1,7) ORDER BY mes"
+        if re.search(r'\b(?:ultim\w*|pasad\w*|anterior|actual|hoy)\b', q):
+            return None  # Resolver periodos relativos mediante el backend existente.
+        transaction_filters = [f.replace('anio_mes', "CAST(strftime('%Y%m',fec_txn) AS INTEGER)") for f in filters]
+        if year and not periods:
+            transaction_filters.append("substr(fec_txn,1,4)='" + year[1] + "'")
+        conditions = "desc_txn='RETIRO'" + (" AND " + ' AND '.join(transaction_filters) if transaction_filters else '')
+        return 'Importe de retiros por mes', ("SELECT substr(fec_txn,1,7) mes,ROUND(SUM(saldo_txn),2) importe_retiros "
+            'FROM vw_txn_firmada WHERE ' + conditions + ' GROUP BY substr(fec_txn,1,7) ORDER BY mes')
     if 'mayor' in q and 'saldo' in q:
         top = re.search(r'\b(\d+)\s+clientes', q)
         if not top or not periods:

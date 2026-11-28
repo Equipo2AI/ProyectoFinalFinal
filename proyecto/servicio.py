@@ -91,6 +91,7 @@ class Respuesta(TypedDict, total=False):
     sql: str | None
     datos: list[dict] | None
     grafica: bytes | None
+    visualizacion: dict | None
     fuentes: list[str]
     resultados: list[dict]
     interpretacion: dict
@@ -328,6 +329,68 @@ def procesar_imagen(ruta: str, operacion: str = "ocr") -> Respuesta:
     }
 
 
+def _requisito_documental_solicitado(consulta: str, requisito_contexto: str | None = None) -> str | None:
+    """Solo selecciona la revisión de metadatos; no autoriza ni reconoce archivos."""
+    texto = ''.join(c for c in unicodedata.normalize('NFKD', consulta.casefold())
+                    if not unicodedata.combining(c))
+    tipos = [key for key, pattern in {
+        'ine': r'\bine\b|\bidentificacion\b',
+        'curp': r'\bcurp\b',
+        'domicilio': r'\bcomprobante\s+(?:de\s+)?domicilio\b',
+    }.items() if re.search(pattern, texto)]
+    if not tipos and requisito_contexto in {'ine', 'curp', 'domicilio'}:
+        tipos = [requisito_contexto]
+    if len(tipos) != 1 or not re.search(r'\b(?:vigen\w*|venc\w*|valid\w*|requisit\w*|cumpl\w*|complet\w*|legib\w*)\b', texto):
+        return None
+    return tipos[0]
+
+
+def _evaluar_consulta_documental_concierge(ruta: str, consulta: str, requisito_contexto: str | None = None,
+                                          *, tipo_interpretado: str | None = None) -> Respuesta | None:
+    """Revisión acotada de un archivo propio: solo metadatos, nunca valores PII/SQL."""
+    from proyecto.security.local_auth import principal
+    from proyecto.security.document_access import authorize_file
+    tipo = (tipo_interpretado if tipo_interpretado in {'ine', 'curp', 'domicilio'} else
+            _requisito_documental_solicitado(consulta, requisito_contexto))
+    if principal()['role'] != 'normal' or tipo is None:
+        return None
+    identifier, _ = authorize_file(ruta)
+    from proyecto.mcp_servers.mcp_client import llamar_herramienta
+    try:
+        result = json.loads(llamar_herramienta(
+            'proyecto.mcp_servers.document_intelligence_server', 'evaluar_expediente_micuenta',
+            {'documentos': [identifier]}))
+        authorize_file(identifier)
+        if result.get('code') == 'ACCESO_DENEGADO':
+            raise PermissionError('Documento fuera de la sesión autorizada.')
+        if result.get('code') != 'OK':
+            raise ValueError('Evaluación documental no completada.')
+        row = next(r for r in result['requisitos'] if r['requisito'] == tipo)
+    except PermissionError:
+        raise
+    except Exception:
+        return {'respuesta': 'No se pudo evaluar el documento por un error técnico; no se ha inferido su vigencia.',
+                'code': 'ERROR_TECNICO', 'error': 'error_tecnico_documental', 'herramientas': []}
+    incidencias = row.get('incidencias', [])
+    estado = row.get('estado') or 'NO_VERIFICABLE'
+    if (estado == 'FALTANTE' or not row.get('evidencias')
+            or row.get('campos_no_verificables') or any(i.get('estado') == 'NO_VERIFICABLE' for i in incidencias)):
+        estado = 'NO_VERIFICABLE'
+    current = _get_orquestador()
+    if ruta not in getattr(current, '_adjuntos_chat', {}):
+        current.registrar_adjuntos_chat([ruta])
+    lines = [current.hecho_requisito(row)]
+    lines.append('Esta revisión no certifica autenticidad ni titularidad y no equivale a aprobación bancaria.')
+    text = current.redactar_concierge(consulta, lines, {'requisitos': [row]})
+    current.registrar_intercambio(consulta, text)
+    return {'respuesta': text, 'code': estado, 'error': None,
+            'evaluacion_documental': row, 'fecha_evaluacion': result['fecha_evaluacion'],
+            'agentes': ['document_intelligence'], 'herramientas': ['evaluar_expediente_micuenta'],
+            'pasos': [{'agente': 'document_intelligence', 'accion': 'Evaluación documental individual por MCP',
+                       'detalle': estado, 'estado': 'ok' if estado == 'VALIDO_SEGUN_REGLAS' else 'alerta'}],
+            'formato': 'markdown'}
+
+
 def procesar_documento(
     ruta: str,
     consulta: str = "",
@@ -337,9 +400,13 @@ def procesar_documento(
     from proyecto.security.local_auth import authenticated
     from proyecto.security.document_access import authorize_file
     try:
-        _, token = _identidad_documental(consulta)
+        _, token = _identidad_documental()
         with authenticated(token):
             authorize_file(ruta)
+            individual = _evaluar_consulta_documental_concierge(ruta, consulta)
+            if individual is not None:
+                return individual
+            _identidad_documental(consulta)  # consulta general: controles PII/SQL originales
             return _procesar_documento_autorizado(ruta, consulta, nombre)
     except PermissionError:
         return {"respuesta": "Acceso denegado al documento solicitado.", "code": "ACCESO_DENEGADO", "error": "autorizacion_denegada", "pasos": [], "herramientas": []}
@@ -493,6 +560,8 @@ def _procesar_documento_autorizado(
             return {"respuesta": documento["message"], "code": documento["code"], "pasos": pasos,
                     "herramientas": herramientas, "validacion_documental": validacion, "formato": "markdown"}
         st.session_state.documento_consultable = {"owner": owner, "index": documento, "previous": ""}
+        with authenticated(token):
+            _get_orquestador().registrar_contexto_consultable(documento)
         st.session_state.documento_nuevo = True
         herramientas.append("preparar_documento_consultable")
     except Exception:
@@ -517,7 +586,15 @@ def _procesar_documento_autorizado(
     from proyecto.agents.document_questions import integrity_summary
     resultado['integridad_documental'] = documento['integrity']
     resultado['metadatos_documentales'] = documento['metadata']
-    resultado['respuesta'] = integrity_summary(documento['integrity']) + '\n\n' + resultado['respuesta']
+    if documento['integrity']['state'] != 'VALIDO':
+        resultado['respuesta'] = integrity_summary(documento['integrity']) + '\n\n' + resultado['respuesta']
+    # La UI y el modelo conservan la misma respuesta final; no duplicar el turno.
+    from langchain_core.messages import AIMessage
+    current = _get_orquestador()
+    if (len(current._mensajes) >= 2 and current._mensajes[-2].content == consulta):
+        current._mensajes[-1] = AIMessage(content=resultado['respuesta'])
+    else:
+        current.registrar_intercambio(consulta, resultado['respuesta'])
     return resultado
 
 
@@ -595,6 +672,8 @@ def _operacion_explicita(consulta: str) -> str | None:
 def _resumen_args(args: dict) -> str:
     partes = []
     for clave, valor in (args or {}).items():
+        if clave == 'documentos' and isinstance(valor, list):
+            valor = f'{len(valor)} documentos autorizados'
         if clave in {"image_path", "ruta", "path"}:
             valor = Path(str(valor)).name
         texto = str(valor).replace("\n", " ").strip()
@@ -740,6 +819,8 @@ def _preguntar_documento(consulta: str) -> Respuesta:
         from proyecto.orchestration.grafo import interpretar_finalidad_documental
         finalidad = interpretar_finalidad_documental(consulta, context['previous'])
         if not consulta.strip() or consulta.strip() == "Analiza el documento adjunto y responde lo más útil.":
+            with authenticated(token):
+                _get_orquestador().registrar_intercambio(consulta, 'Documento aceptado. Puedes preguntar por su contenido sin volver a subirlo.')
             return {"respuesta": "Documento aceptado. Puedes preguntar por su contenido sin volver a subirlo.", "pasos": [],
                     "fuentes": [context["index"]["name"]], "herramientas": [], "formato": "markdown"}
         with authenticated(token):
@@ -751,9 +832,14 @@ def _preguntar_documento(consulta: str) -> Respuesta:
             from proyecto.security.local_auth import authorize_request
             authorize_request(consulta)
         if response["status"] in {"respondido", "evidencia_recuperada"}:
-            context["previous"] = consulta
+            context["previous"] = consulta + ('\nSección de referencia: ' + response['section_title'] if response.get('section_title') else '')
         text, _ = redactar_pii(response["message"])
         code = response.get("code", "OK")
+        if code != 'ACCESO_DENEGADO':
+            with authenticated(token):
+                current = _get_orquestador()
+                current.registrar_intercambio(consulta, text)
+                current._ultimo_agente = 'document_intelligence'
         return {"respuesta": text, "pasos": [{"agente": "document_intelligence", "accion": "Recuperación del adjunto por embeddings",
                     "detalle": code, "estado": "error" if code in {"ERROR_TECNICO", "ACCESO_DENEGADO"} else "ok" if code == "OK" else "alerta"}],
                 "herramientas": ["responder_pregunta_documental"], "agentes": ["document_intelligence"],
@@ -833,8 +919,7 @@ def _responder_con_archivo(
 ) -> Respuesta:
     """Entrega el resultado del subagente al orquestador para la respuesta final."""
     if tipo == "documento":
-        from proyecto.agents.document_questions import external_request
-        resultado = preguntar_orquestador(consulta) if external_request(consulta) else _preguntar_documento(consulta)
+        resultado = preguntar_orquestador(consulta)
         resultado["pasos"] = pasos_previos + resultado.get("pasos", [])
         resultado["herramientas"] = herramientas + resultado.get("herramientas", [])
         return resultado
@@ -906,25 +991,104 @@ def _responder_con_archivo(
 
 def procesar_adjuntos_chat(archivos: list[tuple[str, str, str]], consulta: str) -> Respuesta:
     """Mismo chat: registra referencias temporales y deja decidir al orquestador."""
-    from proyecto.security.local_auth import authenticated
-    from proyecto.orchestration.grafo import intencion_micuenta
+    from proyecto.security.local_auth import authenticated, principal
     try:
-        _, token = _identidad_documental(consulta)
+        _, token = _identidad_documental()
         with authenticated(token):
             orquestador = _get_orquestador()
             orquestador.registrar_adjuntos_chat([ref for ref, _, _ in archivos])
-        if len(archivos) == 1 and not intencion_micuenta(consulta):
+            intent = orquestador.interpretar_apertura(consulta).get('slots', {}).get('intencion_apertura')
+            if len(archivos) == 1:
+                individual = _evaluar_consulta_documental_concierge(archivos[0][0], consulta)
+                if individual is not None:
+                    return individual
+            elif principal()['role'] == 'normal' and _requisito_documental_solicitado(consulta):
+                return preguntar_orquestador(consulta, documentos_adjuntos=[ref for ref, _, _ in archivos])
+            _identidad_documental(consulta)  # no extender la revisión acotada al resto de rutas
+            from proyecto.security.document_access import binding
+            apertura = (getattr(orquestador, '_apertura_contexto', {})
+                        if getattr(orquestador, '_apertura_scope', None) == binding() else {})
+            expediente = bool(apertura.get('producto') or getattr(orquestador, '_expediente_en_curso', False))
+        from proyecto.orchestration.perfil_respuesta import _PIDE_INTERPRETACION
+        from proyecto.orchestration.grafo import _normalizar, _solicita_grafica, intencion_micuenta
+        individual_analysis = ((_PIDE_INTERPRETACION.search(_normalizar(consulta)) or _solicita_grafica(consulta))
+                               and not intencion_micuenta(consulta)
+                               and not _requisito_documental_solicitado(consulta))
+        if len(archivos) == 1 and (not intent and not expediente or individual_analysis):
             ref, nombre, _ = archivos[0]
             return procesar_documento(ref, consulta, nombre)
-        return preguntar_orquestador(consulta)
+        return preguntar_orquestador(consulta, documentos_adjuntos=[ref for ref, _, _ in archivos])
     except PermissionError:
         return {'respuesta': 'Acceso denegado a los documentos de esta sesión.', 'code': 'ACCESO_DENEGADO', 'herramientas': []}
     except ValueError:
         return {'respuesta': 'Adjunta como máximo ocho PDF autorizados en esta conversación.', 'code': 'ERROR_TECNICO', 'herramientas': []}
 
 
+def _consultar_contextos_registrados(current, consulta, lectura, owner):
+    """Selecciona evidencia temporal ya autorizada; no obtiene movimientos nuevos."""
+    import streamlit as st
+    from proyecto.security.document_access import authorize_context, binding
+    from proyecto.agents.document_questions import contextual_compatibility, document_metadata
+    from proyecto.orchestration.grafo import interpretar_finalidad_documental, _solicita_grafica, _es_seguimiento
+    indexes = current.contextos_consultables()
+    if not indexes:
+        return None
+    turn = (lectura or {}).get('turno', {})
+    if turn.get('fuente_documental'):
+        indexes = [d for d in indexes if d.get('metadata', {}).get('type') in {'debito', 'credito', 'estado_cuenta'}]
+    pending = current._aclaracion_pendiente or {}
+    if pending.get('tipo') != 'consulta_documental':
+        pending = {}
+    if pending and pending.get('binding') != binding():
+        raise PermissionError('Objetivo de otra sesión.')
+    follows = bool(pending and (turn.get('acto') in {'confirmacion', 'seguimiento', 'correccion', 'aclaracion'} or _es_seguimiento(consulta)))
+    purpose = interpretar_finalidad_documental(consulta)
+    query = pending['consulta'] if follows and purpose['finalidad'] == 'contenido' else consulta
+    if follows and turn.get('referencia_clara'):
+        resolved = [s['consulta'] for s in (lectura or {}).get('fuentes', []) if s['tipo'] == 'evaluacion_documental']
+        if len(resolved) == 1 and not interpretar_finalidad_documental(resolved[0])['varios_periodos_o_versiones']:
+            query = resolved[0]  # Solo selecciona evidencia; el backend vuelve a comprobarla.
+    chart = _solicita_grafica(consulta) or bool(follows and pending.get('grafica') and not re.search(r'\b(?:resume|resumen|explica)\b', consulta, re.I))
+    named = [d for d in indexes if d['name'].casefold() in consulta.casefold()]
+    candidates = named or indexes
+    compatibles = [d for d in candidates if contextual_compatibility(query, d)['status'] == 'compatible']
+    def dated_source(document):
+        facts = document.get('metadata', document_metadata(document['pages'])).get('facts', {})
+        dates = '; '.join(k + ': ' + ', '.join(v) for k, v in facts.items()
+                          if k in {'periodo', 'inicio del periodo', 'fin del periodo', 'version', 'fecha de emision', 'fecha de corte'})
+        return document['name'] + ': ' + (dates or 'No hay período o versión inequívocos en el texto.')
+    inventory = [dated_source(d) for d in candidates]
+    current._aclaracion_pendiente = {'tipo': 'consulta_documental', 'binding': binding(),
+                                    'consulta': query, 'grafica': chart}
+    if len(compatibles) != 1:
+        facts = ['Documentos propios disponibles y sus fechas declaradas:\n' + '\n'.join(inventory),
+                 'No se encontró un único documento compatible con la consulta y el período solicitado. '
+                 'Indica el nombre/período que deseas analizar o adjunta el documento correspondiente. '
+                 'No se ha consultado una cuenta bancaria ni se han calculado gastos.']
+        text = current.redactar_concierge(consulta, facts)
+        current.registrar_intercambio(consulta, text)
+        return {'respuesta': text, 'code': 'ACLARACION_NECESARIA', 'herramientas': [], 'agentes': ['document_intelligence']}
+    chosen = compatibles[0]
+    authorize_context(chosen)
+    if chart:
+        facts = ['Documento seleccionado: ' + dated_source(chosen),
+                 'Todavía no puedo crear gráficas verificables a partir de los movimientos de un PDF. '
+                 'Sí puedo consultar su contenido y comprobar el período. No he generado una gráfica ni calculado gastos. '
+                 'No se ha consultado el banco ni la base de datos. No necesito tu número de cuenta ni tarjeta para revisar el archivo.']
+        text = current.redactar_concierge(consulta, facts)
+        authorize_context(chosen)
+        current.registrar_intercambio(consulta, text)
+        return {'respuesta': text, 'code': 'CAPACIDAD_NO_DISPONIBLE', 'herramientas': [],
+                'agentes': ['document_intelligence'], 'fuentes': [chosen['name']]}
+    previous = st.session_state.get('documento_consultable') or {}
+    st.session_state['documento_consultable'] = {'owner': owner, 'index': chosen,
+        'previous': previous.get('previous', '') if (previous.get('index') or {}).get('document_id') == chosen['document_id'] else ''}
+    current._aclaracion_pendiente = None
+    return _preguntar_documento(query)
+
+
 def preguntar_orquestador(
-    consulta: str, perfil: dict | None = None
+    consulta: str, perfil: dict | None = None, *, documentos_adjuntos: list[str] | None = None
 ) -> Respuesta:
     """Atiende una consulta de texto con el orquestador y sus tools MCP.
 
@@ -935,12 +1099,69 @@ def preguntar_orquestador(
     try:
         import streamlit as st
         from proyecto.agents.document_questions import external_request
-        from proyecto.orchestration.grafo import intencion_micuenta
-        current = st.session_state.get('orquestador_sesion')
-        intent = intencion_micuenta(consulta, seguimiento=getattr(current, '_expediente_en_curso', False))
+        from proyecto.security.local_auth import authenticated, principal
+        from proyecto.security.document_access import authorize_file
+        owner, token = _identidad_documental()
+        with authenticated(token):
+            current = _get_orquestador()
+            current._usar_documentos = st.session_state.get('usar_documento', True)
+            active = st.session_state.get('documento_consultable')
+            if active:
+                if active.get('owner') != owner:
+                    raise PermissionError('Documento de otra sesión.')
+                current.registrar_contexto_consultable(active['index'])
+            selection_pending = (current.es_respuesta_version(consulta)
+                                 and not documentos_adjuntos and principal()['role'] == 'normal')
+            attached = getattr(current, '_adjuntos_chat', {})
+            target = _requisito_documental_solicitado(consulta, getattr(current, '_ultimo_requisito_seleccionado', None))
+            if attached and not selection_pending and principal()['role'] == 'normal' and target:
+                for ref in attached:
+                    authorize_file(ref)
+                selected = [ref for ref, name in attached.items() if name.casefold() in consulta.casefold()]
+                if not selected and not documentos_adjuntos:
+                    choice = getattr(current, '_expediente_selecciones', {}).get(target, {}).get('elegida')
+                    if choice:
+                        authorize_file(choice)
+                        if choice not in attached:
+                            raise PermissionError('Documento seleccionado fuera de la conversación.')
+                        selected = [choice]
+                if len(selected) == 1 or len(attached) == 1:
+                    return _evaluar_consulta_documental_concierge(
+                        selected[0] if len(selected) == 1 else next(iter(attached)), consulta, target)
+                clarification = current.redactar_concierge(consulta, [
+                    'Hay varios PDF autorizados. Indica el nombre del documento que deseas revisar.',
+                    '\n'.join(f'{i}. {name}' for i, name in enumerate(attached.values(), 1))])
+                current.registrar_intercambio(consulta, clarification)
+                return {'respuesta': clarification,
+                        'code': 'ACLARACION_NECESARIA', 'herramientas': []}
+            if not selection_pending:
+                _identidad_documental(consulta)
+            lectura_turno = None if selection_pending else current.interpretar_turno(consulta)
+            turn = (lectura_turno or {}).get('turno', {})
+            intent = current.interpretar_apertura(consulta, lectura_turno).get('slots', {}).get('intencion_apertura')
+            if turn.get('objetivo') == 'documento' and turn.get('requisito') and attached:
+                target = turn['requisito']
+                choice = getattr(current, '_expediente_selecciones', {}).get(target, {}).get('elegida')
+                selected = [ref for ref, name in attached.items() if name.casefold() in consulta.casefold()]
+                if not selected and choice:
+                    authorize_file(choice)
+                    if choice not in attached:
+                        raise PermissionError('Documento fuera de la conversación.')
+                    selected = [choice]
+                if len(selected) == 1 or len(attached) == 1:
+                    return _evaluar_consulta_documental_concierge(
+                        selected[0] if len(selected) == 1 else next(iter(attached)), consulta, target,
+                        tipo_interpretado=target)
+            # Un cambio de tema no debe ser capturado por el PDF activo.
+            route_document = not turn or turn.get('objetivo') == 'documento'
+            if (route_document and not selection_pending and not intent and st.session_state.get('usar_documento', True)
+                    and not external_request(consulta, hay_documento=bool(current.contextos_consultables()))):
+                result = _consultar_contextos_registrados(current, consulta, lectura_turno, owner)
+                if result is not None:
+                    return result
         attached = getattr(current, '_adjuntos_chat', {})
-        if attached and not intent and not external_request(consulta) and re.search(
-                r'document|archivo|adjunt|\bpdf\b|saldo|cargos|movimientos|vigencia|curp', consulta, re.I):
+        if route_document and attached and not selection_pending and not documentos_adjuntos and not intent and not external_request(consulta) and re.search(
+                r'document|archivo|adjunt|\bpdf\b|saldo|cargos|movimientos|vigen|curp|identificaci[oó]n|\bine\b', consulta, re.I):
             from proyecto.security.local_auth import authenticated
             from proyecto.security.document_access import authorize_file
             _, token = _identidad_documental(consulta)
@@ -950,11 +1171,19 @@ def preguntar_orquestador(
             selected = [ref for ref, name in attached.items() if name.casefold() in consulta.casefold()]
             if len(selected) == 1:
                 return procesar_documento(selected[0], consulta, attached[selected[0]])
+            if len(attached) == 1:
+                with authenticated(token):
+                    individual = _evaluar_consulta_documental_concierge(next(iter(attached)), consulta)
+                if individual is not None:
+                    return individual
             if len(attached) > 1:
                 return {'respuesta': 'Hay varios PDF en esta conversación. Indica el nombre del documento que deseas consultar, o pide evaluar el expediente MiCuenta completo.',
                         'code': 'ACLARACION_NECESARIA', 'herramientas': []}
         if (st.session_state.get("documento_consultable")
+                and not selection_pending
+                and not documentos_adjuntos
                 and not intent
+                and route_document
                 and st.session_state.get("usar_documento", True)
                 and not external_request(consulta)):
             return _preguntar_documento(consulta)
@@ -965,7 +1194,7 @@ def preguntar_orquestador(
         # o desvíe la pregunta a data_analyst.
         pendiente = getattr(orquestador, "imagen_pendiente", None)
         operacion = _operacion_explicita(consulta)
-        if pendiente and operacion:
+        if pendiente and operacion and not selection_pending:
             resultado = procesar_imagen(pendiente, operacion)
             if resultado.get("error"):
                 return resultado
@@ -981,18 +1210,21 @@ def preguntar_orquestador(
             )
 
         token = _token_actual()
+        adjuntos_solicitud = {'documentos_adjuntos': documentos_adjuntos} if documentos_adjuntos else {}
+        adjuntos_solicitud['lectura_turno'] = lectura_turno
 
         if token:
             from langsmith import tracing_context
             from proyecto.security.local_auth import authenticated, authorize_request
 
             with authenticated(token), tracing_context(enabled=False):
-                authorize_request(consulta)
-                texto = orquestador.procesar(consulta, perfil=perfil)
+                if not selection_pending:
+                    authorize_request(consulta)
+                texto = orquestador.procesar(consulta, perfil=perfil, **adjuntos_solicitud)
         else:
             from proyecto.security.local_auth import authorize_request
             authorize_request(consulta)
-            texto = orquestador.procesar(consulta, perfil=perfil)
+            texto = orquestador.procesar(consulta, perfil=perfil, **adjuntos_solicitud)
     except PermissionError:
         # El control de alcance es determinista y ocurre antes del LLM. Una
         # negativa esperada no es un fallo técnico: se responde como rechazo
@@ -1002,6 +1234,16 @@ def preguntar_orquestador(
             "No puedo proporcionar esa información: la solicitud está fuera "
             "del alcance autorizado para esta sesión."
         )
+        # Una denegación de operación no es una sesión inválida. Conservar el
+        # intercambio solo si la identidad/sesión aún es legítima; no registrar
+        # la pregunta rechazada, que puede contener identificadores privados.
+        try:
+            with authenticated(_token_actual()):
+                principal()
+                current = _get_orquestador()
+                current.registrar_intercambio('Solicitud rechazada por autorización.', mensaje)
+        except PermissionError:
+            pass
         return {
             "respuesta": mensaje,
             "pasos": [
@@ -1193,7 +1435,14 @@ def preguntar_orquestador(
         "sql": sql,
         "datos": datos,
         "grafica": grafica,
-        "resultados": herramientas,
+        'visualizacion': resultado_analista.get('grafica_especificacion') if isinstance(resultado_analista, dict) else None,
+        "resultados": [
+            {'name': h['name'], 'estado': h.get('estado'), 'resumen': texto,
+             'documentos': [getattr(orquestador, '_adjuntos_chat', {}).get(ref, 'Documento autorizado')
+                            for ref in (h.get('args') or {}).get('documentos', [])]}
+            if h.get('name') == 'evaluar_expediente_micuenta' else h
+            for h in herramientas
+        ],
         "interpretacion": interpretacion,
         "aclaracion": aclaracion,
         "supuestos": supuestos,

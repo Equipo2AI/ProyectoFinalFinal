@@ -1,6 +1,7 @@
 """Servidor STDIO independiente de las herramientas SQL de Data Analyst."""
 
 import os
+import json
 
 from fastmcp import FastMCP
 
@@ -20,7 +21,7 @@ _herramientas = {herramienta.name: herramienta for herramienta in _backend._tool
 
 @mcp.tool()
 def analizar_datos(
-    consulta: str, contexto: str = "", perfil: dict | None = None
+    consulta: str, contexto: str = "", perfil: dict | None = None, incluir_datos: bool = False
 ) -> str:
     """Responde una pregunta cuantitativa en lenguaje natural usando el backend SQL local.
 
@@ -29,7 +30,22 @@ def analizar_datos(
     alcance de los datos. El agente usa las herramientas SQL del backend, sin
     volver a llamar por MCP.
     """
-    return _backend.procesar(consulta, contexto, perfil=perfil)
+    if not incluir_datos:
+        return _backend.procesar(consulta, contexto, perfil=perfil)
+    # Solo resultados producidos en este turno; nunca rescatar datos tras una denegación.
+    _backend._ultimo_resultado = None
+    _backend._ultimo_sql = None
+    context = contexto + (
+        '\nSolicitud de análisis y visualización: obtén agregados reales con las herramientas SQL. '
+        'Distingue entidades únicas de filas; conserva categorías nulas como no clasificadas. '
+        'Verifica catálogo y relaciones antes de unir. Para series temporales agrupa año y mes, '
+        'comprueba tipos de movimiento, signos, unidad y granularidad/duplicados. '
+        'Si no hay periodo explícito, declara el alcance disponible. No generes Python ni imágenes. '
+        'Prefiere métricas certificadas cuando representen exactamente lo solicitado; '
+        'si no, utiliza SQL de solo lectura validado y columnas del catálogo real.')
+    text = _backend.procesar(consulta, context, perfil=perfil)
+    data = _backend._ultimo_resultado
+    return json.dumps({'respuesta': text, 'datos': data, 'sql': _backend._ultimo_sql}, ensure_ascii=False, default=str)
 
 
 @mcp.tool()

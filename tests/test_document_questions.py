@@ -76,7 +76,8 @@ def test_pertinencia_citas_sin_perfil_completo(document, monkeypatch, text, ques
     doc = _pertinence_document(document, text)
     from proyecto.config import ollama_runtime
     model = Mock()
-    model.invoke.return_value.content = json.dumps({'answerable': True, 'quotes': [{'id': 'F1', 'text': quote}]})
+    model.invoke.return_value.content = json.dumps({'answerable': True, 'mode': 'respuesta', 'answer': quote,
+                                                  'quotes': [{'id': 'F1', 'text': quote}]})
     monkeypatch.setattr(ollama_runtime, 'ChatOllama', Mock(return_value=model))
     result = dq.answer(question, doc)
     assert result['code'] == 'OK' and quote in result['message']
@@ -276,14 +277,81 @@ def document(monkeypatch):
             "fragments": [{"id": "F1", "source": "Página 1", "text": text, "vector": [1., 0.]}]}
 
 
+@pytest.mark.parametrize('redacted,incomplete,expected', [(False, False, 'respondido'), (True, False, 'sin_evidencia'), (False, True, 'sin_evidencia')])
+def test_documental_seccion_completa_desde_texto_autorizado(document, monkeypatch, redacted, incomplete, expected):
+    from proyecto.config import ollama_runtime
+    doc = copy.deepcopy(document)
+    text = '# Respaldo\nRegistrar el respaldo.\nComprobar la recuperación.\n# Acceso\nExigir autorización.'
+    doc['name'] = 'manual_de_prueba.pdf'
+    doc['pages'] = [{'source': 'Página 1', 'text': text, 'redacted': redacted}]
+    doc['fragments'][0]['text'] = text
+    doc['incomplete'] = incomplete
+    model = Mock()
+    model.invoke.return_value.content = json.dumps({'answerable': True, 'mode': 'completo', 'section_id': 'S1'})
+    monkeypatch.setattr(ollama_runtime, 'ChatOllama', Mock(return_value=model))
+    result = dq.answer('Muéstrame el texto completo de la sección Respaldo', doc)
+    assert result['status'] == expected
+    if expected == 'respondido':
+        assert '# Respaldo\nRegistrar el respaldo.\nComprobar la recuperación.' in result['message']
+        assert '# Acceso' not in result['message'] and result['section_title'] == 'Respaldo'
+    else:
+        assert 'íntegro' in result['message'] and 'Registrar el respaldo.' not in result['message']
+
+
+def test_documental_seguimiento_recibe_referencia_anterior(document, monkeypatch):
+    from proyecto.config import ollama_runtime
+    captured = []
+    class Model:
+        def __init__(self, **kwargs): pass
+        def invoke(self, messages):
+            captured.extend(messages)
+            return Mock(content=json.dumps({'answerable': True, 'mode': 'detalle',
+                'answer': 'El saldo al cierre es de 9100.00.', 'quotes': [{'id': 'F1', 'text': 'Saldo final: 9100.00'}]}))
+    monkeypatch.setattr(ollama_runtime, 'ChatOllama', Model)
+    result = dq.answer('¿Y qué significa ese saldo?', document, '¿Cuál es el saldo final?')
+    assert result['status'] == 'respondido' and '9100.00' in result['message']
+    assert '¿Cuál es el saldo final?' in captured[0]['content']
+    assert 'Página 1' in result['message']
+
+
+@pytest.mark.parametrize('text', [
+    '# Procedimiento\n## Registro\nRegistrar la operación.\n## Verificación\nVerificar el resultado.\n# Otro tema\nFuera de la sección.',
+    'Capítulo I\nArtículo 1. Registrar la operación.\nArtículo 2. Verificar el resultado.\nCapítulo II\nFuera de la sección.',
+])
+def test_documental_seccion_padre_conserva_subapartados(document, text):
+    doc = copy.deepcopy(document)
+    doc['pages'] = [{'source': 'Página 1', 'text': text, 'redacted': False}]
+    sections = dq._secciones_consultables(doc)
+    assert sections[0]['complete'] is True
+    assert 'Registrar la operación.' in sections[0]['text'] and 'Verificar el resultado.' in sections[0]['text']
+    assert 'Fuera de la sección.' not in sections[0]['text']
+
+
+@pytest.mark.parametrize('question,mode', [('Explica la sección Integridad', 'detalle'), ('Dame un resumen completo', 'resumen')])
+def test_documental_contenido_no_se_convierte_en_validacion(document, monkeypatch, question, mode):
+    from proyecto.config import ollama_runtime
+    doc = copy.deepcopy(document)
+    text = '# Integridad\nEl control de acceso protege los datos de cambios no autorizados.'
+    doc['pages'] = [{'source': 'Página 1', 'text': text, 'redacted': False}]
+    doc['fragments'][0]['text'] = text
+    doc['integrity'] = dq.validate_integrity(doc['pages'])
+    model = Mock()
+    model.invoke.return_value.content = json.dumps({'answerable': True, 'mode': mode,
+        'answer': 'El control protege los datos frente a cambios sin autorización.', 'evidence_ids': ['F1']})
+    monkeypatch.setattr(ollama_runtime, 'ChatOllama', Mock(return_value=model))
+    result = dq.answer(question, doc)
+    assert result['status'] == 'respondido' and result['mode'] == mode
+    assert 'Validación documental:' not in result['message'] and 'NO_EVALUABLE' not in result['message']
+
+
 def test_relacionada_solo_publica_citas_reales(monkeypatch, document):
     from proyecto.config import ollama_runtime
     llm = Mock()
-    llm.invoke.return_value.content = json.dumps({"answerable": True, "quotes": [{"id": "F1", "text": "Saldo final: 9100.00"}]})
+    llm.invoke.return_value.content = json.dumps({"answerable": True, "mode": "respuesta", "answer": "El saldo final es de 9100.00.", "quotes": [{"id": "F1", "text": "Saldo final: 9100.00"}]})
     monkeypatch.setattr(ollama_runtime, "ChatOllama", Mock(return_value=llm))
     result = dq.answer("¿Cuál es el saldo final?", document)
     assert "9100.00" in result["message"] and "Página 1" in result["message"]
-    llm.invoke.return_value.content = json.dumps({"answerable": True, "quotes": [{"id": "F1", "text": "Saldo final: 100000"}]})
+    llm.invoke.return_value.content = json.dumps({"answerable": True, "mode": "respuesta", "answer": "El saldo es de 100000.", "quotes": [{"id": "F1", "text": "Saldo final: 100000"}]})
     assert dq.answer("¿Cuál es el saldo final?", document)["status"] == "error_tecnico"
 
 

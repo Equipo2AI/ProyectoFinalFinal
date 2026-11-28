@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from difflib import get_close_matches
 
 
 def _normalizar(texto: str) -> str:
@@ -42,7 +43,7 @@ _RE_PERIODO_EXPLICITO = re.compile(
 )
 
 _RE_GRAFICA = re.compile(
-    r"\b(?:grafica|grafico|graficar|visualiza\w*|chart)\b", re.IGNORECASE
+    r"\b(?:grafic\w*|visualiza\w*|chart|barras|pastel)\b", re.IGNORECASE
 )
 _RE_DOCUMENTO_ADJUNTO = re.compile(
     r"\b(?:factura|recibo|comprobante|imagen|ocr|adjunto|archivo)\b",
@@ -128,11 +129,18 @@ def _archivo_como_datos(texto: str) -> bool:
     )
 
 
-def _slots(consulta: str) -> dict:
+def _slots(consulta: str, *, visualizacion_activa: bool = False) -> dict:
     texto = _normalizar(consulta)
     slots: dict = {}
     if _RE_GRAFICA.search(texto):
         slots["salida"] = "grafica"
+    if _RE_GRAFICA.search(texto) or visualizacion_activa:
+        for pattern, kind in [(r'\b(?:barras|bar)\b', 'bar'), (r'\b(?:lineas?|line)\b', 'line'),
+                              (r'\b(?:pastel|circular|pie)\b', 'pie'), (r'\b(?:dispersion|scatter)\b', 'scatter')]:
+            if re.search(pattern, texto):
+                slots['tipo_grafica'] = kind
+    if re.search(r'\bpor\s+mes(?:es)?\b|\bmensual(?:es)?\b', texto):
+        slots['agrupacion'] = 'mes'
     if re.search(r"\bsaldos?\b", texto):
         slots["metrica"] = "saldo"
     elif re.search(r"\bmovimientos?\b", texto):
@@ -204,6 +212,10 @@ def interpretar_consulta(
     contexto_documentos: str = "",
     ultimo_agente: str | None = None,
     imagen_pendiente: str | None = None,
+    contexto_apertura: dict | None = None,
+    producto_apertura: str = '',
+    hay_archivos: bool = False,
+    expediente_activo: bool = False,
 ) -> dict:
     """Devuelve la lectura de la consulta y, si hace falta, una aclaración."""
     consulta = (consulta or "").strip()
@@ -220,6 +232,55 @@ def interpretar_consulta(
             slots=slots,
             lectura="Intento de manipular las instrucciones del sistema",
         )
+
+    # Slots conversacionales de onboarding: solo el orquestador autenticado
+    # USER proporciona este contexto. No son un rol ni permisos del cliente.
+    if producto_apertura:
+        words = set(re.findall(r'[a-z0-9_]+', texto))
+        known = _normalizar(producto_apertura)
+        product_words = set(known.split())
+        explicit_product = known in texto or known.split()[0] in words
+        opening_verbs = {'abrir', 'apertura', 'sacar'}
+        # Corregir solo la señal de intención, nunca nombres, identificadores o
+        # el texto original. Exigir además la entidad bancaria evita que una
+        # semejanza aislada active onboarding. El corte excluye «abril»/«abrir».
+        opening_signal = bool(words & opening_verbs) or any(
+            get_close_matches(word, opening_verbs, n=1, cutoff=0.86)
+            for word in words if 5 <= len(word) <= 9
+        )
+        opening = opening_signal and bool(words & {'cuenta', 'bancaria'} or explicit_product)
+        existing = bool(metrica or words & {'calidad', 'estadisticas', 'sql', 'tablas', 'duplicados', 'normativa', 'ley'})
+        previous = contexto_apertura or {}
+        documents = bool(words & {'documento', 'documentos', 'requisitos', 'archivo', 'archivos', 'adjunto', 'adjuntos', 'expediente',
+                                  'ine', 'identificacion', 'curp', 'comprobante'})
+        missing = any(word.startswith('falt') for word in words)
+        reference = bool(words & {'esa', 'ese', 'sus', 'eso', 'uno'})
+        selected = (explicit_product and words <= product_words) or (
+            bool(previous.get('activa')) and es_respuesta_de_aclaracion(consulta)) or (
+            previous.get('espera_producto') and len(words) <= 4 and '?' not in consulta
+            and not _RE_SALUDO.search(texto))
+        relevant = opening or (explicit_product and (documents or selected)) or (
+            previous.get('activa') and (documents or missing or reference or selected))
+        if relevant and not existing:
+            product = producto_apertura if explicit_product else previous.get('producto')
+            if (not product and previous.get('producto_propuesto') and selected and words & {'si', 'esa', 'ese'}
+                    and not words & {'no', 'otra', 'otro', 'ninguna', 'ninguno'}):
+                product = previous['producto_propuesto']
+            if words & {'otra', 'otro'}:
+                product = None
+            from proyecto.orchestration.grafo import intencion_micuenta
+            evaluate = (intencion_micuenta(consulta + ' ' + (product or ''), seguimiento=expediente_activo) == 'expediente'
+                        or bool(words & {'evalua', 'evalualos', 'revisa', 'revisalos', 'verifica', 'completo', 'completa'}))
+            document_turn = documents and not bool(words & {'necesito', 'necesita', 'requiere', 'requisitos'})
+            intent = 'expediente' if product and hay_archivos and (evaluate or missing or document_turn) else 'requisitos'
+            if not product:
+                intent = 'apertura_general'
+            slots.update(intencion_apertura=intent, producto=product, consulta_faltantes=missing,
+                         contexto_apertura={'activa': True, 'producto': product, 'espera_producto': not bool(product),
+                                            'producto_propuesto': producto_apertura if not product else None})
+            return _resultado(consulta, slots=slots, lectura='Apertura de cuenta y requisitos documentales',
+                              pregunta='' if product else '¿Qué cuenta deseas abrir? Dispongo de requisitos documentados de ' + producto_apertura + '.',
+                              opciones=[] if product else [producto_apertura, 'otro producto'])
 
     # Un documento sin archivo ni contexto no se puede procesar todavía.
     if (

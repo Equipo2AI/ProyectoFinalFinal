@@ -235,6 +235,19 @@ def authorize_request(consulta):
     user = principal()
     text = ''.join(c for c in unicodedata.normalize('NFKD', consulta.casefold()) if not unicodedata.combining(c))
     denied = False
+    from proyecto.agents.data_steward_agent import (
+        evaluar_alcance_data_steward, _SOLICITA_CALIDAD, _solicita_registros_personales,
+        _RE_NORMATIVA_STEWARD,
+    )
+    # Capacidad administrativa, no una sugerencia de ruta del modelo. Una
+    # revisión de un PDF propio no equivale a inspeccionar la base global.
+    database = bool(re.search(r'\b(?:raw_|dim_|fact_|vw_)\w+\b|\b(?:dataset|base de datos)\b', text))
+    document = bool(re.search(r'\b(?:documentos?|pdf|adjunt\w*|expediente|identificacion|comprobante)\b', text))
+    inspection = bool(_SOLICITA_CALIDAD.search(text) or re.search(r'\b(?:inspeccion\w*|esquema|metadatos|columnas)\b', text))
+    administrative = (inspection and (database or not document)
+                      and not (_RE_NORMATIVA_STEWARD.search(text) and not database)
+                      and evaluar_alcance_data_steward(consulta)['estado'] == 'en_dominio')
+    denied |= administrative and 'governance' not in user['permissions']
     with closing(sqlite3.connect(Path(user['database']).as_uri() + '?mode=ro', uri=True)) as c:
         for account in re.findall(r'\bcuenta\s+(\d+)\b', text):
             owner = c.execute('SELECT num_cte FROM dim_cuenta WHERE num_cta=?', (int(account),)).fetchone()
@@ -244,7 +257,24 @@ def authorize_request(consulta):
     metadata = re.search(r'\b(?:columnas?|metadatos|calidad|faltantes|nulos)\b', text)
     if not (metadata and 'governance' in user['permissions']):
         fields = re.findall(r'\b(?:correo|telefono|rfc|curp|nombre)\b', text)
-        denied |= any('pii:' + field not in user['permissions'] for field in fields)
+        # Hablar de un campo no solicita su valor. Se permiten explicaciones
+        # públicas y diagnósticos documentales; el archivo y cada dato se siguen
+        # autorizando en su backend. El texto jamás acredita titularidad.
+        conceptual = bool(re.search(
+            r'\b(?:requisitos?|condiciones?|definicion|que es|para que|ley|proteccion|'
+            r'present\w*|llevar|necesit\w*|obligatori\w*|aplica\w*|constancia|'
+            r'valid\w*|vigen\w*|vencid\w*)\b', text))
+        request_values = re.sub(
+            r'\b(?:dame|muestra\w*|enumera\w*)\s+(?:los?\s+|las?\s+)?'
+            r'(?:requisitos?|condiciones?|definicion|reglas)\b', '', text)
+        personal_values = (_solicita_registros_personales(request_values)
+                           or bool(re.search(r'\b(?:numero|valor|clave)\b.{0,30}\b(?:curp|rfc)\b', text)))
+        third_party = bool(re.search(
+            r'\b(?:curp|rfc|nombre|correo|telefono)\s+(?:de|del)\s+'
+            r'(?!(?:la\s+)?(?:ine|identificacion|constancia|documento|requisito|campo)\b)\w+', text))
+        public_or_assessment = conceptual and not personal_values and not third_party
+        denied |= bool(fields) and not public_or_assessment and any(
+            'pii:' + field not in user['permissions'] for field in fields)
     if denied:
         audit('request_scope', False, user['subject'])
         raise PermissionError('Acceso denegado: solicitud fuera del alcance o campos autorizados.')

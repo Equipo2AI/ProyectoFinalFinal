@@ -231,7 +231,10 @@ def _extract_authorized(reference: str, modo: str = 'auto', paginas: str | None 
     permissions = auth.principal()['permissions']
     safe_text = _sanitize(text, permissions)
     for page in pages:
-        page['text'] = _sanitize(page['text'], permissions)
+        original = page['text']
+        page['text'] = _sanitize(original, permissions)
+        # Procedencia, no un permiso: no llamar íntegra a una sección censurada.
+        page['redacted'] = page['text'].strip() != original.strip()
     authorize_file(identifier)
     return identifier, entry, safe_text, pages, incomplete
 
